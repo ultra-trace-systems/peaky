@@ -432,6 +432,8 @@ def cmd_batch(args) -> None:
                            corroborate=list(getattr(args, "corroborate", []) or []),
                            tof_flag_mz=getattr(args, "tof_flag_mz", None),
                            mass_axis=getattr(args, "mass_axis", "auto"),
+                           axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
+                           axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
                            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
                            **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
@@ -474,6 +476,8 @@ def cmd_pool(args) -> None:
             rolling_centre=getattr(args, "rolling_centre", False),
             tof_flag_mz=getattr(args, "tof_flag_mz", None),
             mass_axis=getattr(args, "mass_axis", "auto"),
+            axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
+            axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
             isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
             **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -803,7 +807,10 @@ def cmd_publish_batch(args) -> None:
 
     from peaky.io import publish as P
 
-    loaded = P.load_batch_run(args.run_dir)
+    # a run that applied a band-step frame comes back on the server's axis per
+    # source item; a row whose sources disagree by more than half the match
+    # tolerance is said here before anything is sent
+    loaded = P.load_batch_run(args.run_dir, tolerance_ppm=args.tolerance_ppm, log=print)
     merged, summary = loaded["merged"], loaded["summary"]
     if summary:
         print(f"[publish-batch] {summary.get('batch_name')}: {summary.get('n_files')} "
@@ -2073,6 +2080,27 @@ def _add_mass_axis_flag(p) -> None:
                         "force one. A TOF, a pool of several batches and server-side scoring are "
                         "measured, not corrected. Recorded in batch_summary['mass_axis'], "
                         "tables/mass_axis_locks.csv and tables/mass_axis.csv. off = skip it")
+    p.add_argument("--axis-fingerprints", choices=("auto", "refresh", "off"), default="auto",
+                   help="whether to read each sample's Orbitrap axis fingerprint from the server. The "
+                        "fingerprint is Mascope's measurement, made when the raw file was converted, of the "
+                        "m/z steps the mass calibration left between the instrument's frequency bands "
+                        "(0.3 ppm to tens of ppm at the band edges; a lock mass cannot remove them and the "
+                        "lock model above stops at them). auto (default): on an Orbitrap batch in the "
+                        "lock-model path, when every sample has a usable fingerprint of one calibration, "
+                        "the band steps are taken out first and the lock model is fitted on the step-free "
+                        "axis; the result is applied only when it passes a gate (no step left at a band "
+                        "edge, a predictive fit, no shorter reach and no worse held-out error than the "
+                        "plain lock model, which is kept as the fallback). With no fingerprint served (an "
+                        "older server, a file that is not an Orbitrap's, a TOF) the run is unchanged; a "
+                        "document served but unusable (e.g. status missing: not fingerprinted yet) changes "
+                        "no correction and is recorded in batch_summary['mass_axis']['frame']; an applied "
+                        "frame there and in tables/mass_axis_frame.csv. refresh = read "
+                        "them from the server again, past the cached copies (a file fingerprinted anew by a "
+                        "newer reader or a backfill), and cache the final, readable ones. off = never ask "
+                        "for them: reproduces the previous behaviour exactly")
+    p.add_argument("--axis-fingerprint-dir", metavar="DIR", default=None,
+                   help="read the fingerprints as DIR/<sample item id>.json instead of asking the server "
+                        "(documents computed locally, offline runs, tests)")
 
 
 def _add_trace_first_flags(p) -> None:

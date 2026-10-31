@@ -214,8 +214,10 @@ def _report_ts(ctx: RunContext, ts, res):
     corrected one included, which the run restored before use. The PDF's coverage and batch-max tables read that recorded
     input, matching it to the ledger within 8 ppm, which a correction (capped at
     massqc.MAX_CORRECTION_PPM for the reference wave, assign_batch.
-    LOCK_MAX_CORRECTION_PPM for the lock model) stays inside; a pool's per-group
-    reports read their raw slices the same way."""
+    LOCK_MAX_CORRECTION_PPM for the lock model) stays inside; a band-step frame need
+    not, and past REPORT_FRAME_CORRECTED_TS_PPM the tables read the corrected series
+    instead (`_report_ts_path`, and `_group_report_ts_path` for a pool's per-group
+    reports, which otherwise read their raw slices)."""
     ax = (((res or {}).get("summary") or {}).get("mass_axis") or {}) if isinstance(res, dict) else {}
     got = res.get("ts_peaks") if isinstance(res, dict) else None
     if not ax.get("applied") or got is None:
@@ -227,8 +229,128 @@ def _report_ts(ctx: RunContext, ts, res):
     return got
 
 
+#: The PDF's coverage and batch-max tables match the ledger to the time series they
+#: are handed within 8 ppm (pdf_report.load_context). A band-step frame
+#: (batch.axisframe) is not capped like the lock model and the reference wave, so
+#: a frame whose correction passes this (ppm) anywhere hands the report the
+#: CORRECTED series (`_report_ts_path`); the run's recorded input stays the raw one.
+REPORT_FRAME_CORRECTED_TS_PPM = 4.0
+
+
+def _frame_reach_ppm(ax: dict) -> float:
+    """The largest |correction| (ppm) a run's mass_axis record says it applied: the
+    model's own maximum over its reach (`max_abs_ppm`) and the shifts the peaks
+    took (`shift_ppm` min / max), whichever is larger; 0 when nothing is recorded."""
+    vals = [ax.get("max_abs_ppm")]
+    sh = ax.get("shift_ppm") or {}
+    vals += [sh.get("min"), sh.get("max")]
+    nums = [abs(float(v)) for v in vals if v is not None and np.isfinite(float(v))]
+    return max(nums) if nums else 0.0
+
+
+def _report_ts_path(ctx: RunContext, res, log=print) -> str | None:
+    """The parquet the PDF's coverage and batch-max tables read (pdf_report.build's
+    `ts_path`) when it is NOT the run's recorded input: the axis-corrected series,
+    written to data/<tag>_ts_corrected.parquet, when the assign stage applied a
+    band-step frame (batch_summary['mass_axis']['model'] == 'frame') whose
+    correction passes REPORT_FRAME_CORRECTED_TS_PPM anywhere -- the tables match the
+    ledger (on the corrected axis) to the series within 8 ppm, which a lock model
+    (capped at 7 ppm) or a reference wave (4 ppm) stays inside and a frame need
+    not. None otherwise: the report reads ctx.ts_path as before, and ctx.ts_path
+    (the recorded, provenance-hashed input) is never changed here."""
+    ax = (((res or {}).get("summary") or {}).get("mass_axis") or {}) if isinstance(res, dict) else {}
+    got = res.get("ts_peaks") if isinstance(res, dict) else None
+    if not ax.get("applied") or ax.get("model") != "frame" or got is None:
+        return None
+    reach = _frame_reach_ppm(ax)
+    if reach <= REPORT_FRAME_CORRECTED_TS_PPM:
+        return None
+    path = os.path.join(PT.run_paths(ctx.out_dir).ensure().data, f"{ctx.tag}_ts_corrected.parquet")
+    TS.collapse_peak_matches(got).to_parquet(path)
+    log(f"[report] the band-step frame reaches {reach:.1f} ppm (above {REPORT_FRAME_CORRECTED_TS_PPM:g}): "
+        f"the report's coverage and batch-max tables read the corrected series ({path}); the run's "
+        "recorded input stays the raw one")
+    return path
+
+
+def _group_report_ts_path(gctx: RunContext, res, sample_ids, log=print) -> str | None:
+    """A pool's per-group counterpart of `_report_ts_path`: the group's slice of the
+    pool's corrected series, written to the GROUP's data/<tag>_ts_corrected.parquet,
+    when the pool applied a band-step frame past REPORT_FRAME_CORRECTED_TS_PPM (a
+    one-batch pool is corrected like a batch; the per-group reports read the group's
+    slice of the merged ledger, on the corrected axis, against this series). None
+    otherwise: the group's report reads its raw slice as before."""
+    ax = (((res or {}).get("summary") or {}).get("mass_axis") or {}) if isinstance(res, dict) else {}
+    got = res.get("ts_peaks") if isinstance(res, dict) else None
+    if not ax.get("applied") or ax.get("model") != "frame" or got is None or "sample_item_id" not in got.columns:
+        return None
+    if _frame_reach_ppm(ax) <= REPORT_FRAME_CORRECTED_TS_PPM:
+        return None
+    ids = {str(s) for s in sample_ids}
+    part = got[got["sample_item_id"].astype(str).isin(ids)]
+    path = os.path.join(PT.run_paths(gctx.out_dir).ensure().data, f"{gctx.tag}_ts_corrected.parquet")
+    TS.collapse_peak_matches(part).to_parquet(path)
+    log(f"[report] group {gctx.batch_name!r}: its coverage and batch-max tables read its slice of the pool's "
+        f"corrected series ({path})")
+    return path
+
+
+def _axis_fingerprint_inputs(summ: dict | None) -> dict | None:
+    """The manifest's `input.axis_fingerprints`: per sample item the served axis
+    fingerprint document's sha1, status and mode id, read off
+    batch_summary['mass_axis']['frame']['documents'] -- ONLY the items whose document
+    was read (a sha1 exists). None, so no key, when no document was read
+    (`--axis-fingerprints off`, a TOF, a hold, a server that serves none)."""
+    docs = ((((summ or {}).get("mass_axis") or {}).get("frame") or {}).get("documents") or {})
+    out = {str(sid): {"sha1": d.get("sha1"), "status": d.get("status"), "mode_id": d.get("mode_id")}
+           for sid, d in docs.items() if isinstance(d, dict) and d.get("sha1")}
+    return out or None
+
+
+#: per calibration group, what the manifest and the run registry keep of its record
+_MANIFEST_GROUP_KEYS = ("index", "n_members", "mode_id", "k_range", "n_bands", "n_measured", "n_unmeasured",
+                        "h_max_ppm", "s_spread_max_ppm", "reach_mz")
+
+
+def _manifest_mass_axis(ax):
+    """batch_summary['mass_axis'] as the manifest's counts carry it, and so every
+    index.jsonl row: the record as it is, except a band-step frame's, which grows by
+    kilobytes per item -- `frame` (the documents, the groups' band tables, both fits,
+    the gate, the items) is summarised to `held`, the gate's `passed` / `failed`,
+    `n_items`, `n_usable`, per group its size, reach and largest step, `source` and
+    `refreshed`; an applied frame's `wave` (the composite, every item's band table) to
+    its model, policy, inner lock model and item count. batch_summary.json keeps the
+    full record. A record without a frame is carried as recorded, the same object."""
+    if not isinstance(ax, dict):
+        return ax
+    fr, wave = ax.get("frame"), ax.get("wave")
+    framed = isinstance(wave, dict) and wave.get("model") == "frame"
+    if not isinstance(fr, dict) and not framed:
+        return ax
+    out = dict(ax)
+    if isinstance(fr, dict):
+        docs = fr.get("documents") if isinstance(fr.get("documents"), dict) else {}
+        usable = sum(1 for d in docs.values() if isinstance(d, dict) and d.get("usable"))
+        groups = [g for g in (fr.get("groups") or []) if isinstance(g, dict)]
+        slim = {"held": fr.get("held"), "n_items": fr.get("n_items", len(docs)),
+                "n_usable": fr.get("n_usable", usable), "n_groups": fr.get("n_groups", len(groups)),
+                "groups": [dict({k: g[k] for k in _MANIFEST_GROUP_KEYS if k in g},
+                                zone_khz=(g.get("grid") or {}).get("zone_khz")) for g in groups],
+                "source": fr.get("source")}
+        if isinstance(fr.get("gate"), dict):
+            slim["gate"] = {"passed": fr["gate"].get("passed"), "failed": list(fr["gate"].get("failed") or [])}
+        if fr.get("refreshed"):
+            slim["refreshed"] = True
+        out["frame"] = slim
+    if framed:
+        out["wave"] = {"model": "frame", "version": wave.get("version"), "policy": wave.get("policy"),
+                       "inner": wave.get("inner"), "n_items": len(wave.get("items") or {})}
+    return out
+
+
 def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
-                    do_cluster=True, do_vk=True, do_report=True, log=print) -> dict:
+                    do_cluster=True, do_vk=True, do_report=True, log=print,
+                    report_ts_path: str | None = None) -> dict:
     """Offline generation half: cluster figures + Van Krevelen + the PDF report,
     from the merged / per-file ledgers already in `ctx.out_dir` and the batch time
     series. No network. Same artifacts the run_clusters / run_vankrevelen /
@@ -237,6 +359,9 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     from peaky.batch import clustering as CLU
     from peaky.reporting import pdf_report as R
 
+    # `report_ts_path`: the parquet the PDF's coverage / batch-max tables read
+    # instead of ctx.ts_path (`_report_ts_path`: the corrected series of a run that
+    # applied a band-step frame past REPORT_FRAME_CORRECTED_TS_PPM); None -> ctx.ts_path.
     # Pin figures/PDF/workbooks to a FIXED content epoch (not the run time) so the
     # scientific content is byte-identical regardless of WHEN it's run. The run time
     # appears only as cover text + Report ID (ctx.generated / ctx.run_id below).
@@ -267,7 +392,7 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     if do_report:
         log("[phase] report")
         out["report_pdf"] = R.build(ctx.out_dir, tag=ctx.tag, label=ctx.label,
-                                     ts_path=ctx.ts_path, batch_name=ctx.batch_name,
+                                     ts_path=report_ts_path or ctx.ts_path, batch_name=ctx.batch_name,
                                      dataset=ctx.dataset,
                                      run_id=ctx.run_id, generated=ctx.generated)
         log(f"[report] wrote {out['report_pdf']}")
@@ -304,6 +429,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               side_channels=None,
               tof_flag_mz: float | None = None,
               mass_axis: str = "auto",
+              axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -339,7 +465,15 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     axis against the reagent's reference ions and, on an Orbitrap, correct an
     axis error before anything is assigned. The cluster and Van Krevelen figures
     then read the corrected time series (`_report_ts`); the run's recorded input
-    (ctx.ts_path) stays the uncorrected one.
+    (ctx.ts_path) stays the uncorrected one. `axis_fingerprints` ('auto' /
+    'refresh' / 'off') and `axis_fingerprint_dir` are assign_batch.run's too:
+    whether the items' served Orbitrap axis fingerprints are read in front of the
+    lock model ('refresh': from the server again, past the cached copies), and a
+    directory of `<sample id>.json` documents to read instead of the server. A
+    run that applied the band-step frame past REPORT_FRAME_CORRECTED_TS_PPM also
+    hands the PDF's coverage / batch-max tables the corrected series
+    (data/<tag>_ts_corrected.parquet, `_report_ts_path`), and the manifest records
+    the documents read (`input.axis_fingerprints`: sha1, status, mode per item).
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
@@ -397,12 +531,14 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                      k_min=k_min, k_max=k_max, min_gain=min_gain,
                      residual=residual, residual_min_x_edge=residual_min_x_edge,
                      residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
-                     mass_axis=mass_axis, n_jobs=n_jobs, log=log, **assign_kw)
+                     mass_axis=mass_axis, axis_fingerprints=axis_fingerprints,
+                     axis_fingerprint_dir=axis_fingerprint_dir, n_jobs=n_jobs, log=log, **assign_kw)
     finally:
         # never outlive the run, a failed one included; this run's samples only
         IO.clear_axis_correction(ts["sample_item_id"].astype(str).unique())
     gen = generate_report(ctx, _report_ts(ctx, ts, res), subject=subject,
-                          do_report=do_report, log=log)
+                          do_report=do_report, log=log,
+                          report_ts_path=_report_ts_path(ctx, res, log=log) if do_report else None)
 
     # provenance: pin this run to its exact code + input-data hash + config +
     # output hash, and append it to the cross-run registry. Best-effort (never
@@ -416,6 +552,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         sample_ids=(res.get("sample_ids") if isinstance(res, dict) else None),
         reagent=prof.name, cfg=cfg_snapshot,   # carries the resolved x_edge
         ts_path=ctx.ts_path,
+        # the served axis-fingerprint documents the run read (sha1 / status / mode
+        # per item), an input like the series; no key when none was read
+        axis_fingerprints=_axis_fingerprint_inputs(summ),
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 # the claim each merged row's level supports, beside its tier
@@ -436,8 +575,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # threshold: the config fingerprint holds only the binning knob)
                 "mass_scale": summ.get("mass_scale"),
                 # the m/z-axis measurement and the correction it applied
-                # (assign_batch.measure_axis; the mode is the --mass-axis knob)
-                "mass_axis": summ.get("mass_axis"),
+                # (assign_batch.measure_axis; the mode is the --mass-axis knob); a
+                # band-step frame's record summarised (batch_summary keeps it whole)
+                "mass_axis": _manifest_mass_axis(summ.get("mass_axis")),
                 # the run-level switches of the context profile and whether the
                 # merged-ledger isotopologue gate ran (a run kwarg, not a
                 # PassConfig field: the fingerprint alone cannot tell them apart)
@@ -565,6 +705,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        side_channels=None,
                        tof_flag_mz: float | None = None,
                        mass_axis: str = "auto",
+                       axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -581,7 +722,10 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     the pooled `ts` only drives selection, clustering and the amine gate, so it is
     trimmed to the TS columns for the workers.
 
-    `side_channels` is the `--side-channels` choice, as in `run_batch`.
+    `side_channels` is the `--side-channels` choice, as in `run_batch`; so are
+    `mass_axis`, `axis_fingerprints` and `axis_fingerprint_dir` (a pool of several
+    batches is measured but not corrected, so its fingerprints are not read; a
+    one-batch pool behaves like a batch).
 
     `group_by` is the column that splits the pool (default `sample_batch_name`: one
     group per matched batch). Per-group reports share the unified `merged_ledger.csv`
@@ -671,7 +815,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                      residual=residual, residual_min_x_edge=residual_min_x_edge,
                      residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
                      out_dir=ctx.out_dir, amine_r_min=amine_r_min, mass_axis=mass_axis,
-                     mass_axis_hold=hold, n_jobs=n_jobs, log=log, **assign_kw)
+                     mass_axis_hold=hold, axis_fingerprints=axis_fingerprints,
+                     axis_fingerprint_dir=axis_fingerprint_dir, n_jobs=n_jobs, log=log, **assign_kw)
     finally:
         # never outlive the run, a failed one included; this run's samples only
         IO.clear_axis_correction(ts["sample_item_id"].astype(str).unique())
@@ -682,7 +827,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     prov = _with_residual_picks(prov, res, ts, group_by)
     _write_selected_samples(ctx.out_dir, prov)
     gen = generate_report(ctx, _report_ts(ctx, ts[ts_cols], res), subject=subject,
-                          do_report=do_report, log=log)
+                          do_report=do_report, log=log,
+                          report_ts_path=_report_ts_path(ctx, res, log=log) if do_report else None)
 
     group_runs = []
     if per_group_reports:
@@ -692,7 +838,12 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
             gctx = make_run_context(base_out, g, prof, when=when, dataset=dataset)
             _stage_pool_child(ctx.out_dir, gctx.out_dir,
                               prov[prov[group_by].astype(str) == g])
-            generate_report(gctx, dfg, subject=subject, do_report=do_report, log=log)
+            # a pool that applied a band-step frame past the report's 8-ppm match: the
+            # group's tables read its slice of the corrected series (its merged ledger,
+            # staged above, is on the corrected axis); else its raw slice, as before
+            gpath = (_group_report_ts_path(gctx, res, dfg["sample_item_id"].unique(), log=log)
+                     if do_report and "sample_item_id" in dfg.columns else None)
+            generate_report(gctx, dfg, subject=subject, do_report=do_report, log=log, report_ts_path=gpath)
             group_runs.append(gctx.out_dir)
             log(f"[pool] group {g!r} report -> {gctx.out_dir}")
 
@@ -704,6 +855,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=pool_label, dataset=dataset, sample_ids=union, reagent=prof.name,
         cfg=cfg_snapshot, ts_path=ctx.ts_path,       # carries the resolved x_edge
+        axis_fingerprints=_axis_fingerprint_inputs(summ),
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 # the claim each merged row's level supports, beside its tier
@@ -717,7 +869,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 # windows sized from it (a run-derived count, like the admission
                 # threshold: the config fingerprint holds only the binning knob)
                 "mass_scale": summ.get("mass_scale"),
-                "mass_axis": summ.get("mass_axis"),
+                "mass_axis": _manifest_mass_axis(summ.get("mass_axis")),
                 **_switch_record(summ),
                 "tof_flag": summ.get("tof_flag")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},

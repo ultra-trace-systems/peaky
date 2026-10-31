@@ -35,7 +35,7 @@ dependencies = [
     # load (`attrs['complete']`) and takes an `ai-agent` service name. When the SDK
     # moves, upgrade and run tests/test_io_mascope.py, tests/test_ms2_sources.py and
     # tests/test_sdk_service_and_whole_loads.py rather than pinning back.
-    "mascope-sdk>=2026.10.20",
+    "mascope-sdk>=2026.10.28",
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). See docs/MASCOPE_TOOLS_INTEGRATION.md.
     # 2026.9.30, the library Mascope 1.10 publishes, is the release that carries

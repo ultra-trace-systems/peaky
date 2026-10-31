@@ -270,6 +270,16 @@ as unexplained (docs/ASSIGNMENT_DETAIL.md §3.6b, docs/MERGE.md §3).
 ladder) in the batch time series and reports whether the axis
 is flat, offset, curved, drifting or blended — an external yardstick, so a wrong
 axis is caught before the engine self-calibrates on its own output.
+`peaky batch` / `pool` go further on an Orbitrap (`--mass-axis auto`, the default):
+the batch's own peaks lock a model of the axis (a smooth curve plus the steps an
+Orbitrap's axis takes) and the series and every peak table are corrected before
+anything is assigned; with `--axis-fingerprints auto` (the default) each sample's
+served **axis fingerprint** -- Mascope's measurement of the band-wise m/z steps the
+mass calibration left -- is read first and the steps taken out in front of the lock
+model, applied only when a truth-free gate passes (`--axis-fingerprints off`
+reproduces a run without them, `refresh` reads them from the server again past the
+cached copies; `--axis-fingerprint-dir DIR` reads documents from disk).
+docs/MASS_AXIS.md has the whole stage.
 `--rolling-centre` lets each merged ion's centre roll along the batch where its
 drift is resolvable and sizes its stamping window from its own scatter;
 `--trace-first` (with `--resolving-power`, the instrument's R) builds the batch's

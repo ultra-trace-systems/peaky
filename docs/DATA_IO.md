@@ -174,6 +174,7 @@ All in `peaky/io/io_mascope.py`.
 | --- | --- | --- |
 | `ENV_SEARCH` | repo `.env` → `./.env` → `~/.mascope/.env` → `~/mascope-mcp/.env` → `~/.claude/skills/mascope-sdk/.env` | credential-file search list (after `--env` / `$MASCOPE_ENV`) |
 | `CACHE_ROOT` | `~/.mascope-assign-cache` | per-sample peak cache (`<sid>/peaks.parquet`) |
+| `AXIS_FINGERPRINT_CACHE` / `AXIS_FINGERPRINT_CACHED_STATUSES` | `axis_fingerprint.v1.json` / `ok`, `no_fingerprint` | the served axis-fingerprint document cached beside the peaks (`<sid>/axis_fingerprint.v1.json`), for the statuses that are final for a file and a document of the schema's shape; `missing` / `unavailable` / `error` are fetched again every run ([MASS_AXIS.md](MASS_AXIS.md) §3.7) |
 | `MATCH_BATCH` | 200 | formulas per `match_compounds` call (times out above ~500) |
 | `MATCH_WORKERS` | 5 | concurrent `match_compounds` batches (I/O-bound, server-safe) |
 | `DEFAULT_MATCH_PARAMS.mz_tolerance` | 5 (**int** ppm) | mass window for the network scorer |
@@ -274,6 +275,8 @@ All in `peaky/io/io_mascope.py`.
 | `list_workspaces` / `list_datasets` / `list_batches` | discovery |
 | `resolve_batch` | batch id or name → one `ResolvedBatch(id, name, how, n_same_name)`: exact id > exact name > unique substring; ambiguity raises |
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
+| `fetch_axis_fingerprint` / `axis_fingerprint_source` | one sample item's served axis-fingerprint document (the SDK's `samples.get_axis_fingerprint`, else the generic GET of the route; any failure is None with a logged reason, the server's message without its address; `directory=` reads `<dir>/<sid>.json` instead), cached (`use_cache=False`, `--axis-fingerprints refresh`, reads past the cached copy and caches what it gets; a malformed document is handed back, never cached); how a client reads them (`sdk` / `route` / `directory` / `none`) |
+| `set_axis_correction` / `clear_axis_correction` / `axis_correction` | the batch's m/z-axis correction `fetch_peaks` serves peak tables through (a lock model, a reference wave, or -- per item -- a band-step frame's map); the cache keeps the server's m/z |
 | `fetch_batch_peaks` | whole-batch peak time series |
 | `fetch_batch_samples` | per-sample table (no peaks): the live id list + reagent detection for a batch run |
 | `fetch_ms2_summary` / `MS2SummaryRefused` / `ms2_summary_refusal` | one sample's MS2 summary; the known isolation-width refusal, typed |

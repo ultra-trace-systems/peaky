@@ -1308,15 +1308,42 @@ def ion_formula_for(neutral: str, adduct: str) -> str | None:
     return composition + (tail if tail in "+-" else "")
 
 
-def load_batch_run(run_dir: str) -> dict:
+def _frame_record(axis: dict) -> bool:
+    """Whether a run's ``batch_summary['mass_axis']`` applied a band-step frame
+    (``batch.axisframe``: every sample item corrected on its own map), which
+    :func:`load_batch_run` must put back per source item."""
+    return (axis.get("wave") or {}).get("model") == "frame"
+
+
+def load_batch_run(
+    run_dir: str,
+    *,
+    tolerance_ppm: float = DEFAULT_BATCH_TOLERANCE_PPM,
+    log: Callable[[str], None] | None = None,
+) -> dict:
     """What a `peaky batch` run left on disk, for publishing.
 
+    A run that corrected the batch's m/z axis has its merged m/z put back on the
+    server's axis (``assign_batch.to_server_axis``). A run that applied a
+    band-step frame (``batch_summary['mass_axis']['wave']['model'] ==
+    'frame'``) corrected each sample item on its own map, so a merged row is
+    put back by every source item named in its ``srcs`` column and the median
+    taken; the spread between those inverses is counted, and a row whose spread
+    exceeds half of ``tolerance_ppm`` -- it could land on a different batch
+    peak depending on the source -- is warned about (``log``, else loguru).
+    The record of that inverse is returned as ``axis_inverse`` (a frame run
+    only). A run without a frame loads exactly as before.
+
     :param run_dir: The run's output directory.
+    :param tolerance_ppm: The publish match tolerance (``--tolerance-ppm``); a
+        frame row's inverses spread by more than half of it is warned about.
+    :param log: Where the warnings go (default loguru).
     :return: ``merged`` (the merged ledger, its m/z back on the server's axis
         when the run corrected it), ``summary`` (``batch_summary.json``, or
         None), ``ion_formulas`` ((neutral, adduct) -> ion formula gathered from
-        the per-file ledgers) and ``root``.
-    :raises PublishError: When the directory holds no merged ledger.
+        the per-file ledgers), ``root`` and, for a frame run, ``axis_inverse``.
+    :raises PublishError: When the directory holds no merged ledger, or a frame
+        run's merged ledger has no ``srcs`` column.
     """
     root = Path(run_dir).expanduser()
     merged_path = root / "merged_ledger.csv"
@@ -1334,6 +1361,7 @@ def load_batch_run(run_dir: str) -> dict:
             summary_path.read_text(encoding="utf-8"), parse_constant=lambda _c: None
         )
     axis = (summary or {}).get("mass_axis") or {}
+    axis_inverse: dict | None = None
     if axis.get("applied") and "mz" in merged.columns:
         # The run corrected the batch's m/z axis (`peaky batch --mass-axis`); the
         # server matches a row to its batch peak by m/z on ITS axis, so the
@@ -1342,7 +1370,42 @@ def load_batch_run(run_dir: str) -> dict:
         from peaky.batch.assign_batch import to_server_axis
 
         merged = merged.copy()
-        merged["mz"] = to_server_axis(merged["mz"].to_numpy(dtype=float), axis)
+        if _frame_record(axis):
+            # a band-step frame corrected each sample item on its own map: a
+            # merged row goes back by its source items' maps (median), and a
+            # row whose sources disagree by more than half the match tolerance
+            # could land on another batch peak -- said, never silently moved
+            if "srcs" not in merged.columns:
+                raise PublishError(
+                    f"{run_dir}: the run applied a band-step frame (one m/z map per "
+                    "sample item), but its merged_ledger.csv has no `srcs` column to "
+                    "put the rows back on the server's axis with"
+                )
+            stats: dict = {}
+            merged["mz"] = to_server_axis(
+                merged["mz"].to_numpy(dtype=float), axis, merged["srcs"].tolist(),
+                log=log, stats=stats,
+            )
+            spread = np.asarray(stats.pop("spread_ppm", np.zeros(len(merged))), dtype=float)
+            warn_ppm = 0.5 * float(tolerance_ppm)
+            over = int((spread > warn_ppm).sum())
+            axis_inverse = {**stats, "spread_warn_ppm": warn_ppm, "n_spread_over_warn": over}
+            if over:
+                msg = (
+                    f"[publish-batch] {over} merged row(s) come back on the server's axis "
+                    f"with their source items disagreeing by more than {warn_ppm:g} ppm "
+                    f"(half the {float(tolerance_ppm):g} ppm match tolerance; the widest "
+                    f"{stats.get('spread_ppm_max')} ppm): the median was sent, and such a "
+                    "row may land on a different batch peak than one of its sources would"
+                )
+                if log is not None:
+                    log(msg)
+                else:
+                    from loguru import logger
+
+                    logger.warning(msg)
+        else:
+            merged["mz"] = to_server_axis(merged["mz"].to_numpy(dtype=float), axis)
     ion_formulas: dict[tuple[str, str], str] = {}
     per_file = root / "per_file"
     if per_file.is_dir():
@@ -1357,12 +1420,15 @@ def load_batch_run(run_dir: str) -> dict:
                 value = _text(ion)
                 if key[0] and key[1] and value:
                     ion_formulas.setdefault(key, value)
-    return {
+    out = {
         "merged": merged,
         "summary": summary,
         "ion_formulas": ion_formulas,
         "root": str(root),
     }
+    if axis_inverse is not None:
+        out["axis_inverse"] = axis_inverse
+    return out
 
 
 def build_batch_rows(

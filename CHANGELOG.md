@@ -76,6 +76,64 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The calibration's band steps come off an Orbitrap's axis before the lock model
+  (`--axis-fingerprints auto`, the default; `refresh` reads every document from the server
+  again, past the cached copy, and caches the final, readable documents it gets; `off`
+  reproduces the previous behaviour; `--axis-fingerprint-dir DIR` reads the documents from
+  disk).** Mascope now serves, per sample item, the **axis fingerprint** of a raw Orbitrap file
+  (schema `mascope.axis_fingerprint` version 1; `mascope-sdk >= 2026.10.28`, now the minimum,
+  has `samples.get_axis_fingerprint`; an older SDK reads the same route): per acquisition mode
+  the grid of ~16.28-kHz frequency bands and each band's spacing anomaly, from which the m/z
+  correction the mass calibration wrote into the band follows exactly. Those per-band
+  corrections leave steps of the m/z error at the band edges (0.3 ppm to tens of ppm) that a
+  lock mass cannot remove and the lock model can only leave as gaps or stop at.
+  `batch/axisframe.py` reads every item's document, pools the items of one calibration into one
+  table and grid (documents of one calibration agree on every band to a few hundredths of a
+  ppm; different calibrations differ by 2 ppm or more), takes a robust local trend out and
+  applies only the band-wise residual (`m_W = m (1 - d e-6)`). The trend is a local quadratic
+  over 13 bands whose robust scale is floored at 0.1 ppm, so on a served table a band more than
+  0.47 ppm off its trend is a step; it reads a band only from its support (the band itself,
+  bands on both sides of it that carry a trend of their own, or one beside it), and a band its
+  trend reaches from one side only, two or more bands past the bands carrying it, gets no step
+  beyond that cut-off: it is counted as extrapolated and left to the lock model. A member
+  contributes to the pooled table only the bands that carry a trend in its own table. The lock
+  model is then fitted on that step-free series unchanged, with its cap, and the composite is
+  applied per item only when a truth-free gate passes: no step left within a band of a grid
+  edge, no residual lock step above 0.5 ppm across one, a predictive verdict, no shorter reach
+  than the plain lock model and no worse held-out error than 1.5x its own. Under the W fit's
+  verdict `axis_ok` (nothing smooth left to correct) the band steps are applied alone, and only
+  inside the W fit's lock domains. The plain lock fit is made first and stands whenever the
+  gate holds. All or nothing per batch: every item needs a usable document of one calibration
+  (status `ok`, a measured grid, no stitched sample, >= 8 measured bands, no band step above 60
+  ppm), else no frame is applied. With `off`, on a TOF, under a hold or when the first item
+  asked is served no document, the summary (its wall clock aside), the ledgers and every table
+  are byte-identical to a run of the code without the feature (main before this change) and
+  nothing is recorded (an opt-in test, `PEAKY_MAIN_WORKTREE`, compares an `off` run with a
+  checkout of main; CI runs the off / 404 / TOF / no-document arms against the run without the
+  feature); once a document is served and no frame is applied, the run adds only
+  `batch_summary['mass_axis']['frame']` (`held` says why),
+  `run_manifest.json['input']['axis_fingerprints']` and that record summarised in the
+  manifest's counts. Recorded when applied: `batch_summary['mass_axis']['frame']` (the
+  documents' sha1 and status, the calibration group, both lock fits, the gate, per item its
+  grid, bands and counts), `tables/mass_axis_frame.csv`, `frame` = `W` on
+  `tables/mass_axis_locks.csv`, and `run_manifest.json['input']['axis_fingerprints']`; the
+  manifest's counts and the run registry carry the frame record summarised. A document of an
+  unexpected shape is refused with its reason and never cached, a reader or frame path that
+  raises holds the frame with the plain fit standing, and the fetch stops at the first item
+  served no document (the frame needs them all), its reason without the server's address.
+  `peaky publish-batch` puts a frame run's merged rows back on the server's axis per source
+  item (`srcs`, the median) and warns when a row's sources disagree by more than half the match
+  tolerance; the PDF's coverage and batch-max tables read the corrected series
+  (`data/<tag>_ts_corrected.parquet`, and a pool's per-group reports their group's slice of it)
+  when the frame's correction passes 4 ppm anywhere, the run's recorded input staying the raw
+  one. In comparison runs on Orbitrap batches against the same code run with
+  `--axis-fingerprints off`: where the frame was applied, the lock walk on the step-free series
+  reported none of the band-edge steps the plain walk had left as gaps and, where the plain
+  walk stopped short, reached past one more band edge; more of an independent assignment's ions
+  were Assigned and fewer were missed off the axis, with small changes either way on the part
+  of those ions held out from tuning. Where the gate (a residual step at a band edge) or files
+  mixing calibrations held the frame, the run matched the plain one. docs/MASS_AXIS.md
+  describes the stage.
 - **`NH4_14N`, the unlabelled ammonium profile** (`[M+NH4]+` / `[M+H]+`, TIC, the uronium
   context), until now a `--reagent-config` JSON of a 2026 chamber campaign.
 - **`pass1_outcome`**: pass 1 records on each target peak it left unexplained why (no grid
