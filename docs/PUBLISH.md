@@ -263,6 +263,18 @@ The ion formula is not in the merged ledger; it is read from the per-file ledger
 (`per_file/*_ledger.csv`) for the same (neutral, adduct) reading, and derived from the
 two when no per-file ledger holds it.
 
+A run that corrected the batch's m/z axis (`--mass-axis`, [MASS_AXIS.md](MASS_AXIS.md)) has
+its merged m/z put back on the **server's** axis first (`assign_batch.to_server_axis`): the
+server matches a row to its batch peak by m/z on its own axis, and a correction can exceed the
+match tolerance. A run that applied the band-step frame corrected each sample item on its own
+map, so there a merged row is put back by every source item named in its `srcs` column (the
+comma-joined sample item ids) and the median taken; under one calibration group the items'
+maps are the same and the inverses agree exactly. The spread between them is measured all the
+same: a row whose sources disagree by more than half of `--tolerance-ppm` is warned about
+before anything is sent (it could land on a different batch peak than one of its sources
+would), and `publish.load_batch_run(...)['axis_inverse']` records the count. A frame run whose
+ledger lacks `srcs` is refused.
+
 ## Options
 
 | flag | meaning |

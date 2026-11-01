@@ -237,6 +237,16 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
   [`ARCHITECTURE.md §7`](ARCHITECTURE.md#7-reproducibility--provenance)).
 - **Compression is best-effort** — no optional deps, or an under-`min_mb` input, is
   a silent no-op that never touches the full report.
+- **The coverage and batch-max tables match the ledger to the time series within
+  8 ppm** (`load_context`, the `ts_path` it is handed). A run that corrected the m/z
+  axis holds its ledgers on the corrected axis while the recorded input series is the
+  raw one: a lock model (capped at 7 ppm) and a reference wave (4 ppm) stay inside the
+  window, a band-step frame ([MASS_AXIS.md](MASS_AXIS.md)) need not, so when its
+  correction passes 4 ppm anywhere the pipeline writes the corrected series to
+  `data/<tag>_ts_corrected.parquet` and hands THAT to `build` (`pipeline._report_ts_path`;
+  a pool's per-group reports get their group's slice of it, `_group_report_ts_path`); the
+  recorded, provenance-hashed input never changes. Without a frame `build` receives exactly
+  what it did before.
 - **Calibration is offset-only, and display/provenance only.** `cal_mu` is a single
   robust *median* offset — a per-file **linear (slope)** term was tested and
   rejected (the slope is tiny; on Br it merely widens the window). The calibrated

@@ -283,7 +283,7 @@ can't refute an off-grid P) standing in for the 2nd channel.
   these a large uniform offset collapses everything to Candidate and lets
   off-trend mass-coincidences win then z-reject (peak left unexplained).
 
-### Mass-axis QC and the trace-level flags (TOF batches)
+### Mass-axis QC, the Orbitrap axis and the trace-level flags
 
 * `peaky mass-qc` probes formula-certain reference ions (`chem/reference_ions`: the
   30-ion nitrate core, its 15N variant, a provisional bromide ladder with 81Br twins)
@@ -291,6 +291,10 @@ can't refute an off-grid P) standing in for the 2nd channel.
   `blended`, `+drifting` when the centres roll, with the remedy — and WHICH calibrant
   tier it used. Read it before assigning a TOF batch; it is the only mass reference
   that is not the engine's own output.
+* Orbitrap batches (`batch`, `pool`): `--mass-axis auto` fits the lock model;
+  `--axis-fingerprints auto|refresh|off` first takes the calibration's band steps out
+  using Mascope's served axis fingerprint (gated, all or nothing; `off` = previous
+  behaviour; `--axis-fingerprint-dir DIR` offline); see docs/MASS_AXIS.md.
 * `--rolling-centre` (`batch`, `pool`): `batch/centre.py` measures each merged ion's
   per-spectrum noise and random-walk step; where a walk is resolvable the centre rolls
   and the stamp follows it; the stamping window is per trace. Off = today's behaviour.
