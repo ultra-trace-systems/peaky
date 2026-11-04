@@ -1187,6 +1187,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   +2.1 ppm offset. On an Orbitrap every usable reference ion now calibrates except those
   over 100x the median height, and a trend needs a 1 ppm swing that predicts held-out ions
   with half the constant's error (an offset: 1 ppm). A TOF is judged as before.
+- **On the stdio transport nothing but JSON-RPC reaches stdout.** A tool's `print`, a `log=print` default left
+  in a call path, a library's progress line or a batch worker process (which inherits fd 1) wrote straight onto
+  the protocol stream and could break a stdio client. `peaky mcp --transport stdio` now runs inside
+  `mcp_server.stdout_reserved_for_protocol()`: fd 1 points at stderr and the SDK writes its frames to a private
+  copy of the real stdout. The HTTP transports are unchanged.
 
 ## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
 
