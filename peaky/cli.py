@@ -1895,8 +1895,8 @@ def cmd_mcp(args) -> None:
     from peaky import mcp_server
     # Banner on STDERR: on the stdio transport stdout carries JSON-RPC frames
     # only — a stray line there can corrupt the MCP protocol stream.
-    print(f"[mcp] peaky MCP server on {args.transport} at "
-          f"{args.host}:{args.port} (Ctrl-C to stop)", file=sys.stderr)
+    where = "" if args.transport == "stdio" else f" at {args.host}:{args.port}"   # stdio binds no port
+    print(f"[mcp] peaky MCP server on {args.transport}{where} (Ctrl-C to stop)", file=sys.stderr)
     print("[mcp] tools: health, list_workspaces/datasets/batches/samples, "
           "certify_neutrals, assign_sample, run_batch, job_status, list_jobs",
           file=sys.stderr)
