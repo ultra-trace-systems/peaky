@@ -122,13 +122,21 @@ _saved = {k: os.environ.pop(k, None) for k in ("MASCOPE_URL", "MASCOPE_ACCESS_TO
 _orig_root = cli._workspace_root
 try:
     with tempfile.TemporaryDirectory() as _d:
-        open(os.path.join(_d, ".env.example"), "w").write("MASCOPE_URL=\nMASCOPE_ACCESS_TOKEN=\n")
+        # Use the repo's real .env.example — its commented "# PEAKY_OUTPUT_DIR="
+        # line used to satisfy a substring check, so the active line never got
+        # written and this test still passed (it matched the same substring).
+        _real_example = os.path.join(os.path.dirname(os.path.dirname(cli.__file__)),
+                                     ".env.example")
+        _tmpl = (open(_real_example).read() if os.path.exists(_real_example)
+                 else "MASCOPE_URL=\nMASCOPE_ACCESS_TOKEN=\n# PEAKY_OUTPUT_DIR=\n")
+        open(os.path.join(_d, ".env.example"), "w").write(_tmpl)
         cli._workspace_root = lambda: _d
         cli.cmd_setup(SimpleNamespace())
         _env = open(os.path.join(_d, ".env")).read()
-        check("setup creates .env + output/ + sets PEAKY_OUTPUT_DIR to the workspace output/",
+        check("setup creates .env + output/ + writes an ACTIVE PEAKY_OUTPUT_DIR line",
               os.path.isdir(os.path.join(_d, "output"))
-              and f"PEAKY_OUTPUT_DIR={os.path.join(_d, 'output')}" in _env)
+              and any(l == f"PEAKY_OUTPUT_DIR={os.path.join(_d, 'output')}"
+                      for l in _env.splitlines()))
 finally:
     cli._workspace_root = _orig_root
     for _k, _v in _saved.items():
