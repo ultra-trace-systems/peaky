@@ -1176,6 +1176,12 @@ def _width_model_for_batch(resolving_power, client, table, log):
 #: the reagent's reference ions (batch.massqc) when the locks cannot build a model;
 #: 'locks' / 'reference' force one of the two; 'off' skips the step
 MASS_AXIS_MODES = ("auto", "locks", "reference", "off")
+#: `run(axis_fingerprints=)`: 'auto' reads every item's served Orbitrap axis fingerprint
+#: (batch.axisframe) in front of the lock model on an Orbitrap batch; 'refresh' reads it
+#: from the server again, past the cached copy (a re-fingerprinted file: a new reader or
+#: a backfill), and caches the final, readable documents it gets; 'off' never asks for
+#: one and reproduces a run without the frame.
+AXIS_FINGERPRINT_MODES = ("auto", "refresh", "off")
 #: the largest correction the LOCK model applies. Its corrections are evidence-backed
 #: by hundreds of locks, so it may exceed massqc.MAX_CORRECTION_PPM (sized for a wave
 #: fitted on ~25 reference ions); the bound left is the PDF report's: its coverage
@@ -1232,30 +1238,135 @@ def _axis_class(measured: str | None, roster: str | None) -> str | None:
     return measured or roster
 
 
-def to_server_axis(mz, axis_info):
+#: `to_server_axis` on a frame: the spread (ppm) between the sources' inverses of one
+#: merged row above which the row is counted as disagreeing in its log line.
+FRAME_INVERSE_SPREAD_PPM = 0.05
+
+
+def to_server_axis(mz, axis_info, srcs=None, *, log=None, stats: dict | None = None):
     """Corrected m/z back on the server's axis (massqc.invert_correction: segment by
     segment for a lock model). `axis_info` is a run's batch_summary['mass_axis'];
     unchanged when it applied nothing. A batch's merged ledger is matched to the
     server's batch peaks by m/z (`peaky publish --batch`), so it must travel on the
-    server's axis."""
+    server's axis.
+
+    A run that applied a band-step frame (`axis_info['wave']['model'] == 'frame'`,
+    batch.axisframe) corrected each sample item on its own map, so a merged row has
+    no single inverse: `srcs` (one entry per row, the merged ledger's comma-joined
+    sample item ids) is REQUIRED then (TypeError without it), each row is put back
+    by every source item's map and the median taken; the spread between the
+    sources' inverses is logged (`log`, else loguru) and, with `stats` (a dict),
+    recorded in it (`n_rows`, `n_multi_source`, `spread_ppm_max`,
+    `n_spread_over`, `n_without_item`, `n_no_preimage` (rows a source's map leaves
+    in a gap at a zone boundary: unchanged under it, up to half the band step off
+    the server's axis), `n_several_preimages` (rows with two preimages under a
+    source's map: the lower m/z taken) and `spread_ppm`: every row's spread as an
+    array, for a caller that warns at its own threshold -- publish.load_batch_run
+    at half the match tolerance). Under one calibration group every item's
+    map is the same, so the inverses agree and the row comes back exactly; a row
+    whose sources the frame does not hold is returned unchanged and counted."""
     from peaky.batch import massqc as MQ
     mz = np.asarray(mz, dtype=float)
     if not axis_info or not axis_info.get("applied") or not axis_info.get("wave"):
         return mz
-    return MQ.invert_correction(MQ.fit_from_record(axis_info["wave"]), mz)
+    fit = MQ.fit_from_record(axis_info["wave"])
+    if not hasattr(fit, "for_item"):
+        return MQ.invert_correction(fit, mz)
+    if srcs is None:
+        raise TypeError("to_server_axis: the run applied a band-step frame, which corrects each sample item on "
+                        "its own map; pass the rows' `srcs` (comma-joined sample item ids) to put them back")
+    return _frame_to_server_axis(fit, mz, srcs, log, stats)
+
+
+def _frame_to_server_axis(frame, mz, srcs, log, stats):
+    """The frame's inverse per merged row: the median over its source items' inverses
+    (`FrameItem.invert`), the spread between them counted (see `to_server_axis`)."""
+    srcs = list(srcs)
+    if len(srcs) != len(mz):
+        raise ValueError(f"to_server_axis: {len(srcs)} srcs for {len(mz)} m/z")
+    rows = []
+    for s in srcs:
+        if s is None or (isinstance(s, float) and np.isnan(s)):
+            rows.append(())
+        else:
+            rows.append(tuple(x.strip() for x in str(s).split(",") if x.strip()))
+    known = sorted({sid for row in rows for sid in row if sid in frame.items})
+    inv, found, several = {}, {}, {}
+    for sid in known:
+        inv[sid], found[sid], several[sid] = frame.for_item(sid).preimage(mz)
+    out = mz.copy()
+    spread = np.zeros(len(mz))
+    n_multi = n_without = n_no_preimage = n_several = 0
+    for i, row in enumerate(rows):
+        vals = [inv[sid][i] for sid in row if sid in inv]
+        if not vals:
+            n_without += 1
+            continue
+        if any(not found[sid][i] for sid in row if sid in inv):
+            n_no_preimage += 1           # some source's map leaves this value in a gap: unchanged under it
+        if any(several[sid][i] for sid in row if sid in inv):
+            n_several += 1               # some source's map has two preimages here: the lowest m/z taken
+        v = np.array(vals, dtype=float)
+        v = v[np.isfinite(v)]
+        if not len(v):
+            continue
+        out[i] = float(np.median(v))
+        if len(v) > 1:
+            n_multi += 1
+            spread[i] = float((v.max() - v.min()) / out[i] * 1e6) if out[i] > 0 else 0.0
+    rec = {"n_rows": int(len(mz)), "n_multi_source": int(n_multi),
+           "spread_ppm_max": round(float(spread.max()), 4) if len(spread) else 0.0,
+           "n_spread_over": int((spread > FRAME_INVERSE_SPREAD_PPM).sum()), "n_without_item": int(n_without),
+           "n_no_preimage": int(n_no_preimage), "n_several_preimages": int(n_several)}
+    if stats is not None:
+        stats.update(rec)
+        stats["spread_ppm"] = spread
+    msg = (f"[mass-axis] frame inverse: {rec['n_rows']} rows put back on the server's axis by their source "
+           f"items' maps ({rec['n_multi_source']} from several items, the inverses spread by up to "
+           f"{rec['spread_ppm_max']:.3f} ppm, {rec['n_spread_over']} rows by more than "
+           f"{FRAME_INVERSE_SPREAD_PPM:g}; {rec['n_without_item']} rows without an item in the frame, unchanged; "
+           f"at a zone boundary {rec['n_no_preimage']} rows had no preimage under a source's map (left where they "
+           f"were under it) and {rec['n_several_preimages']} had two (the lower m/z taken))")
+    if log is not None:
+        log(msg)
+    else:
+        from loguru import logger
+        flag = rec["n_spread_over"] or rec["n_without_item"] or rec["n_no_preimage"] or rec["n_several_preimages"]
+        (logger.warning if flag else logger.info)(msg)
+    return out
 
 
 def _apply_axis(ts, fit, info, where, log):
     """`ts` with `mz` corrected by `fit` where it reaches (AXIS_COL holds the ppm
-    removed), and `info` updated with what moved."""
+    removed), and `info` updated with what moved. A band-step frame (`for_item`,
+    batch.axisframe.FrameSet) is applied per sample item by that item's own map;
+    an item the frame does not hold (it is all-or-nothing, so none) is left as is."""
     from peaky.batch import massqc as MQ
     mz = ts["mz"].to_numpy(dtype=float)
-    inside = MQ.in_scope(fit, mz)
-    shift = np.zeros(len(mz))
-    if inside.any():
-        shift[inside] = fit.predict(mz[inside], extrapolate=True)
+    if hasattr(fit, "for_item"):
+        new = mz.copy()
+        shift = np.zeros(len(mz))
+        inside = np.zeros(len(mz), dtype=bool)
+        sids = ts["sample_item_id"].astype(str).to_numpy()
+        for sid in pd.unique(sids):
+            sel = np.flatnonzero(sids == sid)
+            try:
+                it = fit.for_item(sid)
+            except KeyError:
+                continue
+            ins = np.asarray(MQ.in_scope(it, mz[sel]), dtype=bool)
+            inside[sel] = ins
+            if ins.any():
+                shift[sel[ins]] = it.predict(mz[sel[ins]], extrapolate=True)
+            new[sel] = MQ.apply_correction(it, mz[sel])
+    else:
+        inside = MQ.in_scope(fit, mz)
+        shift = np.zeros(len(mz))
+        if inside.any():
+            shift[inside] = fit.predict(mz[inside], extrapolate=True)
+        new = MQ.apply_correction(fit, mz)
     ts = ts.copy()
-    ts["mz"] = MQ.apply_correction(fit, mz)
+    ts["mz"] = new
     ts[AXIS_COL] = shift
     moved = shift[inside] if inside.any() else np.array([0.0])
     info.update(applied=True, n_peaks=int(len(mz)), n_corrected=int(inside.sum()),
@@ -1348,16 +1459,330 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
     return model, True
 
 
+def _cap_lock_model(model, info, hold, log):
+    """The cap on a lock model's correction (LOCK_MAX_CORRECTION_PPM): a model that
+    passes it anywhere is held as a broken calibration -- unless only a walk
+    segment's line passes it (its far end): that stretch is cut (AxisModel.clipped)
+    and left uncorrected, the rest applied, `info` recording the uncut model
+    (`clipped_from`) and the new scope. Returns (model, hold); a hold already given
+    stands and skips the check."""
+    if hold is None and info["max_abs_ppm"] > LOCK_MAX_CORRECTION_PPM:
+        cut = model.clipped(LOCK_MAX_CORRECTION_PPM)
+        if cut is None:
+            hold = (f"the correction reaches {info['max_abs_ppm']:.1f} ppm, above "
+                    f"{LOCK_MAX_CORRECTION_PPM:g}: a broken calibration to fix at the instrument")
+        else:
+            # a walk segment's line past the cap (its far end): that stretch is left
+            # uncorrected, the rest applied
+            log(f"[mass-axis] the correction passes {LOCK_MAX_CORRECTION_PPM:g} ppm in a walk "
+                f"segment (up to {info['max_abs_ppm']:.1f}): that stretch left uncorrected")
+            info["clipped_from"] = info["wave"]
+            model = cut
+            info.update(wave=model.as_dict(), scope_mz=list(model.mz_range),
+                        max_abs_ppm=round(model.max_abs_ppm(), 3))
+            li = info.get("locks") or {}
+            li["uncorrected_gaps"] = sorted((li.get("uncorrected_gaps") or []) + model.stats["clipped"])
+            li["max_abs_ppm"] = info["max_abs_ppm"]
+    return model, hold
+
+
+def _fit_summary(info: dict, model) -> dict:
+    """What one lock fit found, for the record of the two fits a framed batch makes
+    (the raw one, today's model and the fallback; the one in the W frame): verdict,
+    held-out and raw errors, the largest correction and the scope after the cap, the
+    lock counts, the steps and the stretches left uncorrected."""
+    li = info.get("locks") or {}
+    wave = info.get("wave") if isinstance(info.get("wave"), dict) else {}
+    return {"verdict": info.get("verdict"), "has_model": model is not None,
+            "cv_ppm": li.get("cv_ppm"), "raw_ppm": li.get("raw_ppm"), "max_abs_ppm": info.get("max_abs_ppm"),
+            "scope_mz": list(model.mz_range) if model is not None else info.get("scope_mz"),
+            "n_locks": wave.get("n_locks"), "n_pass1": li.get("n_pass1"), "n_links": li.get("n_links"),
+            "n_narrow": li.get("n_narrow"), "n_off_curve": li.get("n_off_curve"),
+            "n_segments": len(model.segments) if model is not None else None,
+            "steps": li.get("steps"), "uncorrected_gaps": li.get("uncorrected_gaps"),
+            "clipped": "clipped_from" in info, "single_spectrum": li.get("single_spectrum"), "why": li.get("why")}
+
+
+def _frame_table(frame) -> pd.DataFrame:
+    """tables/mass_axis_frame.csv: item x band -- the band's index, its m/z bounds, the
+    step the frame took out of it and whether the band was measured."""
+    from peaky.batch import axisframe as AF
+    rows = []
+    for sid, it in frame.items.items():
+        ks = np.arange(it.k0, it.k1 + 1)
+        lo, hi = AF.band_edges_mz(ks, it.B, it.C, it.period, it.phase)
+        rows += [{"sample_item_id": sid, "k": int(k), "mz_lo": round(float(a), 4), "mz_hi": round(float(b), 4),
+                  "d_ppm": round(float(d), 4), "measured": bool(m)}
+                 for k, a, b, d, m in zip(ks, lo, hi, it.d, it.measured)]
+    return pd.DataFrame(rows, columns=["sample_item_id", "k", "mz_lo", "mz_hi", "d_ppm", "measured"])
+
+
+def _frame_wanted(axis_fingerprints, axis_klass, mass_axis, hold, sample_ids) -> tuple:
+    """Whether a run looks for the items' axis fingerprints at all: (True, None) on an
+    Orbitrap batch in the lock-model path (`mass_axis` auto / locks) with no hold from
+    the caller and some items, `axis_fingerprints` 'auto' or 'refresh'; else (False, why)
+    -- nothing is fetched, nothing recorded, and the run is byte for byte the one
+    without the feature."""
+    if axis_fingerprints == "off":
+        return False, "axis fingerprints off (--axis-fingerprints off): the calibration's band steps are not read"
+    if axis_klass != "orbitrap":
+        return False, "not an Orbitrap batch"
+    if mass_axis not in ("auto", "locks"):
+        return False, f"--mass-axis {mass_axis}: not the lock-model path"
+    if hold is not None:
+        return False, f"the axis is held ({hold})"
+    if not sample_ids:
+        return False, "no sample items"
+    return True, None
+
+
+def _batch_frame(client, sample_ids, polarity, directory, log, *, use_cache: bool = True):
+    """The batch's band-step frame from every item's served Orbitrap axis fingerprint
+    (io_mascope.fetch_axis_fingerprint; `directory` reads `<directory>/<id>.json`
+    instead of the server; `use_cache` False (--axis-fingerprints refresh) reads past
+    the cached copy), all or nothing (batch.axisframe.FrameSet.from_documents: every
+    item needs a usable document of the batch's polarity and the documents must form
+    ONE calibration group). The items are asked in turn until one has no document: the
+    frame is then ruled out, so the rest are not asked (each request to a server that
+    is down or rate-limiting waits out the SDK's retries) and are recorded as not asked.
+    Returns (FrameSet or None, record): the record carries every item's document
+    verdict (and why none was served, `fetch`), the groups found, how the documents
+    were read (`source`: 'sdk', 'route' for an SDK without the method, 'directory',
+    'none'; `refreshed` True when the cache was passed over) and, with no frame,
+    `held` -- 'documents unreadable (<exception type>)' when reading them raised
+    (`_unread_record`): a document is a reason, never a stop."""
+    from peaky.batch import axisframe as AF
+    from peaky.io import io_mascope as IO
+    source = IO.axis_fingerprint_source(client, directory)
+    if source == "route":
+        log("[mass-axis] the installed mascope-sdk has no samples.get_axis_fingerprint (mascope-sdk >= "
+            "2026.10.28 has it): reading the axis-fingerprint route directly")
+    if not use_cache and directory is None:
+        log("[mass-axis] axis fingerprints refreshed from the server (--axis-fingerprints refresh): "
+            "the cached documents are read again, and every final, readable one served "
+            "replaces its copy")
+    docs, missing = {}, {}
+    first, n_not_asked = None, 0      # the first item with no document rules the frame out
+    for sid in sample_ids:
+        if first is not None:
+            docs[sid] = None
+            missing[sid] = f"not asked: item {first} had no document"
+            n_not_asked += 1
+            continue
+        said: list = []
+        docs[sid] = IO.fetch_axis_fingerprint(client, sid, directory=directory, log=said.append, use_cache=use_cache)
+        said = [line.replace("[axis-fingerprint] ", "") for line in said]
+        for line in said:
+            log(f"[mass-axis] fingerprint: {line}")
+        if docs[sid] is None:
+            missing[sid] = said[-1] if said else "no document"
+            first = sid
+    if n_not_asked:
+        log(f"[mass-axis] fingerprint: {n_not_asked} later item(s) not asked: item {first} had no document "
+            "and the frame needs every item's")
+    try:
+        frame, record = AF.FrameSet.from_documents(docs, polarity=polarity)
+    except Exception as exc:          # noqa: BLE001 -- a document the reader cannot take holds the frame, not the batch
+        frame, record = None, _unread_record(docs, exc)
+    record["source"] = source
+    if not use_cache:
+        record["refreshed"] = True
+    for sid, why in missing.items():
+        if sid in record["items"]:
+            record["items"][sid]["fetch"] = why
+            if why.startswith("not asked"):
+                record["items"][sid]["why"] = "not asked"
+    n_ok, n = record.get("n_usable", 0), len(sample_ids)
+    if frame is None:
+        log(f"[mass-axis] axis fingerprints: {n_ok} of {n} items usable; no frame: {record.get('held')}")
+    else:
+        g = record["groups"][0] if record.get("groups") else {}
+        log(f"[mass-axis] axis fingerprints: {n_ok} of {n} items usable, one calibration group "
+            f"({g.get('n_measured')} measured bands of {g.get('n_bands')}, largest band step "
+            f"{g.get('h_max_ppm')} ppm, edge zone {(g.get('grid') or {}).get('zone_khz')} kHz)")
+    return frame, record
+
+
+def _unread_record(docs: dict, exc: Exception) -> dict:
+    """The build record when FrameSet.from_documents raised on the served documents
+    (load_document refuses every malformed document it knows of; this is the backstop):
+    no frame, every item unusable, a served document's status and sha1 kept (the run
+    records that it was read), `held` naming the exception's type only."""
+    from peaky.batch import axisframe as AF
+    items = {}
+    for sid, doc in docs.items():
+        status = doc.get("status") if isinstance(doc, dict) else None
+        items[str(sid)] = {"usable": False, "status": status if isinstance(status, str) else None,
+                           "mode_id": None, "sha1": AF.document_sha1(doc) if isinstance(doc, dict) else None,
+                           "notes": [], "why": "no document served" if doc is None else "not read"}
+    return {"items": items, "n_usable": 0, "n_items": len(docs), "policy": AF.OUTSIDE_POLICY,
+            "n_groups": 0, "groups": [], "held": f"documents unreadable ({type(exc).__name__})"}
+
+
+#: gate (e): the frame is held when the W fit's held-out error passes this multiple of the raw fit's
+FRAME_QUALITY_CV_RATIO = 1.5
+
+
+def _frame_path(ts, frame, frame_record, model_raw, caller_hold, raw_hold, info, polarity, reagent_elements, log):
+    """The band-step frame in front of the lock model (batch.axisframe), tried AFTER the
+    raw fit, which stays the fallback: the series in the W frame (every item's band
+    steps taken out), the lock model fitted there UNCHANGED (`_lock_model`), today's
+    cap on the W model, then the gate -- (a) a W step beside a grid edge, (b) a
+    residual lock step across an edge, (c) a verdict the frame may not be applied
+    under (axisframe.gate), (d) REACH: the W model's applied scope shorter than the
+    raw model's by more than one band width at either end, (e) QUALITY: the W fit's
+    held-out error above FRAME_QUALITY_CV_RATIO x the raw fit's (both finite). Every
+    rule passing, the composite (frame + W model) is applied per item inside the W
+    model's scope and `info` describes it (`model` 'frame', `scope_mz` the W scope);
+    under the W verdict axis_ok (nothing smooth to correct) the W model is the W fit's
+    own lock model set to zero (axisframe.scope_model): the band steps alone, inside the
+    W fit's lock domains, never beyond them. Any failure holds the frame
+    (info['frame']['held'] names the rule) and returns None, today's path then
+    standing. Both fits are recorded (info['frame']['fits']). A hold from the caller
+    (a pool of several batches, server-side scoring) holds the frame too; the raw
+    model's own cap hold (`raw_hold`) does not -- the frame may be what makes the
+    smooth part correctable."""
+    from peaky.batch import axisframe as AF
+    fr: dict = {"policy": frame.policy, "n_items": len(frame.items), "n_groups": len(frame.groups)}
+    if frame_record:
+        fr["source"] = frame_record.get("source")
+        fr["documents"] = frame_record.get("items")
+        if frame_record.get("refreshed"):
+            fr["refreshed"] = True
+    fr["groups"] = list(frame.groups)
+    info["frame"] = fr
+
+    def held(why):
+        fr["held"] = why
+        log(f"[mass-axis] frame NOT applied: {why}")
+        return None
+
+    if caller_hold is not None:
+        return held(caller_hold)
+    try:
+        tsW = frame.to_frame(ts)
+    except Exception as exc:          # noqa: BLE001 -- a diagnostic never stops the batch
+        return held(f"the frame could not map the series ({type(exc).__name__}: {exc})")
+    per = frame.stats.get("frame", {})
+    it0 = next(iter(frame.items.values()))
+    d_lo = min((p["d_ppm"]["min"] for p in per.values() if p["d_ppm"]["min"] is not None), default=0.0)
+    d_hi = max((p["d_ppm"]["max"] for p in per.values() if p["d_ppm"]["max"] is not None), default=0.0)
+    log(f"[mass-axis] frame: one calibration group over {len(frame.items)} spectra, {len(it0.d)} bands "
+        f"(k {it0.k0}-{it0.k1}, {int(it0.measured.sum())} measured), edge zone {it0.zone_khz:.3f} kHz; band "
+        f"steps of {d_lo:+.2f}..{d_hi:+.2f} ppm taken out of {sum(p['n_moved'] for p in per.values())} peaks "
+        f"({sum(p['n_edge_ambiguous'] for p in per.values())} in an edge zone, "
+        f"{sum(p['n_unmeasured_band'] for p in per.values())} on unmeasured bands); fitting the lock model "
+        "in the W frame")
+    infoW: dict = {"applied": False, "verdict": None}
+    modelW, doneW = _lock_model(tsW, polarity, reagent_elements, infoW, log)
+    locksW = infoW.pop("_locks_table", None)
+    holdW = None
+    if modelW is not None:
+        modelW, holdW = _cap_lock_model(modelW, infoW, None, log)
+    fr["fits"] = {"raw": _fit_summary(info, model_raw), "W": _fit_summary(infoW, modelW)}
+    if not doneW:
+        return held(f"no lock model in the W frame ({(infoW.get('locks') or {}).get('why')})")
+    if holdW is not None:
+        return held(f"the W model: {holdW}")
+    inner = modelW
+    if modelW is None and infoW.get("verdict") == "axis_ok":
+        # nothing smooth to correct: the band steps alone, but only where the W fit saw locks
+        inner = AF.scope_model(infoW.get("wave"), infoW.get("scope_mz"))
+        if inner is None:
+            return held("the W fit's verdict is axis_ok but it records no lock scope to bound the band steps")
+    composite = frame.with_inner(inner)
+    g = AF.gate(modelW, infoW, locksW, composite)
+    failed = list(g.get("failed") or [])
+    why = g.get("why")
+    # (d) reach: the frame must not shorten what today's model would have corrected
+    lo_w, hi_w = (float(x) for x in composite.mz_range)
+    raw_applied = model_raw is not None and raw_hold is None
+    d_rec: dict = {"ok": True, "raw_applied": raw_applied, "raw_scope_mz": None, "W_scope_mz": [lo_w, hi_w]}
+    if raw_applied:
+        lo_r, hi_r = (float(x) for x in model_raw.mz_range)
+        w_lo = float(np.asarray(it0.band_width_at(np.array([lo_r])))[0])
+        w_hi = float(np.asarray(it0.band_width_at(np.array([hi_r])))[0])
+        d_rec.update(raw_scope_mz=[lo_r, hi_r], band_width_mz={"at_lo": round(w_lo, 3), "at_hi": round(w_hi, 3)})
+        short = []
+        if hi_w < hi_r - w_hi:
+            short.append(f"the upper end {hi_w:.1f} against {hi_r:.1f} (band {w_hi:.1f} wide there)")
+        if lo_w > lo_r + w_lo:
+            short.append(f"the lower end {lo_w:.1f} against {lo_r:.1f} (band {w_lo:.1f} wide there)")
+        if short:
+            d_rec["ok"] = False
+            failed.append("d")
+            why = why or ("the W model reaches less than the raw model by more than one band: "
+                          + "; ".join(short))
+    g["d"] = d_rec
+    # (e) quality: the frame must beat nothing
+    cv_raw = (info.get("locks") or {}).get("cv_ppm")
+    cv_w = (infoW.get("locks") or {}).get("cv_ppm")
+    e_rec: dict = {"ok": True, "cv_raw_ppm": cv_raw, "cv_W_ppm": cv_w, "ratio_max": FRAME_QUALITY_CV_RATIO}
+    if (cv_raw is not None and cv_w is not None and np.isfinite(cv_raw) and np.isfinite(cv_w)
+            and cv_w > FRAME_QUALITY_CV_RATIO * cv_raw):
+        e_rec["ok"] = False
+        failed.append("e")
+        why = why or (f"the W fit's held-out error {cv_w} ppm exceeds {FRAME_QUALITY_CV_RATIO:g} x the raw "
+                      f"fit's {cv_raw} ppm")
+    g["e"] = e_rec
+    g["failed"] = sorted(set(failed))
+    g["passed"] = not g["failed"]
+    g["why"] = None if g["passed"] else why
+    fr["gate"] = g
+    if not g["passed"]:
+        return held(f"gate ({', '.join(g['failed'])}): {why}")
+    # apply the composite per item
+    info["verdict"] = infoW["verdict"]
+    n_moved = sum(p["n_moved"] for p in per.values())
+    if modelW is None:
+        where = (f"per sample item: the calibration's band steps alone inside the W fit's lock range m/z "
+                 f"{lo_w:.0f}-{hi_w:.0f} (axis_ok: no smooth correction; {n_moved} peaks moved in the W frame); "
+                 "outside it left as is")
+    else:
+        where = (f"per sample item: the calibration's band steps taken out ({n_moved} peaks moved), then the "
+                 f"lock model fitted in the W frame inside m/z {lo_w:.0f}-{hi_w:.0f} ({len(modelW.segments)} "
+                 "segment(s)); outside its scope left as is")
+    out = _apply_axis(ts, composite, info, where, log)
+    info.pop("clipped_from", None)      # the raw model's cut is recorded under frame.fits.raw
+    info.update(model="frame", wave=composite.as_dict(), locks=infoW.get("locks"), scope_mz=[lo_w, hi_w],
+                max_abs_ppm=round(composite.max_abs_ppm(), 3),
+                inner={"model": None if modelW is None else "locks", "verdict": infoW.get("verdict"),
+                       "max_abs_ppm": infoW.get("max_abs_ppm"), "scope_mz": infoW.get("scope_mz"),
+                       "clipped_from": infoW.get("clipped_from"), "locks": _fit_summary(infoW, modelW)})
+    if locksW is not None and len(locksW):
+        info["_locks_table"] = locksW.assign(frame="W")
+    info["_frame_table"] = _frame_table(frame)
+    fr["held"] = None
+    fr["items"] = {}
+    for sid, it in composite.items.items():
+        st = per.get(sid, {})
+        m = it.meta
+        fr["items"][sid] = {
+            "sample_file_id": (m.get("item") or {}).get("sample_file_id"), "mode_id": m.get("mode_id"),
+            "document_sha1": m.get("document_sha1"),
+            "grid": {"period_khz": it.period, "phase_khz": it.phase, "zone_khz": it.zone_khz,
+                     "document": m.get("document_grid")},
+            "n_bands": int(len(it.d)), "n_measured": int(it.measured.sum()),
+            "n_interp": int(len(it.d) - it.measured.sum()),
+            "d_min_ppm": (st.get("d_ppm") or {}).get("min"), "d_max_ppm": (st.get("d_ppm") or {}).get("max"),
+            "flags": m.get("mode_flags"), "grid_weak": m.get("grid_weak"), "lock": m.get("lock"),
+            "n_peaks": st.get("n_peaks"), "n_moved": st.get("n_moved"),
+            "n_unmeasured_band": st.get("n_unmeasured_band"), "n_edge_ambiguous": st.get("n_edge_ambiguous")}
+    return out
+
+
 def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None,
-                 mode: str = "auto", polarity: str = "-", reagent_elements=(), log=print):
+                 mode: str = "auto", polarity: str = "-", reagent_elements=(), log=print,
+                 frame=None, frame_record: dict | None = None):
     """The batch's m/z axis and the correction it prescribes. Returns (ts, info, table):
 
       * `ts` -- the time series with `mz` corrected where the correction reaches
         and the ppm removed in AXIS_COL, when it was applied; else as given;
       * `info` -- the JSON-safe record batch_summary['mass_axis'] keeps (`model`
-        'locks' or 'reference', the verdict, the model and its scope, how many
-        peaks moved and by how much, or why nothing was applied: `held`);
-        info['_locks_table'] (popped by the caller) holds every lock;
+        'locks', 'frame' or 'reference', the verdict, the model and its scope, how
+        many peaks moved and by how much, or why nothing was applied: `held`);
+        info['_locks_table'] (popped by the caller) holds every lock and
+        info['_frame_table'] (likewise) the frame's band table when one was applied;
       * `table` -- the per-reference-ion probe table, None when not probed.
 
     On an Orbitrap, 'auto' and 'locks' model the axis from the batch's own peaks
@@ -1368,6 +1793,24 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     only when the locks could not build a model; 'reference' goes there directly,
     and a TOF always does (it is measured there, never corrected).
 
+    `frame` (a batch.axisframe.FrameSet built from every item's served axis
+    fingerprint, one calibration group) puts the calibration's band steps in front
+    of the lock model: the raw fit is made first and stays the fallback, then the
+    lock model is fitted again on the series in the W frame and, when the gate
+    passes (`_frame_path`: no step left at a grid edge, no residual step across one,
+    a predictive verdict, no shorter reach, no worse held-out error), the composite
+    of the frame and the W model is applied per item (`model` 'frame';
+    info['frame'] records the group, the items, both fits and the gate); otherwise
+    the frame is held (info['frame']['held']) and today's path stands. The frame
+    is tried only in the lock-model path of an Orbitrap. `frame_record` is what
+    building the frame found (FrameSet.from_documents' record): with no frame it is
+    recorded as info['frame'] (its `held` says why none was built; the per-document
+    verdicts under `documents`) when at least one item's document was SERVED,
+    whatever its status -- the only key a run that read a document adds to a run that
+    did not; a run served nothing (a 404 from an older server, no connection and no
+    cached copy, no file in `axis_fingerprint_dir`) records nothing and is byte for byte the run
+    without the feature (its log says what was looked for).
+
     Not measured (info['skipped']) without a time series or an instrument class,
     or -- reference path -- without a reference table for the reagent or when the
     probe fails; the measurement never stops a batch. Measured but NOT applied
@@ -1375,6 +1818,41 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     scoring; a pool of several batches), or when the correction would exceed the
     model's cap (LOCK_MAX_CORRECTION_PPM / massqc.MAX_CORRECTION_PPM; a lock model
     whose walk segments alone pass it has those stretches cut and the rest applied)."""
+    out, info, table = _measure_axis(ts, reagent, klass, hold=hold, mode=mode, polarity=polarity,
+                                     reagent_elements=reagent_elements, log=log, frame=frame,
+                                     frame_record=frame_record)
+    if "frame" not in info:
+        if frame is not None:
+            info["frame"] = dict(_frame_build_record(frame_record),
+                                 held="the frame applies in the lock-model path of an Orbitrap batch "
+                                      "(mode auto / locks) only")
+        elif frame_record is not None and _documents_served(frame_record):
+            info["frame"] = _frame_build_record(frame_record)
+    return out, info, table
+
+
+def _documents_served(frame_record) -> bool:
+    """Whether FrameSet.from_documents' record holds at least one SERVED document (a
+    status was read off it, usable or not): the condition for recording the record. A
+    run that was served nothing adds no key (byte identity with a run without the
+    feature)."""
+    items = (frame_record or {}).get("items") or (frame_record or {}).get("documents") or {}
+    return any(isinstance(rec, dict) and (rec.get("status") is not None or rec.get("sha1"))
+               for rec in items.values())
+
+
+def _frame_build_record(frame_record) -> dict:
+    """FrameSet.from_documents' record as batch_summary['mass_axis']['frame'] carries it:
+    the per-document verdicts (usable, status, sha1, notes, why, how fetched) under
+    `documents`, the key the applied record uses too (`items` there is the per-item
+    FRAME record), so every reader finds them in one place."""
+    rec = dict(frame_record or {})
+    if "items" in rec:
+        rec["documents"] = rec.pop("items")
+    return rec
+
+
+def _measure_axis(ts, reagent, klass, *, hold, mode, polarity, reagent_elements, log, frame, frame_record):
     from peaky.batch import massqc as MQ
     from peaky.chem import reference_ions as RI
 
@@ -1397,26 +1875,28 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
         log(f"[mass-axis] modelling the axis from the batch's own peaks "
             f"({ts['sample_item_id'].nunique()} spectra, {klass}, polarity {polarity})")
         model, done = _lock_model(ts, polarity, tuple(reagent_elements or ()), info, log)
+        caller_hold = hold
+        if model is not None:
+            model, hold = _cap_lock_model(model, info, hold, log)
+        if frame is not None:
+            # the raw fit first, then the frame: the composite when the gate passes,
+            # else the raw fit stands (its hold, its verdict, its reference fallback)
+            raw_info = dict(info)
+            try:
+                framed = _frame_path(ts, frame, frame_record, model, caller_hold, hold, info, polarity,
+                                     tuple(reagent_elements or ()), log)
+            except Exception as exc:      # noqa: BLE001 -- the frame is a refinement: its failure leaves the raw fit
+                info.clear()
+                info.update(raw_info)
+                info["frame"] = dict(_frame_build_record(frame_record),
+                                     held=f"the frame path failed ({type(exc).__name__}: {exc})")
+                log(f"[mass-axis] frame NOT applied: {info['frame']['held']}")
+                framed = None
+            if framed is not None:
+                return framed, info, None
         if done or mode == "locks":
             if model is None:
                 return ts, info, None
-            if hold is None and info["max_abs_ppm"] > LOCK_MAX_CORRECTION_PPM:
-                cut = model.clipped(LOCK_MAX_CORRECTION_PPM)
-                if cut is None:
-                    hold = (f"the correction reaches {info['max_abs_ppm']:.1f} ppm, above "
-                            f"{LOCK_MAX_CORRECTION_PPM:g}: a broken calibration to fix at the instrument")
-                else:
-                    # a walk segment's line past the cap (its far end): that stretch is left
-                    # uncorrected, the rest applied
-                    log(f"[mass-axis] the correction passes {LOCK_MAX_CORRECTION_PPM:g} ppm in a walk "
-                        f"segment (up to {info['max_abs_ppm']:.1f}): that stretch left uncorrected")
-                    info["clipped_from"] = info["wave"]
-                    model = cut
-                    info.update(wave=model.as_dict(), scope_mz=list(model.mz_range),
-                                max_abs_ppm=round(model.max_abs_ppm(), 3))
-                    li = info.get("locks") or {}
-                    li["uncorrected_gaps"] = sorted((li.get("uncorrected_gaps") or []) + model.stats["clipped"])
-                    li["max_abs_ppm"] = info["max_abs_ppm"]
             if hold is not None:
                 info["held"] = hold
                 log(f"[mass-axis] {info['verdict']} NOT applied: {hold}")
@@ -1644,6 +2124,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
         corroborate=None, mass_axis: str = "auto", mass_axis_hold: str | None = None,
+        axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
         isotopologue_rows: bool = True, lists=None,
         log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
@@ -1721,6 +2202,27 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     ions when probed. Trace-first keeps its own wave
     (batch.tracefirst) and 'off' reproduces a run without the step.
 
+    `axis_fingerprints` ('auto', the default, 'refresh' or 'off'): on an Orbitrap batch in
+    the lock-model path (no hold), 'auto' reads every item's served axis
+    fingerprint (Mascope's per-file measurement of the calibration's band-wise m/z
+    steps; io_mascope.fetch_axis_fingerprint, cached beside the peaks) and, when
+    every item has a usable document of one calibration, puts the band steps in
+    front of the lock model (batch.axisframe; `measure_axis(frame=)`): the raw lock
+    fit is made first and kept as the fallback, the lock model is fitted again on
+    the step-free series and the composite is applied only when its gate passes.
+    batch_summary['mass_axis']['frame'] records the documents, the calibration
+    group, both fits and the gate, or why no frame was built or applied (`held`);
+    tables/mass_axis_frame.csv the band table and tables/mass_axis_locks.csv's
+    `frame` column marks the W fit's locks. With documents served but no frame
+    (unusable, several calibrations, the gate) the run is today's plus that `held`
+    record; served nothing (an older server, a file that is not an Orbitrap's, no
+    connection and no cached copy), on a TOF or under a hold the run is today's byte
+    for byte. `axis_fingerprint_dir` reads
+    `<dir>/<sample id>.json` instead of the server (offline runs, locally computed
+    documents). 'refresh' reads past the cached documents (a file fingerprinted anew
+    by a newer reader or a backfill) and caches the final, readable documents it
+    gets; 'off' never asks and adds nothing.
+
     `isotopologue_rows` (default on; CLI --no-isotopologue-gate turns it off): on an
     Orbitrap-class batch with a width model whose time series carries peak areas, a
     merged row (not a curated reading: passes.curated_formulas) whose
@@ -1740,6 +2242,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     if mass_axis not in MASS_AXIS_MODES:      # before any server call or folder
         raise ValueError(f"mass_axis must be one of {MASS_AXIS_MODES}, got {mass_axis!r}")
+    if axis_fingerprints not in AXIS_FINGERPRINT_MODES:
+        raise ValueError(f"axis_fingerprints must be one of {AXIS_FINGERPRINT_MODES}, got {axis_fingerprints!r}")
     t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
     # ONE row per physical peak before anything reads the time series: Mascope
     # returns one row per target MATCH, which would double-count every peak two
@@ -1822,15 +2326,31 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if hold is None and not IO._local_scoring_enabled():
             hold = ("server-side scoring (PEAKY_LOCAL_SCORING=0) scores the server's own "
                     "peaks, on the server's axis")
+        axis_klass = _axis_class(_instrument_of(rp)[0], _roster_class(peaks))
+        # The calibration's band steps (batch.axisframe), read from every item's served
+        # axis fingerprint and put in front of the lock model: an Orbitrap, the lock-model
+        # path, no hold, `axis_fingerprints` 'auto' or 'refresh'. All or nothing: every item
+        # needs a usable document of one calibration, else no frame (the record says why).
+        frame, frame_record = None, None
+        wanted, why_not = _frame_wanted(axis_fingerprints, axis_klass, mass_axis, hold, axis_ids)
+        if wanted:
+            frame, frame_record = _batch_frame(client, axis_ids, prof.polarity, axis_fingerprint_dir, log,
+                                               use_cache=axis_fingerprints != "refresh")
+        elif axis_fingerprints == "off":
+            log(f"[mass-axis] {why_not}")
         ts_peaks, axis_info, axis_table = measure_axis(
-            ts_peaks, prof.name, _axis_class(_instrument_of(rp)[0], _roster_class(peaks)),
+            ts_peaks, prof.name, axis_klass,
             hold=hold, mode=mass_axis, polarity=prof.polarity,
-            reagent_elements=axis_reagent_elements(prof.adducts), log=log)
+            reagent_elements=axis_reagent_elements(prof.adducts), log=log,
+            frame=frame, frame_record=frame_record)
         if axis_table is not None:
             axis_table.to_csv(os.path.join(TAB, "mass_axis.csv"), index=False)
         locks_table = axis_info.pop("_locks_table", None)
         if locks_table is not None and len(locks_table):
             locks_table.to_csv(os.path.join(TAB, "mass_axis_locks.csv"), index=False)
+        frame_table = axis_info.pop("_frame_table", None)
+        if frame_table is not None and len(frame_table):
+            frame_table.to_csv(os.path.join(TAB, "mass_axis_frame.csv"), index=False)
         if axis_info["applied"]:
             axis_args = (axis_ids, axis_info["wave"])
             IO.set_axis_correction(*axis_args)

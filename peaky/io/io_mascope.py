@@ -103,7 +103,8 @@ _ISO_SCORING: dict = {}
 _ISO_SCORING_INHERITED: set = set()
 
 #: The batch's m/z-axis correction (`peaky batch --mass-axis`): a
-#: `batch.axislock.AxisModel` or a `wave.WaveFit` (batch.massqc.correction) per sample id. `fetch_peaks` hands
+#: `batch.axislock.AxisModel`, a `wave.WaveFit` (batch.massqc.correction) or, under
+#: a band-step frame (batch.axisframe), the sample's own `FrameItem`, per sample id. `fetch_peaks` hands
 #: back every listed sample's peak table (an offline one included) with `mz`
 #: corrected by it in its scope (massqc.apply_correction); the disk cache keeps
 #: the server's m/z. assign_batch.run sets it for its own samples, hands it to
@@ -118,8 +119,11 @@ _AXIS: dict = {}
 
 def set_axis_correction(sample_ids, wave) -> None:
     """Correct the m/z of every peak table `fetch_peaks` serves for `sample_ids`
-    by `wave` (a `batch.wave.WaveFit`, a `batch.axislock.AxisModel`, or either's
-    `as_dict`; None clears them).
+    by `wave` (a `batch.wave.WaveFit`, a `batch.axislock.AxisModel`, a
+    `batch.axisframe.FrameSet`, or any one's `as_dict`; None clears them). A frame
+    is per item: each sample is served its own `FrameItem` (`FrameSet.for_item`),
+    and a sample the frame does not hold is served uncorrected, with a warning
+    (the frame is all-or-nothing over a batch, so this names a caller's mistake).
     Replaces those samples' previous correction, and drops their cached scoring
     and scoring trend, which were read off the other axis."""
     from peaky.batch.massqc import fit_from_record
@@ -128,6 +132,15 @@ def set_axis_correction(sample_ids, wave) -> None:
     if wave is None:
         return
     fit = fit_from_record(wave)
+    if hasattr(fit, "for_item"):              # a band-step frame: one map per item
+        for sid in ids:
+            try:
+                _AXIS[sid] = fit.for_item(sid)
+            except KeyError:
+                from loguru import logger
+                logger.warning("sample {}: the batch's axis frame holds no map for it; its "
+                               "peaks are served on the server's axis", sid)
+        return
     for sid in ids:
         _AXIS[sid] = fit
 
@@ -143,8 +156,127 @@ def clear_axis_correction(sample_ids=None) -> None:
 
 
 def axis_correction(sample_id: str):
-    """The correction (AxisModel / WaveFit) applied to this sample's m/z, or None."""
+    """The correction (AxisModel / WaveFit / FrameItem) applied to this sample's m/z, or None."""
     return _AXIS.get(str(sample_id))
+
+
+#: The served axis-fingerprint document's cache file, named for the schema version
+#: this reader knows (batch.axisframe.VERSION): a reader of version 2 reads a fresh copy.
+AXIS_FINGERPRINT_CACHE = "axis_fingerprint.v1.json"
+#: The document statuses that are final for a file and so worth caching: `ok` (a
+#: table of band anomalies) and `no_fingerprint` (the file was read and has none).
+#: `missing`, `unavailable` and `error` can change once the server's backfill runs
+#: or the raw file is restored, so they are fetched again on every run.
+AXIS_FINGERPRINT_CACHED_STATUSES = ("ok", "no_fingerprint")
+_AXIS_FINGERPRINT_ROUTE = "samples/{sid}/axis_fingerprint"
+
+
+def fetch_axis_fingerprint(client, sample_id, *, use_cache: bool = True, cache_root: Path = CACHE_ROOT,
+                           directory: str | None = None, log=None):
+    """The Orbitrap axis-fingerprint document Mascope serves for a sample item
+    (schema `mascope.axis_fingerprint`: per acquisition mode the band grid and the
+    per-band spacing anomaly `s`, with an `item` block for the sample; read by
+    batch.axisframe), or None when there is none to read -- NEVER raises into a
+    batch: a fingerprint is a refinement, and every reason it is not there is
+    logged (`log`, else loguru) and answered with None. The SDK's
+    `client.samples.get_axis_fingerprint` (mascope-sdk >= 2026.10.28) is used
+    when the installed SDK has it, else the SDK's generic GET of the same route,
+    so an older SDK still reads a current server; a 404 (an older server, a file
+    that is not an Orbitrap's), a sample the token may not read, a network error
+    -- any exception -- is None with its reason (the server's message without its
+    address, `server_error_text`). The served JSON is cached at
+    `<cache_root>/<sample id>/axis_fingerprint.v1.json` (the documents whose
+    status is final, AXIS_FINGERPRINT_CACHED_STATUSES, and whose fields have the
+    schema's shape, batch.axisframe.document_shape_why: a malformed one is handed
+    back for the reader to refuse and asked for again on the next run) and read
+    from there first when `use_cache`; a cached copy of the wrong shape is fetched
+    again. With `directory`, `<directory>/<sample id>.json` is read instead and
+    the server is never asked (offline runs, documents computed locally, tests);
+    a missing or unreadable file is None."""
+    import json
+    from peaky.batch.axisframe import document_shape_why
+    sid = str(sample_id)
+
+    def say(msg):
+        if log is not None:
+            log(f"[axis-fingerprint] {msg}")
+        else:
+            from loguru import logger
+            logger.info("[axis-fingerprint] {}", msg)
+
+    if directory is not None:
+        path = Path(os.path.expanduser(str(directory))) / f"{sid}.json"
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except FileNotFoundError:
+            say(f"sample {sid}: no {path.name} in {directory}")
+            return None
+        except Exception as exc:                 # noqa: BLE001 -- a bad file is a reason, not a stop
+            say(f"sample {sid}: {path} unreadable ({type(exc).__name__}: {exc})")
+            return None
+        if not isinstance(doc, dict):
+            say(f"sample {sid}: {path} holds no document object")
+            return None
+        return doc
+    cdir = Path(cache_root) / sid
+    cfile = cdir / AXIS_FINGERPRINT_CACHE
+    if use_cache and cfile.exists():
+        try:
+            with open(cfile, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            if document_shape_why(doc) is None:
+                return doc
+        except Exception:                        # noqa: BLE001 -- a spoilt cache file is fetched again
+            pass
+    if client is None:
+        say(f"sample {sid}: no server connection, no document")
+        return None
+    samples = getattr(client, "samples", None)
+    try:
+        if callable(getattr(samples, "get_axis_fingerprint", None)):
+            doc = samples.get_axis_fingerprint(sid)
+        elif callable(getattr(samples, "_get", None)):
+            # an SDK before 2026.10.28 has no method for the route; its generic GET
+            # reads the same document from a server that serves it
+            doc = samples._get(_AXIS_FINGERPRINT_ROUTE.format(sid=sid))
+        else:
+            say(f"sample {sid}: the client has no samples resource to read the route with")
+            return None
+    except Exception as exc:                     # noqa: BLE001 -- NotFoundError (404), auth, network: all one answer
+        say(f"sample {sid}: no document served ({type(exc).__name__}: {server_error_text(exc)})")
+        return None
+    if not isinstance(doc, dict):
+        say(f"sample {sid}: the server answered with {type(doc).__name__}, not a document")
+        return None
+    final = doc.get("status") in AXIS_FINGERPRINT_CACHED_STATUSES
+    shape = document_shape_why(doc) if final else None
+    if shape is not None:
+        say(f"sample {sid}: document not cached ({shape})")
+    elif final:
+        try:
+            cdir.mkdir(parents=True, exist_ok=True)
+            with open(cfile, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        except Exception as exc:                 # noqa: BLE001 -- the cache is a convenience
+            say(f"sample {sid}: document not cached ({type(exc).__name__}: {exc})")
+    return doc
+
+
+def axis_fingerprint_source(client, directory: str | None = None) -> str:
+    """How `fetch_axis_fingerprint` reads documents with this client: 'directory',
+    'sdk' (the SDK's own method), 'route' (an older SDK's generic GET of the route)
+    or 'none' (no client). Recorded in a run's summary when documents are read."""
+    if directory is not None:
+        return "directory"
+    if client is None:
+        return "none"
+    samples = getattr(client, "samples", None)
+    if callable(getattr(samples, "get_axis_fingerprint", None)):
+        return "sdk"
+    if callable(getattr(samples, "_get", None)):
+        return "route"
+    return "none"
 
 
 def _trend_record(trend) -> dict:

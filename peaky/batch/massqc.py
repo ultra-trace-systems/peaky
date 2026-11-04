@@ -418,12 +418,18 @@ def correction(v: dict) -> WaveFit | None:
 
 def fit_from_record(wave):
     """The correction a batch_summary['mass_axis']['wave'] record (or the object
-    itself) describes: a batch.axislock.AxisModel ('model': 'locks') or a WaveFit."""
+    itself) describes: a batch.axislock.AxisModel ('model': 'locks'), a
+    batch.axisframe.FrameSet ('model': 'frame': per-item band steps around one lock
+    model; apply it per item through `for_item`) or a WaveFit."""
+    from peaky.batch import axisframe as AF
     from peaky.batch.axislock import AxisModel
     if wave is None or isinstance(wave, (AxisModel, WaveFit)):
         return wave
     if isinstance(wave, dict) and wave.get("model") == "locks":
         return AxisModel.from_dict(wave)
+    frame = AF.from_record(wave)          # 'frame' (per-item band steps + one lock model) / 'frame_item'
+    if frame is not None:
+        return frame
     return WaveFit(**{k: (tuple(x) if k in ("domain", "mz_range") else x) for k, x in wave.items()})
 
 

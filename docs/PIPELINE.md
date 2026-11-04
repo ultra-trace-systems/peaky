@@ -53,6 +53,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 | [`SAMPLING.md`](SAMPLING.md) | `batch/sampling.py` | which real samples get assigned: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop |
 | [`MERGE.md`](MERGE.md) | `batch/assign_batch.py` | assign each rep file, then offset-aware m/z merge + the file-to-file jitter accounting |
 | [`TIMESERIES.md`](TIMESERIES.md) | `batch/timeseries.py` | the samples × m/z-bin matrix, reagent-normalised variability, and TS disposition |
+| [`MASS_AXIS.md`](MASS_AXIS.md) | `batch/assign_batch.py` (`measure_axis`) + `batch/axislock.py` + `batch/axisframe.py` + `batch/massqc.py` | the batch's m/z axis before assignment: the calibration's band steps from each sample's served axis fingerprint (`--axis-fingerprints`), the lock model fitted on the step-free series, the reference-ion wave as the fallback; gated, recorded, reversible |
 
 ## 5. Clustering — time series → co-varying families
 

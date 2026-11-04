@@ -82,7 +82,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
                    sample_ids, reagent: str, cfg, ts_path: str | None = None,
                    counts: dict | None = None, created_utc: str | None = None,
                    extra: dict | None = None, batch_id: str | None = None,
-                   lists=None) -> dict:
+                   lists=None, axis_fingerprints: dict | None = None) -> dict:
     """Assemble the reproducibility manifest for a finished run. Hashes the run's
     ts parquet (input) and merged_ledger.csv (output) so the run is pinned to its
     exact data + result alongside the exact code that produced it. `batch_name`
@@ -90,7 +90,11 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     (None for a pool label), so a renamed batch stays traceable. `lists` is the
     run's reference-list record (`reflists.lists_record`: id, version, sha256,
     roles, pinned, how activated per active list) -- the list content the run
-    read, pinned beside the code and the data."""
+    read, pinned beside the code and the data.
+    `axis_fingerprints` ({sample item id: {sha1, status, mode_id}}: the served
+    Orbitrap axis-fingerprint documents the run read, batch.axisframe) is an
+    input like the series and is recorded as `input.axis_fingerprints` only when
+    given -- a run that read none carries no key, so its manifest is unchanged."""
     import peaky                                # the real package version (peaky.__version__)
     from peaky.assignment import assign as A   # per-module versions + hashes (incl. assign's own)
     from peaky.assignment.passes import PassConfig
@@ -111,6 +115,17 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     if cfg_d.get("height_cutoff_x_edge") is None and "height_cutoff_x_edge" in cfg_d:
         cfg_d["height_cutoff_x_edge"] = AUTO_HEIGHT_CUTOFF_X_EDGE
     merged = os.path.join(run_dir, "merged_ledger.csv")
+    inputs = {
+        "dataset": dataset,
+        "batch_name": batch_name,
+        "batch_id": batch_id,
+        "reagent": reagent,
+        "sample_ids": list(sample_ids or []),
+        "ts_parquet": _rel_or_abs(ts_path, run_dir),
+        "ts_sha1": sha1_file(ts_path) if ts_path else None,
+    }
+    if axis_fingerprints is not None:
+        inputs["axis_fingerprints"] = dict(axis_fingerprints)
     return {
         "run_id": os.path.basename(run_dir.rstrip("/")),
         "run_dir": run_dir,
@@ -123,15 +138,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
             "python": sys.version.split()[0],
             "deps": dep_versions(),
         },
-        "input": {
-            "dataset": dataset,
-            "batch_name": batch_name,
-            "batch_id": batch_id,
-            "reagent": reagent,
-            "sample_ids": list(sample_ids or []),
-            "ts_parquet": _rel_or_abs(ts_path, run_dir),
-            "ts_sha1": sha1_file(ts_path) if ts_path else None,
-        },
+        "input": inputs,
         "config": cfg_d,
         "lists": [dict(x) for x in (lists or [])],
         "output": {
@@ -180,7 +187,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
                dataset: str | None, sample_ids, reagent: str, cfg,
                ts_path: str | None = None, counts: dict | None = None,
                created_utc: str | None = None, batch_id: str | None = None,
-               extra: dict | None = None, lists=None,
+               extra: dict | None = None, lists=None, axis_fingerprints: dict | None = None,
                log=print) -> dict:
     """Write the per-run manifest AND append the cross-run registry row. Returns
     the manifest. Never raises into the pipeline -- provenance must not break a
@@ -190,7 +197,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
             run_dir=run_dir, batch_name=batch_name, dataset=dataset,
             sample_ids=sample_ids, reagent=reagent, cfg=cfg, ts_path=ts_path,
             counts=counts, created_utc=created_utc, batch_id=batch_id,
-            extra=extra, lists=lists)
+            extra=extra, lists=lists, axis_fingerprints=axis_fingerprints)
         write_manifest(run_dir, manifest)
         idx = append_registry(os.path.join(base_out, "index.jsonl"), manifest)
         commit = (manifest["code"]["git"] or {}).get("commit") or "no-git"
