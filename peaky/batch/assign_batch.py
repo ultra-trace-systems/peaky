@@ -64,9 +64,12 @@ from peaky.chem import profiles as P
 from peaky.batch import iso_checks as _IC
 from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
+from peaky.batch import sideband as _SB
 from peaky.batch import sampling as SS
 
-__version__ = "0.12.0"  # + the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
+__version__ = "0.12.1"  # + the sideband / isotopologue hold of a reading Assigned in <= 2 files (sideband.py,
+                        #   tables/sideband_holds.csv, merge_gates["sideband"])
+                        # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
                         # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
                         # the monotone known-species cap (own 13C counts; an exact-mass-only pool of a
                         # corroboration-demanding species is capped)
@@ -3252,11 +3255,20 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
+        # A reading Assigned in no more than two files, beside a brighter line it could
+        # be the satellite (Orbitrap-class: within +-4 mDa, 10x brighter, tracking it
+        # over the series) or the isotopologue of in each of them, and with no 13C line
+        # of its own, is held at Candidate (batch/sideband.py; tables/sideband_holds.csv)
+        _sig = {str(st_.get("sample_id")): (st_.get("degeneracy_cal") or {}).get("sigma")
+                for st_ in per_stats if isinstance(st_.get("degeneracy_cal"), dict)}
+        sb_rows, merge_gates["sideband"] = _SB.hold_low_file_promotions(
+            merged, full_ledgers, ts_peaks, tol_ppm=scale.merge_ppm, sigma_ppm=_sig,
+            orbitrap=(cfg.instrument_class == "orbitrap"), log=log)
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
                "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
-               "isotopologue": iso_rows}
+               "isotopologue": iso_rows, "sideband": sb_rows}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -3684,6 +3696,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the isotopologue rows the merged ledger gave to their parent, and the mixed /
     # exempt lines it only noted (always written: header only when none)
     res_m["isotopologue"].to_csv(os.path.join(TAB, "isotopologue_rows.csv"), index=False)
+    res_m.get("sideband", _SB.empty_table()).to_csv(os.path.join(TAB, "sideband_holds.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:

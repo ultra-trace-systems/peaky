@@ -146,6 +146,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `build_ranges` and the families (a test pins it). Two NOx-skeleton test fixtures moved to
   H-poor nitro fits, the only clusters the skeleton alone can still spare.
 
+- **A reading Assigned in at most two files is held at Candidate when, in each of them, it sits
+  beside a brighter line it could be the side band or the isotopologue of** (`batch/sideband.py`,
+  merge step 4d, `tables/sideband_holds.csv`, `merge_gates.sideband`). The tier reads the ion, so
+  one or two files can carry a reading to Assigned on its own pattern and mass; on uronium field
+  batches such single-file promotions included rows at about +3.9 mDa of a 10-80x brighter urea
+  adduct that tracks them over hundreds of spectra (the Fourier-transform side bands) and an 18O
+  line of a brighter row. A row is held when in every file it is Assigned in either (a) on an
+  Orbitrap-class batch a line >= 10x brighter sits within +-4.0 mDa and the row's height follows
+  it (within 2x of the median ratio in >= 80 % of the batch spectra holding both), or (b) a
+  brighter Assigned M0 row puts its 13C / 15N / 18O / 34S / 37Cl line on the row (1.5 ppm plus
+  the file's sigma) and the row reads <= 1.5x that line's predicted height; a row with its own
+  13C line at its own carbon count's share in every such file is not held. Replayed offline on
+  the stored ledgers of a uronium Orbitrap 40-600 field batch pair (two zones): 16 of the 717
+  readings Assigned in <= 2 files are held (15 beside a tracking satellite at +3.88-3.99 mDa, one
+  18O line), no truth A/B line loses its last Assigned reading.
+
 ### Changed
 
 - **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm

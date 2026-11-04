@@ -544,6 +544,36 @@ selected sample_ids (SAMPLING.md)
    counts; a stripped row whose parent step 6a later removes stays listed,
    annotated `parent removed`.
 
+4d. **The sideband / isotopologue hold** (`batch/sideband.py`; inside the merge,
+   right after step 4c and after the positive re-reads of step 5, before the
+   stamp). The tier reads the ion, so a reading one or two files Assigned on its
+   own pattern and mass can reach the merged ledger Assigned from those files
+   alone. Where each of them shows, beside the row, a brighter line the row could
+   be a by-product of, that verdict says nothing the brighter line does not
+   already explain. A merged M0 reading Assigned in at most two of its files
+   (`MAX_FILES`; the files' M0 rows of the same ion within the merge window) is
+   held at **Candidate** when in EVERY such file either
+   (a) on an Orbitrap-class batch, a line at least 10× brighter sits within
+   ±4.0 mDa (`SAT_BRIGHT_X`, `SAT_DMDA`: the Fourier-transform side bands of a
+   bright line, about +3.9 mDa on uronium batches) and the row tracks it -- over
+   the batch series' spectra holding both lines (each the tallest peak within
+   3 ppm), the row / partner height ratio stays within 2× of its median in at
+   least 80 % of them (`TRACK_*`; with fewer than 3 such spectra the files' own
+   ratios must agree within 2×, and a single file with no series is judged on
+   the geometry alone), or
+   (b) a brighter Assigned M0 row of the file whose ion carries C, N, O, S or
+   Cl puts its 13C / 15N / 18O / 34S / 37Cl line on the row (within 1.5 ppm
+   plus the file's calibrated sigma) and the row reads at most 1.5× that line's
+   predicted height (`ISO_*`).
+   A row with its own 13C line in every such file (a line at +1.00336 Da at
+   0.5-2× the share its own carbon count predicts) is an M0 of its own and is
+   not held. A held row keeps its reading; its `tier_reason` says
+   `sideband/isotopologue risk: ...` with each file's partner, and
+   `tables/sideband_holds.csv` lists one row per held file with the partner's
+   peak id, m/z, height and reading. `batch_summary.json["merge_gates"]["sideband"]`
+   counts `tested`, `held`, `satellite`, `isotopologue`, `own_13c_kept`. A
+   single-sample `peaky assign` has no such hold.
+
 5. **Positive urea re-reads, once per batch.** When `prof.polarity == "+"` two
    gates run on the merged ledger, and each writes its note to the merged row's
    `tier_reason` (the column is always present, `NA` where no gate spoke):
