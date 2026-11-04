@@ -1,32 +1,35 @@
-"""The sideband / isotopologue guard of a low-file-count promotion (a merged-row gate).
+"""The isotopologue hold and the satellite note of a low-file-count promotion (a merged-row gate).
 
 A merged reading that reaches Assigned from one or two files has only those
-files' own evidence behind it. Where every one of those files shows, beside the
-row, a brighter line the row could be a by-product of, the files' Assigned
-verdict says nothing the brighter line does not already explain:
+files' own evidence behind it. Two by-products of a brighter line can look
+like such a reading:
 
-(a) a SATELLITE (Orbitrap-class batches): a line at least SAT_BRIGHT_X times
-    brighter within +-SAT_DMDA mDa (the Fourier-transform side bands of a
-    bright line sit a few mDa off it -- on uronium batches at about +-3.85 mDa)
-    that the row TRACKS: over the batch's spectra holding both lines, the
-    row's height stays within TRACK_X of its median ratio to the partner in at
-    least TRACK_SHARE of them (`track_verdict`); with fewer than TRACK_MIN_N
-    such spectra the files' own ratios must agree within TRACK_X, and a single
-    file with no series is judged on the geometry alone;
-(b) an ISOTOPOLOGUE: a brighter Assigned M0 row of the same file whose ion
-    carries C, N, O, S or Cl and whose 13C / 15N / 18O / 34S / 37Cl line falls
-    on the row (within ISO_PPM ppm plus the file's calibrated sigma), with the
-    row's height at most ISO_HEIGHT_X times that line's predicted height.
+(b) an ISOTOPOLOGUE -- HELD at Candidate: a brighter Assigned M0 row of the
+    same file whose ion carries C, N, O, S or Cl puts its 13C / 15N / 18O / 34S
+    / 37Cl line on the row (within ISO_PPM ppm plus the file's calibrated
+    sigma), and the row reads at most ISO_HEIGHT_X times that line's predicted
+    height. Held when this holds in EVERY file the reading is Assigned in.
+(a) a SATELLITE -- a NOTE only (SATELLITE_MARK; the tier is untouched): on an
+    Orbitrap-class batch a line at least SAT_BRIGHT_X times brighter within
+    +-SAT_DMDA mDa that the row TRACKS: over the batch's spectra holding both
+    lines, the row's height stays within TRACK_X of its median ratio to the
+    partner in at least TRACK_SHARE of them (`track_verdict`); with fewer than
+    TRACK_MIN_N such spectra the files' own ratios must agree within TRACK_X,
+    and a single file with no series is judged on the geometry alone. Noted
+    when every file shows such a satellite partner or an isotopologue parent
+    (and the reading is not held). Whether the +3.9 mDa partners of uronium
+    batches are artefacts is open (their offset is constant over m/z and equals
+    a formula spacing), so the clause says so and decides nothing.
 
-The row is not held when it has its own 13C line in each of those files -- a
-line at +1.00336 Da at OWN_13C_BAND times the share its own carbon count
-predicts: then it is an M0 of its own. A held row keeps its reading, goes to
-Candidate and says why (HOLD_MARK in its tier_reason); `table` lists every
-held file with its partner.
+A reading with its own 13C line in each of its files -- a line at +1.00336 Da
+at OWN_13C_BAND times the share its own carbon count predicts -- is an M0 of its
+own: neither held nor noted. A held row keeps its reading, goes to Candidate
+and says why (HOLD_MARK); a noted row keeps reading and tier (SATELLITE_MARK).
+`table` lists every held or noted file with its partner (`action`).
 
 Pure: reads the merged ledger, the per-file ledgers as their runs wrote them
 and the batch time series (sample_item_id, mz, height); mutates only the
-merged rows it holds.
+merged rows it holds or notes.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"   # the satellite clause is a note only; the hold is the isotopologue clause
 
 #: the most files a reading may reach Assigned from and still be tested
 MAX_FILES = 2
@@ -63,8 +66,9 @@ ISO_LINES = {
     "34S": (ISO.D_34S, "S", ISO.R_34S_PER_S),
     "37Cl": (ISO.D_37CL, "Cl", ISO.R_37CL_PER_CL),
 }
-HOLD_MARK = "sideband/isotopologue risk"
-TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "n_files_assigned", "sample_item_id", "peak_id",
+HOLD_MARK = "isotopologue risk"
+SATELLITE_MARK = "satellite risk"
+TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "n_files_assigned", "action", "sample_item_id", "peak_id",
                  "row_mz", "row_height", "rule", "partner_peak_id", "partner_mz", "partner_height",
                  "partner_reading", "d_mDa", "ratio", "track_n", "track_share"]
 
@@ -235,20 +239,20 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
                              tol_ppm: float = 6.0, sigma_ppm: dict | None = None, orbitrap: bool = True,
                              max_files: int = MAX_FILES, log=print) -> tuple[pd.DataFrame, dict]:
     """Hold at Candidate every Assigned merged M0 reading that reaches Assigned
-    from <= `max_files` files, when in each of those files it sits beside a
-    brighter line it could be the satellite (a; `orbitrap` batches only) or
-    the isotopologue (b) of, and shows no 13C line of its own (module doc).
+    from <= `max_files` files when in EACH of those files it sits on the
+    isotopologue line of a brighter Assigned row (b); note the readings that
+    instead (or also) sit beside a tracking satellite partner in each file (a;
+    `orbitrap` batches only), their tier untouched; skip a reading with its own
+    13C line in every such file (module doc).
 
     merged: the merged ledger (mz, neutral_formula, adduct, tier, srcs,
     tier_reason; mutated). per_file: {sample id: its ledger as its run wrote it,
     every peak}. ts: the batch time series (sample_item_id, mz, height) or None.
     tol_ppm: the merge window a file's row is matched to the merged row in.
     sigma_ppm: {sample id: the file's calibrated sigma, ppm} (added to ISO_PPM).
-    Returns (table, summary): one row per held file (TABLE_COLUMNS) and
-    {tested, held, satellite, isotopologue, own_13c_kept}. A reading with its
-    own 13C line in EVERY such file is kept (own_13c_kept); a reading held in
-    one file but not another stands."""
-    out = {"tested": 0, "held": 0, "satellite": 0, "isotopologue": 0, "own_13c_kept": 0}
+    Returns (table, summary): one row per held or noted file (TABLE_COLUMNS) and
+    {tested, held, satellite_noted, own_13c_kept}."""
+    out = {"tested": 0, "held": 0, "satellite_noted": 0, "own_13c_kept": 0}
     rows = []
     need = {"mz", "neutral_formula", "adduct", "tier"}
     if merged is None or not len(merged) or not need <= set(merged.columns):
@@ -293,40 +297,43 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
         if all(_own_13c(frames[sid], r, ion, tols[sid]) for sid, r in hits):
             out["own_13c_kept"] += 1           # an M0 of its own in every file
             continue
-        # the files' own partner heights, for the tracking fallback of rule (a)
+        # the files' own partner heights, for the tracking fallback of the satellite clause
         files_rows = []
         for sid, r in hits:
             c = _bright_near(frames[sid], r)
             files_rows.append(dict(height=r["height"],
                                    _partner_h=(float(pd.to_numeric(c["height"], errors="coerce").max())
                                                if len(c) else float("nan"))))
-        recs = []
+        per = []                               # (sid, row, isotopologue record, satellite record) per file
         for sid, r in hits:
             f = frames[sid]
-            rec = _satellite(f, r, ts, files_rows) if orbitrap else None
-            if rec is None:
-                rec = _isotopologue(f, r, tols[sid])
-            if rec is None:
-                break                          # one file without such a partner: the reading stands
-            recs.append(dict(sample_item_id=sid, peak_id=_s(r["peak_id"]), row_mz=_num(r["mz"]),
-                             row_height=_num(r["height"]), **rec))
-        if len(recs) != len(hits):
-            continue
-        merged.at[i, "tier"] = "Candidate"
+            per.append((sid, r, _isotopologue(f, r, tols[sid]),
+                        _satellite(f, r, ts, files_rows) if orbitrap else None))
+        if all(iso is not None for _sid, _r, iso, _sat in per):
+            action, recs = "held", [(sid, r, iso) for sid, r, iso, _sat in per]
+        elif all(iso is not None or sat is not None for _sid, _r, iso, sat in per):
+            action, recs = "noted", [(sid, r, iso if iso is not None else sat) for sid, r, iso, sat in per]
+        else:
+            continue                           # one file without such a partner: the reading stands
+        recs = [dict(sample_item_id=sid, peak_id=_s(r["peak_id"]), row_mz=_num(r["mz"]),
+                     row_height=_num(r["height"]), **rec) for sid, r, rec in recs]
         why = "; ".join(f"{x['sample_item_id']}: {x['rule']} of {x['partner_mz']:.4f} {x['partner_reading']} "
                         f"({x['d_mDa']:+.2f} mDa, x{x['ratio']:g})" for x in recs)
-        msg = (f"{HOLD_MARK}: Assigned in {len(hits)} file(s) only, each beside a brighter line it could be "
-               f"the satellite or isotopologue of ({why}); held at Candidate")
+        if action == "held":
+            merged.at[i, "tier"] = "Candidate"
+            msg = (f"{HOLD_MARK}: Assigned in {len(hits)} file(s) only, each on the isotopologue line of a "
+                   f"brighter row ({why}); held at Candidate")
+            out["held"] += 1
+        else:
+            msg = (f"{SATELLITE_MARK}: Assigned in {len(hits)} file(s) only, each beside a brighter line it "
+                   f"tracks or an isotopologue parent ({why}); a note, the tier is untouched")
+            out["satellite_noted"] += 1
         prev = _s(merged.at[i, "tier_reason"])
         merged.at[i, "tier_reason"] = f"{prev} | {msg}" if prev else msg
-        out["held"] += 1
-        kinds = {x["rule"].split()[0] for x in recs}
-        out["satellite"] += int("satellite" in kinds)
-        out["isotopologue"] += int("isotopologue" in kinds)
         for x in recs:
-            rows.append(dict(mz=m, neutral_formula=nf, adduct=ad, n_files_assigned=len(hits), **x))
-    if out["held"]:
-        log(f"[sideband] {out['held']} of {out['tested']} readings Assigned in <= {max_files} files held at "
-            f"Candidate ({out['satellite']} beside a tracking satellite partner, {out['isotopologue']} on a "
-            f"brighter row's isotopologue line; {out['own_13c_kept']} kept on their own 13C line)")
+            rows.append(dict(mz=m, neutral_formula=nf, adduct=ad, n_files_assigned=len(hits), action=action, **x))
+    if out["held"] or out["satellite_noted"]:
+        log(f"[sideband] of {out['tested']} readings Assigned in <= {max_files} files: {out['held']} held at "
+            f"Candidate on a brighter row's isotopologue line, {out['satellite_noted']} noted beside a satellite "
+            f"partner (tier kept); {out['own_13c_kept']} skipped on their own 13C line")
     return pd.DataFrame(rows, columns=TABLE_COLUMNS), out

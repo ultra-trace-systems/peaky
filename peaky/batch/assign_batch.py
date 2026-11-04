@@ -67,7 +67,7 @@ from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sideband as _SB
 from peaky.batch import sampling as SS
 
-__version__ = "0.12.1"  # + the sideband / isotopologue hold of a reading Assigned in <= 2 files (sideband.py,
+__version__ = "0.12.1"  # + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
                         #   tables/sideband_holds.csv, merge_gates["sideband"])
                         # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
                         # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
@@ -3256,10 +3256,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
-        # A reading Assigned in no more than two files, beside a brighter line it could
-        # be the satellite (Orbitrap-class: within +-4 mDa, 10x brighter, tracking it
-        # over the series) or the isotopologue of in each of them, and with no 13C line
-        # of its own, is held at Candidate (batch/sideband.py; tables/sideband_holds.csv)
+        # A reading Assigned in no more than two files, on a brighter Assigned row's
+        # isotopologue line in each of them and with no 13C line of its own, is held at
+        # Candidate; beside a tracking satellite partner (Orbitrap-class: within +-4 mDa,
+        # 10x brighter) it is only noted (batch/sideband.py; tables/sideband_holds.csv)
         _sig = {str(st_.get("sample_id")): (st_.get("degeneracy_cal") or {}).get("sigma")
                 for st_ in per_stats if isinstance(st_.get("degeneracy_cal"), dict)}
         sb_rows, merge_gates["sideband"] = _SB.hold_low_file_promotions(

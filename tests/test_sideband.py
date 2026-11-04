@@ -1,22 +1,33 @@
-"""The sideband / isotopologue hold of a reading Assigned in <= 2 files (batch/sideband.py).
+"""The isotopologue hold and the satellite note of a reading Assigned in <= 2 files (batch/sideband.py).
 
-Synthetic two-file merges: each file's ledger is built here, merged by the vote
-(assign_batch.align) as a batch merges them, and the merged ledger handed to
-the hold with the files' ledgers and a synthetic batch series.
+Synthetic merges: each file's ledger is built here and merged by the vote
+(assign_batch.align) as a batch merges them -- or, where the test needs a
+merged row the vote would not make, written by hand -- and handed to the gate
+with the files' ledgers and a synthetic batch series. The last test runs the
+gate inside a whole (offline) batch. Every rule parameter is pinned: each test
+names the parameter it fails without.
 """
+import json
+
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import evidence as EV
+from peaky.assignment import ledger as L
 from peaky.batch import assign_batch as AB
 from peaky.batch import sideband as SB
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.io import io_mascope as IO
 
+NOLOG = dict(log=lambda *a, **k: None)
+FILES = ("s01", "s02")
+
+# --------------------------------------------------------------------------- the satellite (a): a note only
 PARENT = ("C9H14O2", "[M+(CH4N2O)H]+")       # a bright urea adduct
-SAT = ("C15H18O", "[M+H]+")                   # the reading a +3.85 mDa satellite of it takes
+SAT = ("C15H18O", "[M+H]+")                   # the reading a +3.85 mDa line beside it takes
 PMZ = C.ion_mz(*PARENT)
 SMZ = PMZ + 3.85e-3
-FILES = ("s01", "s02")
 
 
 def _row(pid, mz, h, nf=None, ad=None, tier="Assigned", role="M0", **kw):
@@ -24,13 +35,12 @@ def _row(pid, mz, h, nf=None, ad=None, tier="Assigned", role="M0", **kw):
                 ion_score=0.9, tier_reason="", **kw)
 
 
-def _ledgers(extra=None, files=FILES, sat_tier="Assigned"):
-    """{sid: ledger}: the bright parent (2e6) and its satellite (1e5, 20x fainter) in every
-    file, plus `extra(sid)` rows."""
+def _sat_ledgers(extra=None, files=FILES, parent_h=(2e6, 2e6), dmz=3.85e-3):
+    """{sid: ledger}: the parent and, `dmz` above it, the satellite (1e5) in every file."""
     out = {}
     for k, sid in enumerate(files):
-        rows = [_row(f"{sid}p", PMZ, 2e6, *PARENT),
-                _row(f"{sid}s", SMZ + k * 1e-5, 1e5, *SAT, tier=sat_tier),
+        rows = [_row(f"{sid}p", PMZ, parent_h[min(k, len(parent_h) - 1)], *PARENT),
+                _row(f"{sid}s", PMZ + dmz + k * 1e-5, 1e5, *SAT),
                 _row(f"{sid}u", PMZ + 1.5, 3e3, role="unexplained", tier=None)]
         rows += (extra(sid) if extra else [])
         out[sid] = pd.DataFrame(rows)
@@ -43,97 +53,262 @@ def _merged(ledgers):
     return merged
 
 
-def _series(ratio_noise=0.05, n=12, seed=1):
+def _series(ratio_noise=0.05, n=12, seed=1, smz=SMZ, ratio=20.0):
     """A batch series of n spectra: the parent ramps over two decades, the satellite
-    follows it at 1/20 (log-normal scatter `ratio_noise`), or on its own when
+    follows it at 1/`ratio` (log-normal scatter `ratio_noise`), or on its own when
     ratio_noise is None."""
     rng = np.random.default_rng(seed)
     hp = 10 ** np.linspace(4.5, 6.5, n)
-    hs = hp / 20 * np.exp(rng.normal(0, ratio_noise, n)) if ratio_noise is not None \
+    hs = hp / ratio * np.exp(rng.normal(0, ratio_noise, n)) if ratio_noise is not None \
         else 10 ** rng.uniform(3, 5.5, n)
     rows = []
     for k in range(n):
         rows += [dict(sample_item_id=f"t{k:02d}", mz=PMZ, height=hp[k]),
-                 dict(sample_item_id=f"t{k:02d}", mz=SMZ, height=hs[k])]
+                 dict(sample_item_id=f"t{k:02d}", mz=smz, height=hs[k])]
     return pd.DataFrame(rows)
 
 
-def _tier(merged, nf, ad):
+def _get(merged, nf, ad):
     r = merged[(merged["neutral_formula"] == nf) & (merged["adduct"] == ad)]
     assert len(r) == 1, merged[["mz", "neutral_formula", "adduct", "tier"]]
     return r.iloc[0]
 
 
-def test_a_satellite_of_a_20x_brighter_parent_that_tracks_it_is_held():
-    led = _ledgers()
+def test_a_tracking_satellite_of_a_20x_brighter_line_is_noted_and_its_tier_kept():
+    led = _sat_ledgers()
     merged = _merged(led)
-    assert _tier(merged, *SAT)["tier"] == "Assigned"                 # the vote's verdict, two files
-    tab, summ = SB.hold_low_file_promotions(merged, led, _series(), log=lambda *a: None)
-    r = _tier(merged, *SAT)
-    assert r["tier"] == "Candidate" and SB.HOLD_MARK in r["tier_reason"]
-    assert summ["held"] == 1 and summ["satellite"] == 1
-    assert sorted(tab["sample_item_id"]) == list(FILES) and set(tab["rule"]) == {"satellite"}
-    assert set(tab["partner_peak_id"]) == {"s01p", "s02p"}
+    assert _get(merged, *SAT)["tier"] == "Assigned"                  # the vote's verdict, two files
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(), **NOLOG)
+    r = _get(merged, *SAT)
+    assert r["tier"] == "Assigned" and SB.SATELLITE_MARK in r["tier_reason"]
+    assert SB.HOLD_MARK not in r["tier_reason"]
+    assert summ["satellite_noted"] == 1 and summ["held"] == 0
+    assert sorted(tab["sample_item_id"]) == list(FILES) and set(tab["action"]) == {"noted"}
+    assert set(tab["rule"]) == {"satellite"} and set(tab["partner_peak_id"]) == {"s01p", "s02p"}
     assert (tab["d_mDa"].between(3.8, 3.9)).all() and (tab["ratio"] >= 19).all()
-    assert _tier(merged, *PARENT)["tier"] == "Assigned"              # the parent itself stands
+    assert _get(merged, *PARENT)["tier"] == "Assigned"
 
 
-def test_the_same_row_with_its_own_13c_line_stays_assigned():
-    nc = 15                                                          # C15H19O+: the satellite reading's carbons
-
-    def own13c(sid):
-        h = 1e5 * ISO.R_13C_PER_C * nc
-        return [_row(f"{sid}c13", SMZ + ISO.D_13C, h, role="iso_child", tier=None)]
-
-    led = _ledgers(own13c)
+def test_a_partner_under_ten_times_brighter_is_no_satellite():               # SAT_BRIGHT_X
+    led = _sat_ledgers(parent_h=(5e5, 5e5))                                  # 5x the satellite
     merged = _merged(led)
-    tab, summ = SB.hold_low_file_promotions(merged, led, _series(), log=lambda *a: None)
-    assert _tier(merged, *SAT)["tier"] == "Assigned"
-    assert summ["held"] == 0 and summ["own_13c_kept"] == 1 and not len(tab)
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(ratio=5.0), **NOLOG)
+    assert SB.SATELLITE_MARK not in str(_get(merged, *SAT)["tier_reason"]) and summ["satellite_noted"] == 0
 
 
-def test_a_13c_line_of_a_brighter_row_at_1_1x_its_prediction_is_held():
-    # the row sits at the 13C spacing of a brighter Assigned M0 and reads 1.1x the
-    # line that M0's carbon count predicts: it can be that line
-    par = ("C10H16O3", "[M+H]+")
-    pmz = C.ion_mz(*par)
-    hp = 4e5
-    pred = hp * ISO.R_13C_PER_C * 10
-    row = ("C6H14N2O3", "[M+H]+")                                    # a reading of the 13C line's mass
-    led = {sid: pd.DataFrame([_row(f"{sid}p", pmz, hp, *par),
-                              _row(f"{sid}r", pmz + ISO.D_13C, 1.1 * pred, *row)]) for sid in FILES}
+def test_a_partner_6_mda_away_is_no_satellite():                             # SAT_DMDA, the upper side
+    led = _sat_ledgers(dmz=6.0e-3)
     merged = _merged(led)
-    tab, summ = SB.hold_low_file_promotions(merged, led, None, sigma_ppm={s: 0.2 for s in FILES},
-                                            log=lambda *a: None)
-    r = _tier(merged, *row)
-    assert r["tier"] == "Candidate" and "isotopologue 13C" in r["tier_reason"]
-    assert summ["isotopologue"] == 1 and set(tab["rule"]) == {"isotopologue 13C"}
-    # at 2x its prediction the row is brighter than that line can be: it stands
-    led2 = {sid: f.assign(height=np.where(f["peak_id"].str.endswith("r"), 2.0 * pred, f["height"]))
-            for sid, f in led.items()}
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(smz=PMZ + 6.0e-3), **NOLOG)
+    assert SB.SATELLITE_MARK not in str(_get(merged, *SAT)["tier_reason"]) and summ["satellite_noted"] == 0
+
+
+def test_a_partner_the_row_does_not_track_notes_nothing():                    # TRACK_X, TRACK_SHARE
+    led = _sat_ledgers()
+    merged = _merged(led)
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(ratio_noise=None), **NOLOG)
+    assert SB.SATELLITE_MARK not in str(_get(merged, *SAT)["tier_reason"]) and summ["satellite_noted"] == 0
+
+
+def test_without_a_series_the_files_own_ratios_must_agree():                  # the file-ratio fallback
+    led = _sat_ledgers(parent_h=(2e6, 1e7))                                   # 20x in one file, 100x in the other
+    merged = _merged(led)
+    _tab, summ = SB.hold_low_file_promotions(merged, led, None, **NOLOG)
+    assert summ["satellite_noted"] == 0
+    led2 = _sat_ledgers(parent_h=(2e6, 3e6))                                  # 20x and 30x: they agree
     merged2 = _merged(led2)
-    SB.hold_low_file_promotions(merged2, led2, None, log=lambda *a: None)
-    assert _tier(merged2, *row)["tier"] == "Assigned"
+    _tab, summ2 = SB.hold_low_file_promotions(merged2, led2, None, **NOLOG)
+    assert summ2["satellite_noted"] == 1
 
 
-def test_a_partner_the_row_does_not_track_holds_nothing():
-    led = _ledgers()
+def test_the_satellite_clause_is_an_orbitrap_clause():
+    led = _sat_ledgers()
     merged = _merged(led)
-    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(ratio_noise=None), log=lambda *a: None)
-    assert _tier(merged, *SAT)["tier"] == "Assigned" and summ["held"] == 0
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(), orbitrap=False, **NOLOG)
+    assert SB.SATELLITE_MARK not in str(_get(merged, *SAT)["tier_reason"]) and summ["satellite_noted"] == 0
 
 
-def test_a_reading_assigned_in_three_files_is_not_tested():
-    files = ("s01", "s02", "s03")
-    led = _ledgers(files=files)
+def test_a_satellite_row_with_its_own_13c_line_is_neither_held_nor_noted():
+    def own13c(sid):
+        return [_row(f"{sid}c13", SMZ + ISO.D_13C, 1e5 * ISO.R_13C_PER_C * 15, role="iso_child", tier=None)]
+    led = _sat_ledgers(own13c)
     merged = _merged(led)
-    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(), log=lambda *a: None)
-    assert _tier(merged, *SAT)["tier"] == "Assigned"
-    assert summ["tested"] == 0 and summ["held"] == 0                 # three files each: neither row is tested
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(), **NOLOG)
+    r = _get(merged, *SAT)
+    assert r["tier"] == "Assigned" and SB.SATELLITE_MARK not in str(r["tier_reason"])
+    assert summ["own_13c_kept"] == 1 and not len(tab)
 
 
-def test_the_satellite_rule_is_an_orbitrap_rule():
-    led = _ledgers()
+def test_a_reading_assigned_in_three_files_is_not_tested():                  # MAX_FILES
+    led = _sat_ledgers(files=("s01", "s02", "s03"))
     merged = _merged(led)
-    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(), orbitrap=False, log=lambda *a: None)
-    assert _tier(merged, *SAT)["tier"] == "Assigned" and summ["held"] == 0
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(), **NOLOG)
+    assert summ["tested"] == 0 and summ["satellite_noted"] == 0
+
+
+# --------------------------------------------------------------------------- the isotopologue (b): the hold
+IPAR = ("C10H16O3", "[M+H]+")
+IPMZ = C.ion_mz(*IPAR)
+IROW = ("C6H14N2O3", "[M+H]+")                 # a reading of the 13C line's mass
+HP = 4e5
+PRED13 = HP * ISO.R_13C_PER_C * 10             # the parent's 13C line
+
+
+def _iso_ledgers(files=FILES, row_h=1.1 * PRED13, d=ISO.D_13C, dppm=0.0, parent=IPAR, parent_h=HP,
+                 parent_tier="Assigned", parent_in=None, own13c_x=None, row_tier=None):
+    """{sid: ledger}: the parent and, at its `d` spacing (+ `dppm`), the row in every file;
+    `parent_in` = the files holding the parent (default every file); `own13c_x` = {sid: the
+    row's own 13C line at that multiple of its carbon count's share}; `row_tier` = {sid: tier}."""
+    pmz = C.ion_mz(*parent)
+    rmz = pmz + d
+    rmz += rmz * dppm * 1e-6
+    out = {}
+    for sid in files:
+        rows = [_row(f"{sid}r", rmz, row_h, *IROW, tier=(row_tier or {}).get(sid, "Assigned"))]
+        if parent_in is None or sid in parent_in:
+            rows.append(_row(f"{sid}p", pmz, parent_h, *parent, tier=parent_tier))
+        if own13c_x and sid in own13c_x:
+            rows.append(_row(f"{sid}o", rmz + ISO.D_13C, row_h * ISO.R_13C_PER_C * 6 * own13c_x[sid],
+                             role="iso_child", tier=None))
+        out[sid] = pd.DataFrame(rows)
+    return out
+
+
+def _hold(led, merged=None, **kw):
+    merged = _merged(led) if merged is None else merged
+    tab, summ = SB.hold_low_file_promotions(merged, led, None, sigma_ppm=kw.pop("sigma", {s: 0.2 for s in led}),
+                                            **NOLOG, **kw)
+    return merged, tab, summ
+
+
+def test_a_13c_line_of_a_brighter_row_at_1_1x_its_prediction_is_held():     # ISO_HEIGHT_X
+    merged, tab, summ = _hold(_iso_ledgers())
+    r = _get(merged, *IROW)
+    assert r["tier"] == "Candidate" and SB.HOLD_MARK in r["tier_reason"] and "isotopologue 13C" in r["tier_reason"]
+    assert summ["held"] == 1 and set(tab["rule"]) == {"isotopologue 13C"} and set(tab["action"]) == {"held"}
+    merged2, _t, _s = _hold(_iso_ledgers(row_h=2.0 * PRED13))                # brighter than the line can be
+    assert _get(merged2, *IROW)["tier"] == "Assigned"
+
+
+def test_a_row_5_ppm_off_the_spacing_is_not_the_line():                      # ISO_PPM
+    merged, _t, summ = _hold(_iso_ledgers(dppm=5.0))
+    assert _get(merged, *IROW)["tier"] == "Assigned" and summ["held"] == 0
+
+
+def test_the_window_widens_by_the_files_sigma():                             # sigma in the window
+    merged, _t, summ = _hold(_iso_ledgers(dppm=1.9), sigma={s: 0.5 for s in FILES})
+    assert _get(merged, *IROW)["tier"] == "Candidate" and summ["held"] == 1
+    merged2, _t2, summ2 = _hold(_iso_ledgers(dppm=1.9), sigma={s: 0.1 for s in FILES})
+    assert _get(merged2, *IROW)["tier"] == "Assigned" and summ2["held"] == 0
+
+
+def test_a_row_held_in_one_file_but_not_the_other_stands():                  # "in every file"
+    merged, _t, summ = _hold(_iso_ledgers(parent_in={"s01"}))
+    r = _get(merged, *IROW)
+    assert r["tier"] == "Assigned" and summ["held"] == 0 and summ["satellite_noted"] == 0
+    assert SB.HOLD_MARK not in str(r["tier_reason"])
+
+
+def test_a_parent_fainter_than_the_row_holds_nothing():                      # the parent is brighter
+    # a Cl3 parent's 37Cl line reads 0.96x it: a row at 1.2x the parent sits under 1.5x the line,
+    # but a line cannot be brighter than the ion it belongs to
+    par = ("C2HCl3O2", "[M-H]-")
+    pred = 1e5 * ISO.R_37CL_PER_CL * 3
+    merged, _t, summ = _hold(_iso_ledgers(parent=par, parent_h=1e5, d=ISO.D_37CL, row_h=1.2e5))
+    assert pred * 1.5 > 1.2e5                                                 # the height bar alone would pass
+    assert _get(merged, *IROW)["tier"] == "Assigned" and summ["held"] == 0
+
+
+def test_a_parent_without_the_element_puts_no_line_there():                  # the element count
+    # the 34S spacing of an S-free parent: no 34S line exists
+    merged, _t, summ = _hold(_iso_ledgers(d=ISO.D_34S, row_h=0.04 * HP))
+    assert _get(merged, *IROW)["tier"] == "Assigned" and summ["held"] == 0
+
+
+def test_a_candidate_parent_holds_nothing():                                  # the parent is Assigned
+    merged, _t, summ = _hold(_iso_ledgers(parent_tier="Candidate"))
+    assert _get(merged, *IROW)["tier"] == "Assigned" and summ["held"] == 0
+
+
+def test_own_13c_skips_only_in_band_and_only_in_every_file():                # OWN_13C_BAND, "each file"
+    # (the parent itself is always skipped: the row is its own 13C line, in band)
+    merged, _t, summ = _hold(_iso_ledgers(own13c_x={"s01": 1.0, "s02": 1.0}))
+    assert _get(merged, *IROW)["tier"] == "Assigned" and summ["own_13c_kept"] == 2
+    merged2, _t2, summ2 = _hold(_iso_ledgers(own13c_x={"s01": 3.0, "s02": 3.0}))   # 3x its share: not its own
+    assert _get(merged2, *IROW)["tier"] == "Candidate" and summ2["own_13c_kept"] == 1
+    merged3, _t3, summ3 = _hold(_iso_ledgers(own13c_x={"s01": 1.0}))                # one file only
+    assert _get(merged3, *IROW)["tier"] == "Candidate" and summ3["own_13c_kept"] == 1
+
+
+def test_only_the_files_that_assign_the_reading_count():                      # the Assigned-file count
+    # three files carry the ion, two of them Assigned: the reading reaches Assigned from two
+    led = _iso_ledgers(files=("s01", "s02", "s03"), row_tier={"s03": "Candidate"})
+    merged, _t, summ = _hold(led)
+    assert summ["tested"] >= 1 and _get(merged, *IROW)["tier"] == "Candidate" and summ["held"] == 1
+
+
+def test_a_file_reading_another_ion_at_the_mass_is_not_one_of_its_files():   # the same-ion match
+    led = _iso_ledgers(parent_in={"s01"})
+    other = led["s02"].copy()
+    other.loc[other["peak_id"] == "s02r", ["neutral_formula", "adduct"]] = ["C7H18N2O2", "[M+H]+"]   # another ion
+    other.loc[other["peak_id"] == "s02r", "height"] = 5 * PRED13
+    led["s02"] = other
+    m = C.ion_mz(*IPAR) + ISO.D_13C
+    merged = pd.DataFrame([dict(mz=m, neutral_formula=IROW[0], adduct=IROW[1], tier="Assigned", role="M0",
+                                srcs="s01,s02", tier_reason="")])
+    merged, tab, summ = _hold(led, merged=merged)
+    assert merged.at[0, "tier"] == "Candidate" and summ["held"] == 1 and list(tab["sample_item_id"]) == ["s01"]
+
+
+# --------------------------------------------------------------------------- the gate inside a batch
+def test_the_batch_merge_holds_the_isotopologue_reading(tmp_path, monkeypatch):
+    """Two files each commit the parent and, on its 13C line, another reading: the merged
+    ledger written by the batch reads that reading Candidate with the hold's note, the
+    summary counts it, and tables/sideband_holds.csv names the parent."""
+    from peaky.assignment import assign as A
+    rmz = IPMZ + ISO.D_13C
+    lines = [(IPAR, IPMZ, HP), (IROW, rmz, 1.1 * PRED13)]
+    t0 = pd.Timestamp("2025-10-01 00:00:00", tz="UTC")
+    ts = pd.DataFrame([dict(sample_item_id=f"u{k:02d}", sample_item_name=f"n{k:02d}",
+                            datetime_utc=t0 + pd.Timedelta(hours=2 * k), mz=float(mz), height=float(h))
+                       for k in range(6) for (_r, mz, h) in lines]
+                      + [dict(sample_item_id=f"u{k:02d}", sample_item_name=f"n{k:02d}",
+                              datetime_utc=t0 + pd.Timedelta(hours=2 * k), mz=float(300 + j), height=500.0)
+                         for k in range(6) for j in range(20)])
+
+    def ledger():
+        peaks = pd.DataFrame([{"peak_id": f"p{j}", "mz": mz, "height": h} for j, (_r, mz, h) in enumerate(lines)])
+        led = L.new_ledger(peaks)
+        for j, ((n, a), _mz, _h) in enumerate(lines):
+            L.commit_assignment(led, f"p{j}", neutral_formula=n, adduct=a,
+                                ion_formula=C.format_formula(EV.ion_composition(n, a, None)) + "+",
+                                ion_score=0.95, compound_score=0.95, ppm_error=0.1, pass_no=1,
+                                method="cheminfo+grid", confidence="High", commentary="Pass 1")
+        led["tier"] = led["tier"].astype(object)
+        led.loc[led["role"] == L.ROLE_M0, "tier"] = "Assigned"
+        led["below_assignability"] = False
+        return led
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        return {"ledger": ledger(),
+                "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0, "side_channels": [],
+                          "degeneracy_cal": {"mu": 0.0, "sigma": 0.2}},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pd.DataFrame(
+        {"peak_id": ["A"], "mz": [300.1], "height": [1.0e5]}))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A, "run", fake_assign)
+    AB.run(peaks=ts, ts_peaks=ts, reagent="Ur", batch="test batch", out_dir=str(tmp_path),
+           k_min=2, k_max=2, min_gain=0.0, n_jobs=1, residual=False, resolving_power=100_000,
+           log=lambda *a: None)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert summ["merge_gates"]["sideband"]["held"] == 1
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
+    r = merged[(merged.neutral_formula == IROW[0]) & (merged.adduct == IROW[1])]
+    assert len(r) == 1 and r.tier.iloc[0] == "Candidate" and SB.HOLD_MARK in str(r.tier_reason.iloc[0])
+    p = merged[(merged.neutral_formula == IPAR[0]) & (merged.adduct == IPAR[1])]
+    assert p.tier.iloc[0] == "Assigned"
+    tab = pd.read_csv(tmp_path / "tables" / "sideband_holds.csv")
+    assert len(tab) == 2 and set(tab["action"]) == {"held"} and set(tab["partner_reading"]) == {f"{IPAR[0]} {IPAR[1]}"}

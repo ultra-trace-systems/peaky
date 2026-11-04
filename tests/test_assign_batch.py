@@ -918,7 +918,7 @@ try:
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision, "
-              "the reagent-water ladder, the isotopologue rows, the sideband hold, the 13C-shadow gate, the "
+              "the reagent-water ladder, the isotopologue rows, the isotopologue hold, the 13C-shadow gate, the "
               "element-signature removal and the TOF ion-M+2 gates, the label-twin tier cap and the "
               "ringing-line release always -- nothing pooled, no rung or signature veto here, the "
               "isotopologue gate skipped on a height-only series, the shadow gate skipped off a "
@@ -927,8 +927,8 @@ try:
               set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue", "sideband",
                                                     "label_shadow", "element_signature", "label_veto", "tof_m2",
                                                     "ringing_lines"}
-              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite": 0,
-                                                      "isotopologue": 0, "own_13c_kept": 0}
+              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_noted": 0,
+                                                      "own_13c_kept": 0}
               and summ["merge_gates"]["label_veto"] == {"capped": 0}
               and summ["merge_gates"]["ringing_lines"]["released"] == 0
               and summ["merge_gates"]["label_shadow"] == {
