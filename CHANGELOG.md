@@ -167,6 +167,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The repo-root `.env` is found from any directory.** `io_mascope._REPO_ENV` sat one level too deep (inside the
+  package), so the clone-root `.env` was never searched and a run started outside the clone reported "No Mascope
+  credentials found"; the test asserted the same wrong path. The search now follows the documented order
+  (`--env` / `$MASCOPE_ENV` > repo-root `.env` > `./.env` > `~/.mascope/.env`). Note for editable installs: the clone's
+  `.env` now takes precedence over a `.env` in the working directory; pass `--env` to use another one.
+- **`peaky setup` writes an active `PEAKY_OUTPUT_DIR` line.** The copied `.env.example` carries a commented
+  `# PEAKY_OUTPUT_DIR=`, which the substring check took for a setting, so the line was never written and run
+  outputs fell back to `~/peaky-output` instead of the workspace's `output/`. Only an uncommented assignment counts now.
 - **Renaming a batch keeps its target collections.** The batch PATCH requires
   `target_collection_ids` and replaces the batch's collections with them; `update_batch` sent
   none, so the server refused the rename. It now reads the batch's current collections and sends

@@ -627,7 +627,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 
 ### 9.3 I/O (io_mascope.py)
 
-- `connect(env_path)` (io_mascope.py): builds `MascopeClient` from `MASCOPE_URL` + `MASCOPE_ACCESS_TOKEN`; .env search precedence repo-root → cwd → `$MASCOPE_ENV` → `~/.mascope/.env`. Reads token from disk each call (avoids stale-token 401). Legacy-server patch degrades missing `/api/datasets` gracefully.
+- `connect(env_path)` (io_mascope.py): builds `MascopeClient` from `MASCOPE_URL` + `MASCOPE_ACCESS_TOKEN`; .env search precedence `--env` → `$MASCOPE_ENV` → repo-root → cwd → `~/.mascope/.env`. Reads token from disk each call (avoids stale-token 401). Legacy-server patch degrades missing `/api/datasets` gracefully.
 - `fetch_batch_peaks` / `fetch_peaks(use_cache, CACHE_ROOT=~/.mascope-assign-cache)`.
 - `score_candidates(...)` (io_mascope.py): batches formulas (`MATCH_BATCH=200`, >500 timeouts) scored concurrently (`MATCH_WORKERS=5`); raises on partial unless `allow_partial=True`. `DEFAULT_MATCH_PARAMS = {mz_tolerance:5 ppm, isotope_ratio_tolerance:0.2, peak_min_intensity:0.0, min_isotope_abundance:0.15, min_isotope_correlation:0.7, probable_match_threshold:0.8, possible_match_threshold:0.4}`.
 - `flatten_match_tree(tree)` (io_mascope.py): pure; flattens compound→ion→isotope to one row per triplet; emits `ppm_error` only for genuinely matched peaks. **15N-labelled reagent re-anchor** (`_reanchor_labelled_reagent`, delta=0.997035 Da, label='15N', line 537): moves `is_base` from the phantom all-light M0 to the actual 15N monoisotopic line (the reagent is 100% 15N) — without it the `[M+15NO3]-` channel is dropped.
