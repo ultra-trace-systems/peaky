@@ -264,7 +264,8 @@ finally:
         os.environ["MASCOPE_ENV"] = _menv0
 check("_REPO_ENV points at the repo-root .env (next to the package)",
       IO._REPO_ENV == os.path.join(
-          os.path.dirname(os.path.dirname(os.path.abspath(IO.__file__))), ".env"))
+          os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(IO.__file__)))),
+          ".env"))
 
 # ---------- listing helpers raise (no silent fallback) on empty results ----------
 class _EmptyDS:
