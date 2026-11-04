@@ -1087,6 +1087,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`peaky mcp` keeps stdout for JSON-RPC.** The server banner went to stdout, which on the stdio transport carries
+  the MCP protocol frames only; with unbuffered output (`PYTHONUNBUFFERED`, a pty) it landed before the first frame
+  and could break a stdio client. The banner goes to stderr now, and on stdio it no longer names a host and port.
 - **`ms2 analyze` splits a shared fragment by absence at any energy, as the attribution sets ions
   aside.** `attribute.share_weights` read a candidate as absent when its precursor was missing
   from the window's LOWEST-energy spectrum and its MS1 share was 0, while `attribute_fragments`
