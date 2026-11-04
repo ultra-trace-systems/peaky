@@ -620,7 +620,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   test take the alias); `ALIAS_SERIES_HOLDS` is the switch. Off a 15N-nitrate ledger nothing
   changes. Replayed offline on the stored per-file ledgers of a 15N-nitrate field campaign (the
   held rows' tier verdicts, then the merge vote as the batch casts it; the base replay gives
-  1390 of the 1392 stored merged rows of the 128-600 wind-zone batch): there 28 per-file rows
+  1390 of the 1392 stored merged rows of a 128-600 batch): there 28 per-file rows
   lose their series credit (5 of them only once another ion's line at the 34S position no
   longer counts as the S count's) and 10 merged rows leave Assigned (649 -> 639), every one of
   them wrong-ion or unverifiable -- the seven C8S aliases of the truth's readings among them. The
