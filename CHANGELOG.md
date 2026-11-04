@@ -178,6 +178,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   AI Agent token) is the `X-Service-Name` every request presents: the SDK client, the raw reads,
   the publish uploads and the curation client. Unset, it stays `mascope_sdk`.
 
+- **`peaky --version`** prints the package version (`peaky 0.10.0b1`) and exits 0; it used to fail with "the
+  following arguments are required: cmd".
+
+- **The 401 hint names both causes.** `MASCOPE_SERVICE_NAME` is bound per token: a valid token minted for one
+  service (e.g. `ai-agent`) is refused under another (e.g. `mascope_sdk`), and that 401 looks the same as an
+  expired token. The hint, which blamed expiry only, now says to check the token and `MASCOPE_SERVICE_NAME`.
+
 - **MS2 fragment assignment core (`peaky.ms2`): every MS2 peak is read as a sub-formula of every ion
   in the isolation window, and kept only when the neutral loss it implies splits into molecules
   (`assign_fragments`, `fragment_candidates`, `decompose_loss`, `mass_offset` / `apply_offset`;
