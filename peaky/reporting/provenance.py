@@ -19,7 +19,7 @@ import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
 
-__version__ = "0.1.1"  # runtime cfg fields come from PassConfig.RUNTIME_FIELDS
+__version__ = "0.1.2"  # the `lists` block: the reference-list snapshots a run read (id, version, sha256)
 
 
 def _rel_or_abs(path: str | None, base: str) -> str | None:
@@ -81,12 +81,16 @@ def dep_versions(names=("mascope-sdk", "mascope-tools", "pandas", "numpy")) -> d
 def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
                    sample_ids, reagent: str, cfg, ts_path: str | None = None,
                    counts: dict | None = None, created_utc: str | None = None,
-                   extra: dict | None = None, batch_id: str | None = None) -> dict:
+                   extra: dict | None = None, batch_id: str | None = None,
+                   lists=None) -> dict:
     """Assemble the reproducibility manifest for a finished run. Hashes the run's
     ts parquet (input) and merged_ledger.csv (output) so the run is pinned to its
     exact data + result alongside the exact code that produced it. `batch_name`
     is the batch's DISPLAY name; `batch_id` its server id when the run had one
-    (None for a pool label), so a renamed batch stays traceable."""
+    (None for a pool label), so a renamed batch stays traceable. `lists` is the
+    run's reference-list record (`reflists.lists_record`: id, version, sha256,
+    roles, pinned, how activated per active list) -- the list content the run
+    read, pinned beside the code and the data."""
     import peaky                                # the real package version (peaky.__version__)
     from peaky.assignment import assign as A   # per-module versions + hashes (incl. assign's own)
     from peaky.assignment.passes import PassConfig
@@ -129,6 +133,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
             "ts_sha1": sha1_file(ts_path) if ts_path else None,
         },
         "config": cfg_d,
+        "lists": [dict(x) for x in (lists or [])],
         "output": {
             "merged_ledger_sha1": sha1_file(merged),
             "counts": counts or {},
@@ -175,7 +180,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
                dataset: str | None, sample_ids, reagent: str, cfg,
                ts_path: str | None = None, counts: dict | None = None,
                created_utc: str | None = None, batch_id: str | None = None,
-               extra: dict | None = None,
+               extra: dict | None = None, lists=None,
                log=print) -> dict:
     """Write the per-run manifest AND append the cross-run registry row. Returns
     the manifest. Never raises into the pipeline -- provenance must not break a
@@ -185,7 +190,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
             run_dir=run_dir, batch_name=batch_name, dataset=dataset,
             sample_ids=sample_ids, reagent=reagent, cfg=cfg, ts_path=ts_path,
             counts=counts, created_utc=created_utc, batch_id=batch_id,
-            extra=extra)
+            extra=extra, lists=lists)
         write_manifest(run_dir, manifest)
         idx = append_registry(os.path.join(base_out, "index.jsonl"), manifest)
         commit = (manifest["code"]["git"] or {}).get("commit") or "no-git"

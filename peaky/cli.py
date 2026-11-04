@@ -269,7 +269,8 @@ def cmd_assign(args) -> None:
 
     reagent_label = getattr(prof, "label", "") or ""
     reflists_active, tags, rl_record = RL.activate(context, reagent_label, record=True,
-                                                   fields=("context", "reagent label"))
+                                                   fields=("context", "reagent label"),
+                                                   include=getattr(args, "lists", None))
     if reflists_active:
         print(f"[reflists] active: {RL.active_versions(reflists_active)} "
               f"(context {sorted(tags) or 'contaminants-only'})")
@@ -432,6 +433,7 @@ def cmd_batch(args) -> None:
                            corroborate=list(getattr(args, "corroborate", []) or []),
                            tof_flag_mz=getattr(args, "tof_flag_mz", None),
                            mass_axis=getattr(args, "mass_axis", "auto"),
+                           lists=getattr(args, "lists", None),
                            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
                            **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
@@ -920,6 +922,57 @@ def cmd_publish_batch(args) -> None:
 # --------------------------------------------------------------------------- #
 # parser + entry point
 # --------------------------------------------------------------------------- #
+def cmd_lists(args) -> None:
+    """`peaky lists lock|verify|show|import`: the reference-list snapshots and their
+    lock (peaky.lists). No credentials: none of these talks to Mascope, and only
+    `import` (without --from-file) talks to the network at all."""
+    from peaky.assignment import reflists as RL
+    from peaky.lists import lock as LK
+    verb = args.verb
+    if verb == "lock":
+        d = os.path.expanduser(args.dir) if args.dir else RL._DIR
+        lock = LK.relock_directory(d)
+        p = LK.write_lock(d, lock)
+        for lid, e in lock["lists"].items():
+            print(f"  {lid:40s} {e['version']:18s} sha256 {e['sha256'][:12]}  {e['file']}")
+        print(f"[lists] {len(lock['lists'])} list(s) pinned -> {p}")
+        return
+    if verb == "verify":
+        try:
+            cat = (RL.load_catalog(os.path.expanduser(args.dir)) if args.dir else RL.load_catalog())
+        except (LK.SnapshotIntegrityError, ValueError) as e:
+            sys.exit(f"[lists] FAIL {e}")
+        for lid, L in sorted(cat.items()):
+            print(f"  {lid:40s} {L.data_version:18s} sha256 {L.sha256[:12]}  "
+                  f"{'pinned' if L.pinned else 'UNPINNED'}  v{L.schema_version}  {L.directory}")
+        print(f"[lists] OK: {len(cat)} list(s), {sum(1 for L in cat.values() if L.pinned)} pinned")
+        return
+    if verb == "show":
+        cat = RL.load_catalog(verify=False)
+        L = cat.get(args.id)
+        if L is None:
+            sys.exit(f"[lists] no list {args.id!r}; known: {sorted(cat)}")
+        info = {"id": L.id, "label": L.label, "version": L.data_version, "schema_version": L.schema_version,
+                "roles": list(L.effective_roles), "family_scope": L.family_scope, "pinned": L.pinned,
+                "sha256": L.sha256, "file": os.path.join(L.directory, L.source_file),
+                "n_formulas": len(L.formulas), "n_radicals": len(L.radicals), "n_skipped": len(L.skipped),
+                "always_active": L.always_active, "applies_to_contexts": list(L.applies_to_contexts),
+                "source": L.source, "importer": L.importer}
+        print(json.dumps(info, indent=2, default=str))
+        return
+    if verb == "import":
+        from peaky.lists.importers import IMPORTERS
+        mod = IMPORTERS.get(args.source)
+        if mod is None:
+            sys.exit(f"[lists] no importer {args.source!r}; known: {sorted(IMPORTERS)}")
+        dest = RL._DIR if args.bundle else (os.path.expanduser(args.dest) if args.dest else LK.user_lists_dir())
+        out = mod.run(dest_dir=dest, from_file=args.from_file, log=print)
+        RL.clear_catalog_cache()
+        print(f"[lists] imported -> {out}")
+        return
+    sys.exit(f"unknown lists verb {verb!r}")
+
+
 def cmd_curate(args) -> None:
     """Data-curation verbs (create/rename/copy/move workspaces, datasets, batches,
     samples). Every mutation honors --dry-run (preview, sends nothing); deletes
@@ -2170,6 +2223,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--no-pass3", action="store_true")
     pa.add_argument("--no-pass4", action="store_true")
     pa.add_argument("--no-pass5", action="store_true")
+    pa.add_argument("--lists", default=None, metavar="ID[,ID]",
+                    help="reference lists to activate by id, beside the ones the run's metadata "
+                         "unlocks (see `peaky lists show`); else $PEAKY_LISTS")
     pa.add_argument("--output-dir", default=".")
     pa.add_argument("--ts-batch", default=None,
                     help="batch name to load as the time series (optional TS step)")
@@ -2200,6 +2256,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "matches and stops when none names a reagent)")
     pb.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
+    pb.add_argument("--lists", default=None, metavar="ID[,ID]",
+                    help="reference lists to activate by id, beside the ones the batch / dataset "
+                         "names unlock (see `peaky lists show`); else $PEAKY_LISTS")
     pb.add_argument("--out-dir", default=None,
                     help="base output dir for the versioned run folder. Default: "
                          "$PEAKY_OUTPUT_DIR (set by `peaky setup`, = the workspace's "
@@ -2467,6 +2526,26 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dry(pcx)
 
     pc.set_defaults(func=cmd_curate)
+
+    pL = sub.add_parser("lists", help="reference-list snapshots: pin (lock), verify, show, import a "
+                                      "source offline (the only verb that touches the network)")
+    pLs = pL.add_subparsers(dest="verb", required=True)
+    pLl = pLs.add_parser("lock", help="(re)write catalog.lock over every snapshot in a catalog directory")
+    pLl.add_argument("--dir", default=None, help="catalog directory (default: the bundled data/peaklists)")
+    pLv = pLs.add_parser("verify", help="load the catalog with lock verification; exit 1 on a mismatch")
+    pLv.add_argument("--dir", default=None, help="catalog directory (default: bundled + the user directory)")
+    pLw = pLs.add_parser("show", help="one list's provenance, roles, pinning and species count")
+    pLw.add_argument("id")
+    pLi = pLs.add_parser("import", help="fetch a source, verify its checksum, write a pinned snapshot")
+    pLi.add_argument("source", help="source id (see `peaky lists import --help` epilog)")
+    pLi.add_argument("--from-file", default=None,
+                     help="an already-downloaded source file (still checksum-verified); no network")
+    pLi.add_argument("--dest", default=None,
+                     help="destination catalog directory (default: the user directory, $PEAKY_LISTS_DIR "
+                          "or ~/.cache/peaky/lists)")
+    pLi.add_argument("--bundle", action="store_true",
+                     help="write into the bundled data/peaklists instead (a redistributable licence only)")
+    pL.set_defaults(func=cmd_lists)
 
     p2 = sub.add_parser("ms2", help="read MS2 from Mascope (>= 1.8): list what each sample "
                                     "holds, extract energy-resolved spectra -- also per scan, "

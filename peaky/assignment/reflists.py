@@ -17,6 +17,17 @@ the run uses (`chemistry.ion_mz`), so one list serves Br-/NO3-/I-/urea+ runs ali
 
 A list is one self-describing JSON in data/peaklists/ (see README.md). Add a
 credible source = drop in one JSON; nothing else couples.
+
+PINNING (peaky.lists). A list imported from an external source is a schema-v2
+SNAPSHOT: it carries its provenance (`source`: DOI, record, file, the
+publisher's md5, when it was retrieved, licence) and a content hash over its
+species. The catalog directory's `catalog.lock` pins every snapshot's hash;
+`load_catalog` recomputes each hash and refuses a mismatch
+(`SnapshotIntegrityError`) -- a list is read exactly as pinned or not at all.
+A run never fetches a list: importers (`peaky lists import`) do, offline.
+Non-bundled snapshots live in a user directory ($PEAKY_LISTS_DIR, default
+~/.cache/peaky/lists) with its own lock. `lists_record` is what the run
+manifest records per active list (id, version, sha256, pinned, how activated).
 """
 from __future__ import annotations
 
@@ -29,9 +40,12 @@ from dataclasses import dataclass
 
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.lists import lock as LK
+from peaky.lists import snapshot as SN
+from peaky.lists.lock import SnapshotIntegrityError  # noqa: F401  (re-exported for callers)
 from peaky.paths import pkg_data
 
-__version__ = "0.1.1"   # the rescue skips a locked unexplained peak (an element-evidence clear)
+__version__ = "0.2.0"   # schema-v2 snapshots, catalog.lock verification, user dir, lists_record
 
 # Bundled peaklist catalog. Resolved from the package root (paths.pkg_data), not
 # this module's __file__, so it survives `reflists` moving into a sub-package.
@@ -74,9 +88,32 @@ class ReferenceList:
     always_active: bool = False    # universal lists (e.g. contaminants) ignore context gating
     meta_of: dict = None           # formula -> {name, origin, ...} (display extras)
     skipped: tuple = ()            # entries the loader refused: not a neutral molecule (`_not_a_neutral`)
+    # ---- pinning (schema v2 snapshots; peaky.lists) ----
+    schema_version: int = 1
+    roles: tuple = ()              # declared uses (snapshot.ROLES); () on a v1 list
+    sha256: str = ""               # content hash over the canonical species payload
+    pinned: bool | None = None     # True: matched the directory's catalog.lock; False: no lock entry
+    lock_version: str = ""         # the version the lock pins (== the file's when pinned)
+    source: dict | None = None     # v2 provenance block (doi, record_id, file, md5, retrieved_utc, licence, ...)
+    importer: dict | None = None   # {name, version} of the importer that wrote the snapshot
+    family_scope: str = "compound" # how the evidence scale reads a named hit (compound: 3c reachable)
+    directory: str = ""            # the catalog directory the file was read from
 
     def pool(self, include_radicals: bool = False) -> frozenset:
         return self.formulas | self.radicals if include_radicals else self.formulas
+
+    @property
+    def version(self) -> str:
+        """The version the lock pins: a v2 snapshot's source version, a v1 list's `data_version`."""
+        return self.data_version
+
+    @property
+    def effective_roles(self) -> tuple:
+        """The declared roles; a v1 list reads `name` when any species is named, else `class`."""
+        if self.roles:
+            return tuple(self.roles)
+        named = any((self.meta_of or {}).get(f, {}).get("name") for f in self.formulas)
+        return ("name",) if named else ("class",)
 
     def cite(self) -> str:
         if not self.references:
@@ -120,62 +157,169 @@ def _not_a_neutral(formula) -> str | None:
     return None
 
 
-def load_catalog(directory: str | None = None) -> dict:
-    """Load every *.json reference list under `directory` (default: packaged
-    data/peaklists). Returns {id: ReferenceList}.
+#: the per-process catalog cache: {(dirs, file stamps): {id: ReferenceList}}. The
+#: catalog is read per file in a batch's workers (the evidence stage's context
+#: lists, the degeneracy space) and hashing every snapshot each time is wasted;
+#: the key carries every file's (name, mtime_ns, size), so an edited or added
+#: file is re-read.
+_CATALOG_CACHE: dict = {}
+
+
+def clear_catalog_cache() -> None:
+    _CATALOG_CACHE.clear()
+
+
+def catalog_dirs(directory: str | None = None, user_dir: str | None = "auto") -> list:
+    """The directories a catalog is read from: `directory` (default the bundled
+    data/peaklists) plus the user directory (`lock.user_lists_dir()`) when the
+    default catalog is asked for and the user directory exists. An explicit
+    `directory` (a test's tmp dir, a tool's target) is read alone unless a
+    `user_dir` is named too; ``user_dir=None`` reads the bundled catalog alone."""
+    dirs = [os.path.abspath(directory or _DIR)]
+    if user_dir == "auto":
+        u = LK.user_lists_dir() if directory is None else None
+    else:
+        u = os.path.expanduser(user_dir) if user_dir else None
+    if u and os.path.isdir(u) and os.path.abspath(u) not in dirs:
+        dirs.append(os.path.abspath(u))
+    return dirs
+
+
+def _dir_stamp(d: str) -> tuple:
+    names = sorted(n for n in os.listdir(d) if n.endswith(".json") or n == LK.LOCK_NAME) if os.path.isdir(d) else ()
+    out = []
+    for n in names:
+        st = os.stat(os.path.join(d, n))
+        out.append((n, st.st_mtime_ns, st.st_size))
+    return tuple(out)
+
+
+def _join_names(names: list) -> str:
+    """One display name for a formula several listed compounds share: the first
+    two, then how many more ('Xylene; Ethylbenzene (+2 more)')."""
+    names = list(dict.fromkeys(n for n in names if n))
+    if not names:
+        return ""
+    head = "; ".join(names[:2])
+    return head if len(names) <= 2 else f"{head} (+{len(names) - 2} more)"
+
+
+def _load_one(p: str, lock: dict, lock_present: bool, *, verify: bool) -> ReferenceList:
+    name = os.path.basename(p)
+    d = SN.read_snapshot(p)
+    if not d.get("id"):
+        raise ValueError(f"{name}: a reference list needs an `id`")
+    errs = SN.validate_snapshot(d)
+    sha_errs = [e for e in errs if e.startswith("sha256 mismatch")]
+    other = [e for e in errs if e not in sha_errs]
+    if other:
+        raise ValueError(f"{name}: not a valid schema-v{SN.schema_version(d)} snapshot: " + "; ".join(other))
+    entry = (lock.get("lists") or {}).get(d["id"])
+    if verify:
+        sha = LK.verify(d, entry, name=name)        # raises SnapshotIntegrityError on any mismatch
+    else:
+        sha = SN.species_sha256(d.get("species", []))
+    v2 = SN.schema_version(d) >= SN.SCHEMA_V2
+    pinned = entry is not None
+    if not pinned and (v2 or lock_present):
+        warnings.warn(f"{name}: list {d['id']!r} is UNPINNED (no entry in {LK.LOCK_NAME}); "
+                      "run `peaky lists lock` to pin it", stacklevel=3)
+    sp = d.get("species", [])
+    closed, rad, cond, meta, wrong, skipped, why = set(), set(), {}, {}, [], [], []
+    names_of: dict = {}
+    for s in sp:
+        f = s.get("formula")
+        if not f:
+            continue
+        reason = _not_a_neutral(f)
+        if reason:
+            skipped.append(f)
+            why.append(f"{f}: {reason}")
+            continue
+        radical = is_radical(f)
+        if bool(s.get("radical", False)) != radical:
+            wrong.append(f)
+        (rad if radical else closed).add(f)
+        cond[f] = tuple(s.get("conditions", ()))
+        extra = {k: s[k] for k in ("origin", "modes", "inchikey", "inchikey_block", "cas", "ids") if k in s}
+        if s.get("name"):
+            names_of.setdefault(f, []).append(str(s["name"]))
+        if extra or f in names_of:
+            m = meta.setdefault(f, {})
+            for k, v in extra.items():
+                m.setdefault(k, v)
+            m["n_compounds"] = m.get("n_compounds", 0) + 1
+            if f in names_of:
+                m["name"] = _join_names(names_of[f])
+                if len(names_of[f]) > 1:
+                    m["names"] = list(dict.fromkeys(names_of[f]))
+    if skipped:
+        warnings.warn(
+            f"{name}: {len(skipped)} species skipped, not a neutral "
+            f"molecule over the mass table ({'; '.join(why[:5])}"
+            f"{'; ...' if len(why) > 5 else ''})", stacklevel=3)
+    if wrong:
+        warnings.warn(
+            f"{name}: the radical flag (false when absent) of "
+            f"{len(wrong)} species disagrees with its formula's DBE parity "
+            f"({', '.join(wrong[:5])}"
+            f"{', ...' if len(wrong) > 5 else ''}); parity decides -- run "
+            "tests/test_peaklists.py for the full list", stacklevel=3)
+    return ReferenceList(
+        id=d["id"], system=d.get("system", ""), label=d.get("label", d["id"]),
+        data_version=LK.snapshot_version(d),
+        polarity=d.get("polarity", ""), native_detection=d.get("native_detection", ""),
+        applies_to_contexts=tuple(d.get("applies_to_contexts", ())),
+        references=tuple(d.get("references", ())),
+        formulas=frozenset(closed), radicals=frozenset(rad), conditions_of=cond,
+        source_file=name,
+        always_active=bool(d.get("always_active", False)), meta_of=meta,
+        skipped=tuple(skipped),
+        schema_version=SN.schema_version(d), roles=tuple(d.get("roles") or ()),
+        sha256=sha, pinned=pinned, lock_version=str(entry.get("version", "")) if entry else "",
+        source=dict(d["source"]) if isinstance(d.get("source"), dict) else None,
+        importer=dict(d["importer"]) if isinstance(d.get("importer"), dict) else None,
+        family_scope=str(d.get("family_scope") or "compound"),
+        directory=os.path.dirname(os.path.abspath(p)))
+
+
+def load_catalog(directory: str | None = None, *, user_dir: str | None = "auto",
+                 verify: bool = True) -> dict:
+    """Load every *.json reference list under `directory` (default: the packaged
+    data/peaklists plus the user directory, `catalog_dirs`). Returns {id:
+    ReferenceList}; a user-directory list of an id the bundled catalog also has
+    wins, with a warning.
 
     A species goes to `formulas` or `radicals` by its formula's DBE parity
     (`is_radical`). Its `radical` value (false when absent) is the author's
     claim, checked but never deciding: a list whose claims disagree with parity
     loads with a warning naming them. An entry whose formula is not a neutral
     molecule over the mass table (`_not_a_neutral`) is skipped with a warning
-    and recorded in `ReferenceList.skipped`, never pooled."""
-    directory = directory or _DIR
+    and recorded in `ReferenceList.skipped`, never pooled.
+
+    PINNING: each directory's `catalog.lock` is read; with ``verify`` (the
+    default) every list's species hash is recomputed and a mismatch with its own
+    `sha256` or the lock's raises `SnapshotIntegrityError` naming the list. A
+    pinned list reads `pinned=True`; a schema-v2 snapshot (or any list in a
+    directory that has a lock) without a lock entry loads with an UNPINNED
+    warning. A malformed v2 snapshot raises ValueError. Results are cached per
+    process on the files' stamps (`clear_catalog_cache`)."""
+    dirs = catalog_dirs(directory, user_dir)
+    key = (tuple(dirs), tuple(_dir_stamp(d) for d in dirs), bool(verify))
+    hit = _CATALOG_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
     out: dict = {}
-    for p in sorted(glob.glob(os.path.join(directory, "*.json"))):
-        with open(p, encoding="utf-8") as fh:
-            d = json.load(fh)
-        sp = d.get("species", [])
-        closed, rad, cond, meta, wrong, skipped, why = set(), set(), {}, {}, [], [], []
-        for s in sp:
-            f = s.get("formula")
-            if not f:
-                continue
-            reason = _not_a_neutral(f)
-            if reason:
-                skipped.append(f)
-                why.append(f"{f}: {reason}")
-                continue
-            radical = is_radical(f)
-            if bool(s.get("radical", False)) != radical:
-                wrong.append(f)
-            (rad if radical else closed).add(f)
-            cond[f] = tuple(s.get("conditions", ()))
-            extra = {k: s[k] for k in ("name", "origin", "modes") if k in s}
-            if extra:
-                meta[f] = extra
-        if skipped:
-            warnings.warn(
-                f"{os.path.basename(p)}: {len(skipped)} species skipped, not a neutral "
-                f"molecule over the mass table ({'; '.join(why[:5])}"
-                f"{'; ...' if len(why) > 5 else ''})", stacklevel=2)
-        if wrong:
-            warnings.warn(
-                f"{os.path.basename(p)}: the radical flag (false when absent) of "
-                f"{len(wrong)} species disagrees with its formula's DBE parity "
-                f"({', '.join(wrong[:5])}"
-                f"{', ...' if len(wrong) > 5 else ''}); parity decides -- run "
-                "tests/test_peaklists.py for the full list", stacklevel=2)
-        out[d["id"]] = ReferenceList(
-            id=d["id"], system=d.get("system", ""), label=d.get("label", d["id"]),
-            data_version=str(d.get("data_version", "")),
-            polarity=d.get("polarity", ""), native_detection=d.get("native_detection", ""),
-            applies_to_contexts=tuple(d.get("applies_to_contexts", ())),
-            references=tuple(d.get("references", ())),
-            formulas=frozenset(closed), radicals=frozenset(rad), conditions_of=cond,
-            source_file=os.path.basename(p),
-            always_active=bool(d.get("always_active", False)), meta_of=meta,
-            skipped=tuple(skipped))
+    for d in dirs:
+        lock = LK.read_lock(d)
+        lock_present = os.path.exists(LK.lock_path(d)) and bool(lock.get("lists"))
+        for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+            L = _load_one(p, lock, lock_present, verify=verify)
+            if L.id in out:
+                warnings.warn(f"list {L.id!r}: {p} shadows {os.path.join(out[L.id].directory, out[L.id].source_file)}",
+                              stacklevel=2)
+            out[L.id] = L
+    _CATALOG_CACHE[key] = dict(out)
     return out
 
 
@@ -224,18 +368,35 @@ def keyword_matches(texts: dict) -> dict:
     return {t: v for t, v in out.items() if v}
 
 
-def activation_record(texts, fields=None) -> dict:
+def activation_record(texts, fields=None, include=()) -> dict:
     """How `activate(*texts)` activated: {tags: [...], matched: {tag: [[field,
-    keyword], ...]}} -- which keyword in which text unlocked each tag."""
+    keyword], ...]}, explicit: [...]} -- which keyword in which text unlocked
+    each tag, and which list ids were asked for by name (`--lists`)."""
     texts = list(texts)
     fields = list(fields) if fields is not None else (
         list(ACTIVATION_FIELDS) if len(texts) == len(ACTIVATION_FIELDS) else [f"text {i + 1}" for i in range(len(texts))])
     m = keyword_matches(dict(zip(fields, texts)))
     tags = sorted(resolve_context_tags(*[t or "" for t in texts]))
-    return dict(tags=tags, matched={t: [list(x) for x in m.get(t, [])] for t in tags})
+    return dict(tags=tags, matched={t: [list(x) for x in m.get(t, [])] for t in tags},
+                explicit=[str(x) for x in (include or ())])
 
 
-def activate(*texts: str, record: bool = False, fields=None):
+#: the environment variable `activate` reads explicit list ids from (comma-separated),
+#: the same as the CLI's --lists
+LISTS_ENV = "PEAKY_LISTS"
+
+
+def explicit_list_ids(include=None) -> list:
+    """The list ids asked for by name: ``include`` (a sequence, or a
+    comma-separated string) else $PEAKY_LISTS. Order kept, duplicates dropped."""
+    if include is None:
+        include = os.environ.get(LISTS_ENV, "")
+    if isinstance(include, str):
+        include = [x for x in include.split(",")]
+    return list(dict.fromkeys(str(x).strip() for x in include if str(x).strip()))
+
+
+def activate(*texts: str, record: bool = False, fields=None, include=None):
     """The one activation step every entry point runs: infer the context tags from
     whatever metadata the run has, then select the lists those tags unlock.
     Returns `(lists, tags)` so the caller can log what the metadata bought it.
@@ -247,14 +408,28 @@ def activate(*texts: str, record: bool = False, fields=None):
     chemistry-specific list (on a campaign whose batch names describe the
     instrument and the reagent, the chemistry lives in the dataset name).
 
+    ``include`` names lists to activate regardless of keywords (the CLI's
+    `--lists`, else $PEAKY_LISTS): an imported suspect list whose contexts no
+    keyword describes is switched on by id. An unknown id raises KeyError
+    naming the catalog's ids -- a run must not silently proceed without a list
+    it was told to use.
+
     ``record=True`` returns `(lists, tags, record)`, the record saying which
     keyword in which text (``fields`` names them; default batch / dataset /
-    reagent label for three texts) unlocked each tag (`activation_record`);
-    which lists activate is the same either way."""
+    reagent label for three texts) unlocked each tag and which ids were
+    explicit (`activation_record`); which lists activate is the same either way."""
     tags = resolve_context_tags(*texts)
-    lists = active_lists(load_catalog(), context_tags=tags)
+    cat = load_catalog()
+    lists = active_lists(cat, context_tags=tags)
+    ids = explicit_list_ids(include)
+    missing = [i for i in ids if i not in cat]
+    if missing:
+        raise KeyError(f"reference list(s) {missing} not in the catalog "
+                       f"(bundled + {LK.user_lists_dir()}); known: {sorted(cat)}")
+    have = {L.id for L in lists}
+    lists = lists + [cat[i] for i in ids if i not in have]
     if record:
-        return lists, tags, activation_record(texts, fields)
+        return lists, tags, activation_record(texts, fields, include=ids)
     return lists, tags
 
 
@@ -273,6 +448,23 @@ def active_versions(lists) -> list:
     (a list's split changes with its `data_version`, e.g. the HOM list's 2024.2
     parity correction moved 118 nitrates into the matched pool)."""
     return [(L.id, L.data_version) for L in (lists or ())]
+
+
+def lists_record(lists, activation=None) -> list:
+    """What the run manifest records per active list: id, version, the content
+    hash it was read at, its declared roles, whether the catalog lock pinned it,
+    and how it was activated. A run re-executed later can check it read the
+    same content (`sha256`) or say which list changed."""
+    from peaky.assignment.levels.lists import activation_how
+    out = []
+    explicit = set((activation or {}).get("explicit") or ())
+    for L in (lists or ()):
+        how = "explicit (--lists)" if L.id in explicit else activation_how(L, activation)
+        out.append({"id": L.id, "version": L.data_version, "sha256": L.sha256,
+                    "roles": list(L.effective_roles), "pinned": L.pinned,
+                    "schema_version": int(L.schema_version), "file": L.source_file,
+                    "how_activated": how})
+    return out
 
 
 # ---------------------------------------------------------------------------

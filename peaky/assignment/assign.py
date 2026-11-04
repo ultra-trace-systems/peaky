@@ -1216,6 +1216,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
             "module_hashes": _module_hashes(), "context": profile.label,
             "context_flags": contexts.profile_flags(profile),
             "reflists_active": reflist_versions,     # [(id, data_version), ...]
+            # the pinned record of each list (id, version, sha256, roles, pinned,
+            # how activated): the single-sample manifest's `lists` block
+            "lists": reflists.lists_record(reflists_active, reflists_context),
             # What this sample's candidates were scored at. A run's assignments
             # cannot be read without it: the same envelope scores differently at
             # 0.3 ppm and at 3, and a published run carries it into the store.
