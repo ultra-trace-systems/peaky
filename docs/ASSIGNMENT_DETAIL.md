@@ -552,7 +552,7 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 ### 5.7 Amine re-read (cleanup.py, uronium-only)
 
-`prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. A multifunctional X (≥ 2 O on ≥ 5 C) keeps its adduct reading; a weak X (≤ 1 O or ≤ 4 C) re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). Touches only `neutral_formula`/`adduct`.
+`prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. A multifunctional X (≥ 2 O on ≥ 5 C) keeps its adduct reading; a weak X (≤ 1 O or ≤ 4 C) re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). A re-read touches only `neutral_formula`/`adduct`: the ion is the same, so it keeps the vote's tier. The gate's one tier cap is not a re-read: a weak X that tracks but has ≤ 6 C or no O (`nh4_weak_tracked`) keeps its `[M+NH4]+` reading capped Candidate ([MERGE.md](MERGE.md) §3 step 5).
 
 ---
 
