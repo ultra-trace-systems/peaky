@@ -1893,10 +1893,13 @@ def cmd_mcp(args) -> None:
     server-side; only small tool results cross the MCP boundary."""
     _require_creds()
     from peaky import mcp_server
+    # Banner on STDERR: on the stdio transport stdout carries JSON-RPC frames
+    # only — a stray line there can corrupt the MCP protocol stream.
     print(f"[mcp] peaky MCP server on {args.transport} at "
-          f"{args.host}:{args.port} (Ctrl-C to stop)")
+          f"{args.host}:{args.port} (Ctrl-C to stop)", file=sys.stderr)
     print("[mcp] tools: health, list_workspaces/datasets/batches/samples, "
-          "certify_neutrals, assign_sample, run_batch, job_status, list_jobs")
+          "certify_neutrals, assign_sample, run_batch, job_status, list_jobs",
+          file=sys.stderr)
     mcp_server.serve(host=args.host, port=args.port, transport=args.transport)
 
 

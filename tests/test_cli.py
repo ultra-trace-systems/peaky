@@ -140,6 +140,28 @@ ns = SimpleNamespace(adducts=None, reagent="Br", context=None, sample_id="X", no
 ad, ctx, note = cli._resolve_reagent(ns)
 check("resolve --reagent Br -> Br adducts", ad == list(profiles.BR.adducts), ad)
 check("resolve --reagent Br -> Br context", ctx == profiles.BR.context, ctx)
+
+# ---- mcp: the banner goes to stderr — stdout is JSON-RPC frames only ---------
+import types as _types  # noqa: E402
+
+_fake_ms = _types.ModuleType("peaky.mcp_server")
+_fake_ms.serve = lambda **kw: None      # don't actually bind/serve in the test
+_orig_ms = sys.modules.get("peaky.mcp_server")
+_orig_req = cli._require_creds
+sys.modules["peaky.mcp_server"] = _fake_ms   # avoids needing the `mcp` extra here
+cli._require_creds = lambda: None
+_buf_out, _buf_err = _io.StringIO(), _io.StringIO()
+try:
+    with _contextlib.redirect_stdout(_buf_out), _contextlib.redirect_stderr(_buf_err):
+        cli.cmd_mcp(SimpleNamespace(transport="stdio", host="127.0.0.1", port=1))
+finally:
+    cli._require_creds = _orig_req
+    if _orig_ms is None:
+        del sys.modules["peaky.mcp_server"]
+    else:
+        sys.modules["peaky.mcp_server"] = _orig_ms
+check("mcp banner goes to stderr; stdout carries JSON-RPC frames only",
+      _buf_out.getvalue() == "" and "[mcp]" in _buf_err.getvalue())
 check("resolve --reagent Br -> labelled note", "Br" in note, note)
 # the label rides on the profile `with_profile=True` appends: it is the second
 # text the reference-list unlock reads, and the note (a display string) is not it.
