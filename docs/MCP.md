@@ -40,6 +40,12 @@ peaky mcp --host 0.0.0.0 --port 8765 --transport streamable-http
 peaky mcp --transport stdio     # for a local stdio client (Claude Desktop)
 ```
 
+On `--transport stdio`, stdout is the protocol stream and carries JSON-RPC
+frames only: the server points file descriptor 1 at stderr while it runs, so a
+tool's prints, library logs and batch worker processes all go to stderr
+(`mcp_server.stdout_reserved_for_protocol`). Read stderr for the server's
+messages.
+
 ## Connecting ChatGPT (Developer Mode)
 
 ChatGPT's MCP connectors speak **SSE / streamable-HTTP over a URL** — they do

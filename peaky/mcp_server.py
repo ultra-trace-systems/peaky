@@ -19,8 +19,11 @@ persistent across a server restart) — fine for interactive use.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import sys
 import threading
 import traceback
 import uuid
@@ -396,12 +399,70 @@ def build_server(name: str = "peaky"):
     return server
 
 
+class _ProtocolStdout(io.TextIOBase):
+    """`sys.stdout` while the stdio transport runs: every text write (a `print`,
+    a `log=print` default, a logger on stdout) goes to stderr, and `.buffer` --
+    the binary stream the MCP SDK's stdio transport wraps for its frames -- is
+    the real stdout. `fileno()` is fd 1, which then points at stderr too."""
+
+    def __init__(self, protocol: io.BufferedWriter, err):
+        self.buffer = protocol
+        self._err = err
+
+    def write(self, s: str) -> int:
+        return self._err.write(s)
+
+    def flush(self) -> None:
+        self._err.flush()
+
+    def fileno(self) -> int:
+        return 1
+
+    def writable(self) -> bool:
+        return True
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._err, "encoding", "utf-8")
+
+
+@contextlib.contextmanager
+def stdout_reserved_for_protocol():
+    """Keep the process's stdout for JSON-RPC frames alone.
+
+    On the stdio transport stdout IS the protocol stream: one stray line there
+    (a `print` in a job thread, a library's progress line, a batch worker
+    process, which inherits fd 1) can break the client. Inside this block fd 1
+    points at stderr, so writes at the OS level and from child processes land
+    there, and `sys.stdout` is a `_ProtocolStdout` whose `.buffer` is a private
+    copy of the real stdout. The MCP SDK's `stdio_server` wraps
+    `sys.stdout.buffer` when it starts, so only its frames reach the client.
+    Everything is restored on exit."""
+    sys.stdout.flush()
+    saved_stdout, saved_fd1 = sys.stdout, os.dup(1)
+    protocol = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    sys.stdout = _ProtocolStdout(protocol, sys.stderr)
+    try:
+        yield protocol
+    finally:
+        sys.stdout = saved_stdout
+        os.dup2(saved_fd1, 1)
+        os.close(saved_fd1)
+        protocol.close()
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765,
           transport: str = "streamable-http") -> None:
     """Run the peaky MCP server. `streamable-http` (default) is what ChatGPT
     Developer Mode connectors speak; `sse` and `stdio` are also supported (stdio
-    for local clients like Claude Desktop)."""
+    for local clients like Claude Desktop). On stdio, stdout carries the
+    protocol frames only (`stdout_reserved_for_protocol`)."""
     server = build_server()
     server.settings.host = host
     server.settings.port = port
-    server.run(transport=transport)
+    if transport == "stdio":
+        with stdout_reserved_for_protocol():
+            server.run(transport=transport)
+    else:
+        server.run(transport=transport)

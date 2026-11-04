@@ -1715,7 +1715,7 @@ def test_the_console_hint_goes_by_the_status_never_the_messages_digits(capsys):
         out = capsys.readouterr().out
         assert f"(ref: {ref})" in out and out.rstrip().endswith(f"(ref: {ref})"), out
     for exc, hint in ((AuthenticationError("Not authenticated", status_code=401, url=url),
-                       "MASCOPE_ACCESS_TOKEN is likely expired"),
+                       "MASCOPE_SERVICE_NAME is bound per token"),
                       (_waf_403(NH4), "Cloudflare WAF 403"),
                       (NotFoundError("Sample not found", status_code=404, url=url),
                        "Not found on the server"),

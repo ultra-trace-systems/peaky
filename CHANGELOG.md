@@ -641,6 +641,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   AI Agent token) is the `X-Service-Name` every request presents: the SDK client, the raw reads,
   the publish uploads and the curation client. Unset, it stays `mascope_sdk`.
 
+- **`peaky --version`** prints the package version (`peaky 0.10.0b1`) and exits 0; it used to fail with "the
+  following arguments are required: cmd".
+
+- **The 401 hint names both causes.** `MASCOPE_SERVICE_NAME` is bound per token: a valid token minted for one
+  service (e.g. `ai-agent`) is refused under another (e.g. `mascope_sdk`), and that 401 looks the same as an
+  expired token. The hint, which blamed expiry only, now says to check the token and `MASCOPE_SERVICE_NAME`.
+
 - **MS2 fragment assignment core (`peaky.ms2`): every MS2 peak is read as a sub-formula of every ion
   in the isolation window, and kept only when the neutral loss it implies splits into molecules
   (`assign_fragments`, `fragment_candidates`, `decompose_loss`, `mass_offset` / `apply_offset`;
@@ -1620,6 +1627,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   +2.1 ppm offset. On an Orbitrap every usable reference ion now calibrates except those
   over 100x the median height, and a trend needs a 1 ppm swing that predicts held-out ions
   with half the constant's error (an offset: 1 ppm). A TOF is judged as before.
+- **On the stdio transport nothing but JSON-RPC reaches stdout.** A tool's `print`, a `log=print` default left
+  in a call path, a library's progress line or a batch worker process (which inherits fd 1) wrote straight onto
+  the protocol stream and could break a stdio client. `peaky mcp --transport stdio` now runs inside
+  `mcp_server.stdout_reserved_for_protocol()`: fd 1 points at stderr and the SDK writes its frames to a private
+  copy of the real stdout. The HTTP transports are unchanged.
 
 ## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
 
