@@ -52,8 +52,13 @@ __version__ = "0.8.0"  # + the per-scan MS2 fetchers: fetch_file_metadata (a raw
 # Precedence: --env / $MASCOPE_ENV > a PROJECT-LOCAL .env (the repo root, next to
 # pyproject.toml/the package — clone-and-go — or the current dir) > the home
 # locations (~/.mascope/.env is the canonical shared one).
-_PKG_DIR = os.path.dirname(os.path.abspath(__file__))           # .../peaky
-_REPO_ENV = os.path.join(os.path.dirname(_PKG_DIR), ".env")     # repo-root/.env (editable install)
+_PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../peaky (the PACKAGE dir)
+# The clone root is the PARENT of the package dir (paths.PKG_ROOT's parent) --
+# that is where pyproject.toml and the repo-root .env live. Deriving it from
+# _PKG_DIR keeps it right for an editable install (where the package dir sits
+# inside the clone) without importing peaky.paths (a cycle: paths is imported
+# by peaky.io's siblings).
+_REPO_ENV = os.path.join(os.path.dirname(_PKG_DIR), ".env")              # repo-root/.env (editable install)
 CANONICAL_ENV = "~/.mascope/.env"
 ENV_SEARCH = [_REPO_ENV, ".env", CANONICAL_ENV, "~/mascope-mcp/.env",
               "~/.claude/skills/mascope-sdk/.env"]

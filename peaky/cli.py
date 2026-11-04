@@ -2819,7 +2819,12 @@ def cmd_setup(args) -> None:
         else:
             open(env_path, "a").close()
     body = open(env_path).read()
-    if "PEAKY_OUTPUT_DIR" not in body:                     # 2. outputs -> workspace output/
+    # 2. outputs -> workspace output/. Match an ACTIVE assignment line: the
+    # .env.example template carries a commented "# PEAKY_OUTPUT_DIR=" and a
+    # substring test sees it, so the real line was never written.
+    if not any(l.split("=", 1)[0].strip() == "PEAKY_OUTPUT_DIR"
+               for l in body.splitlines()
+               if l.strip() and not l.strip().startswith("#")):
         with open(env_path, "a") as fh:
             fh.write(f"\n# Where run outputs go (this workspace's output/ folder).\n"
                      f"PEAKY_OUTPUT_DIR={out_dir}\n")
