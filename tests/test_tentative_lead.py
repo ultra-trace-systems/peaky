@@ -6,8 +6,9 @@ itself (O >= 11 on a saturated window, an O-monster, a carbon cluster, a
 carbon-rich skeleton, an impossible ionization, an off-calibration residual fit,
 unconfirmed F >= 4), or the proposal is only unsupported: a reference-list match
 too dim to test, a commit outside the element budget, a residual fit with
-nothing behind it, an uncorroborated radical anion, a reagent-N re-read. The
-second kind is now `tentative_lead`.
+nothing behind it, an uncorroborated radical anion (and, until cleanup 0.7, a
+reagent-N re-read, which now keeps its tier and is no lead). The second kind is
+now `tentative_lead`.
 
 Pinned here:
 - each lead setter writes the lead and not below, and each hard setter still
@@ -170,12 +171,16 @@ def test_an_uncorroborated_radical_anion_is_a_lead_and_corroboration_clears_both
     assert led.at[2, "confidence"] == "Low (radical anion)"
 
 
-def test_the_reagent_n_reread_is_a_lead_and_a_frame_without_flags_gets_none():
+def test_the_reagent_n_reread_is_no_lead_and_a_frame_without_flags_gets_none():
+    # the same ion as the reading it replaces: its tier stands and it is no lead
+    # (the split's doubt is its note's); a lead used to list an Assigned row among
+    # the workbook's "Below assignability" rows
     rows = [dict(peak_id="u", role="M0", neutral_formula="C5H6", adduct="[M+(CH4N2O)H]+", ion_formula="",
                  dbe=3.0)]
     led = _tiered(rows)
     assert CL.relabel_reagent_n_adducts(led, log=lambda *a: None) == {"reagent_n_relabeled": 1}
-    assert led.at[0, "neutral_formula"] == "C6H10N2O" and _flags(led, 0) == (False, True)
+    assert led.at[0, "neutral_formula"] == "C6H10N2O" and _flags(led, 0) == (False, False)
+    assert led.at[0, "tier"] == "Assigned"
     merged = pd.DataFrame(rows).assign(tier="Assigned")    # the merged ledger carries no flag
     CL.relabel_reagent_n_adducts(merged, log=lambda *a: None)
     assert merged.at[0, "neutral_formula"] == "C6H10N2O"

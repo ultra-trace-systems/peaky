@@ -11,8 +11,8 @@ other rotations of the widget would reveal: oxidation, alkoxylate, contaminants)
 
 `detect_series` is a pure data function (no plotting); `render_gka` lazily imports
 matplotlib and writes a standalone PNG. Built from one committed ledger -- the
-merged batch ledger or a single-file ledger both work (it reads neutral_formula
-+ tier only).
+merged batch ledger or a single-file ledger both work (it reads neutral_formula,
+and tier / below_assignability where present).
 """
 from __future__ import annotations
 
@@ -22,9 +22,10 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.assignment import ledger as L
 from peaky.assignment import series_gka as G
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # an F-monster the ledger did not refuse (a CF2 ladder, fluorine.py) is drawn
 
 INK = "#222222"
 GREY = "#777777"
@@ -70,9 +71,11 @@ class Series:
 # ---------------------------------------------------------------------------
 def _is_f_monster(cnt: dict) -> bool:
     """Unconfirmed-fluorine 'monster': F>=4, not a PFCA CnHF(2n-1)O2, and no Cl/Br/S
-    anchor -- ¹⁹F is monoisotopic so these are mass coincidences (the cleanup demote
-    set). Excluded from the GKA so the fluorinated panel shows REAL PFAS (the PFCAs),
-    not the demoted coincidences."""
+    anchor -- ¹⁹F is monoisotopic so these are mass coincidences (the formulas
+    cleanup.demote_unconfirmed_fluorine reads; it refuses those its CF2 ladder does not
+    lift). Excluded from the GKA, unless the ledger shows the row was not refused
+    (`_neutral_masses`), so the fluorinated panel shows REAL PFAS, not the demoted
+    coincidences."""
     nF, nC = cnt.get("F", 0), cnt.get("C", 0)
     if nF < 4:
         return False
@@ -85,18 +88,27 @@ def _neutral_masses(ledger: pd.DataFrame) -> dict[str, float]:
     """{neutral_formula -> neutral monoisotopic mass} over the assigned M0 set,
     one entry per distinct neutral (deduped across adduct channels). Excludes
     unconfirmed-fluorine 'monsters' (the demoted coincidence fits) so the GKA's
-    fluorinated panel shows the real PFAS (the PFCAs), not ¹⁹F mass coincidences."""
+    fluorinated panel shows the real PFAS (the PFCAs), not ¹⁹F mass coincidences --
+    except a monster the ledger did NOT refuse: one read off its CF2 ladder
+    (fluorine.py) carries no below_assignability flag, and a full ladder may reach
+    Assigned, which a refused row never does (the refusal forces Candidate; the
+    merged ledger carries the tier, not the flag)."""
     if "role" in ledger.columns:
         led = ledger[ledger["role"] == "M0"]
     else:
         led = ledger
     forms = led["neutral_formula"].dropna().astype(str)
+    not_refused: set[str] = set()
+    if "tier" in led.columns:
+        not_refused |= set(forms[led.loc[forms.index, "tier"].astype(str) == "Assigned"])
+    if "below_assignability" in led.columns:
+        not_refused |= set(forms[~led.loc[forms.index, "below_assignability"].map(L._truthy).astype(bool)])
     out: dict[str, float] = {}
     for f in forms.unique():
         if not f or f == "nan":
             continue
         try:
-            if _is_f_monster(C.parse_formula(f)):
+            if _is_f_monster(C.parse_formula(f)) and f not in not_refused:
                 continue
             out[f] = C.neutral_mass(f)
         except Exception:

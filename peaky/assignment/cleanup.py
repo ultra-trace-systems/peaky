@@ -24,6 +24,7 @@ from __future__ import annotations
 import bisect
 import dataclasses
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -31,11 +32,19 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.assignment import degeneracy as D
+from peaky.assignment import fluorine as FL
+from peaky.assignment import masscal as MC
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.6.2"   # + the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+__version__ = "0.7.0"   # + the reagent-N re-read and the amine gate keep the tier (the same ion); reread_source;
+                        #   the amine gate by oxygen count (a multifunctional X keeps its adduct, a tracking weak X
+                        #   is capped) and the urea-adduct cap on hydrocarbon / N-rich neutrals;
+                        #   the reagent-N re-read is no tentative_lead any more (its doubt is the split's: the note);
+                        #   the isotope-gated recovery reads the candidate's own M+2 offset, and reclaim_satellites
+                        #   holds a heteroatom line to the sweep's own-line test, on an Orbitrap-class run
+                        # 0.6.2: the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
                         # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
@@ -237,6 +246,35 @@ def _measure_pattern(near, mz, h):
     return r2, r4
 
 
+def _own_pattern(near, mz, h, ion_formula, ppm):
+    """(r2, r4, ok) of a candidate ION's own M+2 / M+4 lines on an Orbitrap-class
+    run: each read at the ion's expected offset (the strongest predicted line
+    near +2 / +4 Da: 37Cl, 81Br, their merged pair) within `ppm`, and `ok` when
+    the M+2 line is there at satellites.ISO_RATIO_BAND x its prediction. The M+4
+    is only read here: `_pattern_ok` judges it where it did before (the Br2
+    band), so a BrCl candidate needs no M+4 it never needed. Read at the 81Br
+    offset in a 6-mDa window, a 37Cl candidate took another ion's M0 5.6 mDa
+    away as its line."""
+    from peaky.assignment import satellites as SAT
+    from peaky.chem import isotopes as ISO
+    try:
+        pat = ISO.isotope_pattern(str(ion_formula), min_rel=0.01)
+    except Exception:  # noqa: BLE001 -- an unparseable ion: no own line
+        return 0.0, 0.0, False
+    out = []
+    for lo, hi in ((1.9, 2.1), (3.9, 4.1)):
+        lines = [(rel, d) for d, rel, _lab in pat if lo < d < hi]
+        if not lines:
+            out.append((0.0, 0.0))
+            continue
+        rel, d = max(lines)
+        p = near(mz + d, tol=(mz + d) * ppm * 1e-6)
+        out.append(((p[1] / h) if (p is not None and h > 0) else 0.0, rel))
+    (r2, rel2), (r4, _rel4) = out
+    ok = rel2 > 0 and SAT.iso_ratio_ok(r2 / rel2)
+    return r2, r4, ok
+
+
 def _pattern_ok(nbr_ion, ncl_ion, r2, r4):
     """Does the measured (r2, r4) confirm the candidate's halogen count?
     Recovery REQUIRES a halogen handle, so a (0 Br, 0 Cl) ion is rejected here
@@ -331,9 +369,17 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
     replacing it only with a halogen formula that passes the same gates. Runs
     before reclaim_satellites: a twin that is another committed ion's isotope line
     is excluded by offset in _halogen_twins instead."""
+    from peaky.assignment import satellites as SAT
     score_fn = score_fn or IO.score_candidates
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
+    # on an Orbitrap-class run the M+2 is read at each candidate's OWN offset,
+    # within max(2 ppm, 3 sigma) of it, at 0.5-2x its prediction (_own_pattern)
+    own_ppm = (SAT.iso_position_ppm(cfg, getattr(cfg, "cal_sigma", None), wide=float("inf"))
+               if SAT.orbitrap_class(cfg) else None)
+    if own_ppm is not None and not np.isfinite(own_ppm):
+        own_ppm = None                                # uncalibrated: the 6-mDa reading as before
+    carry = getattr(cfg, "axis_edge_carry", None)      # the batch axis model's edge carry
     pk = ledger.dropna(subset=["mz"]).sort_values("mz")
     mzs = pk["mz"].tolist(); hts = pk["height"].tolist()
     def near(t, tol=0.006):
@@ -386,7 +432,11 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         if sub.empty:
             continue
         if mu is not None:
-            sub = sub[((sub["ppm_error"] - mu) / sigma).abs() <= z_max]
+            # at the line's own m/z: the batch axis model's edge carry moves the centre
+            # of a line just outside its scope (masscal.carried_centre)
+            c = (MC.carried_centre(carry, mu, pd.to_numeric(sub["sample_peak_mz"], errors="coerce").to_numpy())
+                 if carry else mu)
+            sub = sub[((sub["ppm_error"] - c) / sigma).abs() <= z_max]
         sub = sub[sub["ion_score"] >= score_floor]
         if sub.empty:
             continue
@@ -395,8 +445,14 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         chosen = None
         for _, r in sub.iterrows():
             ic = C.parse_formula(r["ion_formula"])
-            if _pattern_ok(ic.get("Br", 0), ic.get("Cl", 0), r2, r4):
+            r2c, r4c = r2, r4
+            if own_ppm is not None:
+                r2c, r4c, own_ok = _own_pattern(near, mz, h, r["ion_formula"], own_ppm)
+                if not own_ok:
+                    continue
+            if _pattern_ok(ic.get("Br", 0), ic.get("Cl", 0), r2c, r4c):
                 chosen = r
+                r2 = r2c
                 break
         if chosen is None:
             continue
@@ -413,7 +469,7 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         if nc.get("N", 0) > 0 or nc.get("S", 0) > 0 or nc.get("P", 0) > 0:
             continue
         ppm = float(chosen["ppm_error"])
-        z = (ppm - mu) / sigma if mu is not None else 0.0
+        z = (ppm - MC.carried_centre(carry, mu, mz)) / sigma if mu is not None else 0.0
         replaced = ""
         if pid in twins:
             row = ledger.loc[ledger.peak_id == pid].iloc[0]
@@ -471,7 +527,7 @@ def _ion_str(neutral, adduct):
     return C.format_formula(cnt)
 
 
-def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> dict:
+def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, cfg=None, log=print) -> dict:
     """Final sweep: attach an UNEXPLAINED peak that is a clean satellite of an
     assigned M0 (parent carries that element AND the intensity ratio is physically
     consistent) as an iso_child. Covers the full diagnostic set 13C / 15N / 81Br /
@@ -480,13 +536,26 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
     leak is claimed here instead of floating free as a base peak a mass-coincidence
     phantom can grab. Touches only unexplained rows -- it can never demote a real
     M0. Every gate is atom-count-aware (ratio ~ n_atoms * per-atom abundance), so
-    it cannot mis-grab an unrelated neighbour at the satellite offset."""
+    it cannot mis-grab an unrelated neighbour at the satellite offset.
+
+    On an Orbitrap-class run (`cfg`) a heteroatom line (every label but 13C) is
+    also held to the envelope sweep's own-line test (postprocess._own_line_ok:
+    within satellites.iso_position_ppm of its position, at
+    satellites.ISO_RATIO_BAND x its prediction, from 0.3x under 4x the gate), so
+    the neighbour ion the sweep left unexplained -- 2.6-4.8 ppm off a predicted
+    34S / 18O position, or at 2-3x the ratio -- is not re-attached here. The
+    summary gains `not_own` where the test acted."""
     from peaky.chem import isotopes as ISO
+    from peaky.assignment import satellites as SAT
     m0 = ledger[ledger["role"] == L.ROLE_M0].dropna(subset=["mz"]).sort_values("mz")
     if not len(m0):
         return {"reclaimed": 0}
+    strict = SAT.orbitrap_class(cfg)
+    if strict:
+        from peaky.assignment.passes.postprocess import own_line_of
     mz = m0["mz"].to_numpy(); pid = m0["peak_id"].to_numpy()
     ionf = m0["ion_formula"].astype(str).to_numpy(); ph = m0["height"].to_numpy()
+    envelopes: dict = {}        # ion formula -> (its envelope lines, its fine-structure lines)
     # (delta-m, label, element, per-atom abundance). 13C first (most common), then
     # the heavy-halogen M+2 doublets, then the faint mono-heteroatom diagnostics.
     DELT = [
@@ -499,7 +568,7 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
         (ISO.D_30SI, "30Si", "Si", ISO.R_30SI_PER_SI),
         (ISO.D_18O,  "18O",  "O",  ISO.R_18O_PER_O),
     ]
-    n = 0
+    n = n_not_own = 0
     for i in ledger.index[ledger["role"] == L.ROLE_UNEXPLAINED]:
         cmz = ledger.at[i, "mz"]; chh = ledger.at[i, "height"]
         if pd.isna(cmz):
@@ -527,6 +596,11 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
                 ok = 0.3 * exp <= ratio <= 2.5 * exp and ratio < 1.0
             if not ok:
                 continue
+            if strict and label != "13C" and not own_line_of(
+                    ionf[best], float(mz[best]), float(ph[best]), cmz, chh, d, cfg, wide=ppm,
+                    fallback_rel=nel * per, cache=envelopes):
+                n_not_own += 1
+                continue
             try:
                 L.attach_isotopologue(ledger, ledger.at[i, "peak_id"], pid[best],
                                       iso_label=label)
@@ -537,8 +611,12 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
             except L.LedgerError:
                 pass
             break
-    log(f"[cleanup] reclaimed {n} leaked isotopologue satellites")
-    return {"reclaimed": n}
+    log(f"[cleanup] reclaimed {n} leaked isotopologue satellites"
+        + (f" ({n_not_own} heteroatom line(s) not the parent's own)" if n_not_own else ""))
+    out = {"reclaimed": n}
+    if n_not_own:
+        out["not_own"] = n_not_own
+    return out
 
 
 def reclaim_envelope_tails(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> dict:
@@ -641,18 +719,27 @@ def _is_pfca(cnt: dict) -> bool:
 
 
 def demote_unconfirmed_fluorine(ledger: pd.DataFrame, *, f_min: int = F_DEMOTE_MIN,
-                                log=print) -> dict:
+                                cfg=None, log=print) -> dict:
     """Demote M0 assignments resting on UNCONFIRMED fluorine. ¹⁹F is 100%
     monoisotopic, so a high-F formula has NO isotope twin to corroborate it; when it
     is also not a known PFCA and carries no Cl/Br/S anchor (whose ³⁷Cl/⁸¹Br/³⁴S
     pattern WOULD confirm a heavy atom), a high-F fit is almost always a mass
     coincidence ('F-monster', e.g. C11H6F16). Demote Assigned->Candidate and flag
-    below_assignability. Real PFCAs and isotope-anchored F species are kept."""
-    n = 0
+    below_assignability. Real PFCAs and isotope-anchored F species are kept.
+
+    The fluorine evidence a spectrum CAN show is a CF2 ladder (fluorine.py: the
+    same remaining composition +/- k CF2 as picked lines of this file, at
+    consistent heights). A reading with enough ladder lines is not refused --
+    no below_assignability -- unless the 14N twin of its 15N alias or its own
+    13C line refutes it; it is Candidate until enough members of its ladder are
+    committed, and then keeps the tier the tier engine gave it. `cfg` (the
+    file's PassConfig) supplies the ladder's windows and the 13C floor."""
+    n = n_ladder = 0
     has_ba = "below_assignability" in ledger.columns
     has_iso = "isotopologues" in ledger.columns
     target = (ledger.index[ledger["role"] == L.ROLE_M0]
               if "role" in ledger.columns else ledger.index)   # merged ledger has no role col
+    ladder = FL.verdicts(ledger, cfg=cfg)
     for i in target:
         cnt = C.parse_formula(str(ledger.at[i, "neutral_formula"] or ""))
         if cnt.get("F", 0) < f_min:
@@ -672,18 +759,37 @@ def demote_unconfirmed_fluorine(ledger: pd.DataFrame, *, f_min: int = F_DEMOTE_M
                 continue
         elif cnt.get("Cl", 0) or cnt.get("Br", 0) or cnt.get("S", 0):
             continue
+        fl = ladder.get(ledger.at[i, "peak_id"]) if "peak_id" in ledger.columns else None
+        if fl is not None and fl.lift:
+            # fluorine read off a CF2 ladder: not refused (no below_assignability);
+            # Candidate until enough of its members are committed (the reason
+            # then says so), else the tier engine's tier stands
+            note = f"F{cnt.get('F', 0)} " + FL.lift_note(fl)
+            if not fl.full and str(ledger.at[i, "tier"]) == "Assigned":
+                ledger.at[i, "tier"] = "Candidate"
+                _note(ledger, i, note)
+            if "commentary" in ledger.columns:
+                prev = str(ledger.at[i, "commentary"] or "")
+                ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
+            n_ladder += 1
+            continue
         if str(ledger.at[i, "tier"]) == "Assigned":
             ledger.at[i, "tier"] = "Candidate"
         if has_ba:
             ledger.at[i, "below_assignability"] = True
         if "commentary" in ledger.columns:
             note = (f"unconfirmed fluorine (F{cnt.get('F', 0)}; ¹⁹F monoisotopic, no "
-                    "CONFIRMED Cl/Br/S isotope anchor, not a PFCA) -- likely mass coincidence")
+                    "CONFIRMED Cl/Br/S isotope anchor, not a PFCA) -- likely mass coincidence"
+                    + (f"; {FL.veto_note(fl)}" if fl is not None and fl.veto else ""))
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
         n += 1
-    log(f"[cleanup] demoted {n} unconfirmed-fluorine M0 (F>={f_min}, F-monsters)")
-    return {"f_demoted": n}
+    log(f"[cleanup] demoted {n} unconfirmed-fluorine M0 (F>={f_min}, F-monsters)"
+        + (f"; {n_ladder} kept on their CF2 ladder" if n_ladder else ""))
+    out = {"f_demoted": n}
+    if n_ladder:
+        out["f_ladder"] = n_ladder
+    return out
 
 
 HC_CARBON_MAX = 0.35   # H/C below this (F-free) -> implausibly carbon-rich skeleton
@@ -1051,11 +1157,18 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
 
     SKIPPED when the same hydrocarbon also has its own [M+H]+ row -- then it is a
     genuine hydrocarbon (e.g. a terpene C10H16 that legitimately forms [M+NH4]+),
-    so its cluster adducts are left alone. The re-read is tiered Candidate +
-    tentative_lead (C19(c): unsupported, not contradicted): the specific
-    N-heterocycle is rarely cross-channel-confirmed and the region is often
-    reagent background, but the protonated-heterocycle label is the saner
-    best-guess and stays visible. Positive adducts only (negative reagents never
+    so its cluster adducts are left alone. The specific N-heterocycle is rarely
+    cross-channel-confirmed and the region is often reagent background, but the
+    protonated-heterocycle label is the saner best-guess and stays visible. It is
+    the SAME ION as the reading it replaces, so it keeps its tier and confidence
+    (the tier answers "is the ion right?"; tiers.REAGENT_N_OPEN_MARK): the doubt
+    is the split's, which the note says and the evidence level decides. Until
+    0.10 the re-read was set to Candidate, "Low (reagent-N re-read)" and a
+    tentative_lead (setter `reagent_n`, still read on older ledgers) whatever the
+    files had shown (the trimethylamine ion of a uronium field batch, Assigned in
+    16 of 17 files, came out of the merge as Candidate); a lead on a row that
+    keeps Assigned would list it among the single-sample workbook's "Below
+    assignability" rows as well. Positive adducts only (negative reagents never
     hit these).
 
     That skip key is a PRESENCE test, so on a batch it is applied ONCE to the
@@ -1064,9 +1177,8 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     [M+H]+ row was picked flips with each file's S/N, and the same ion then came
     out as C15H22 [M+NH4]+ in fourteen files and C15H25N [M+H]+ in the fifteenth.
     Works on a merged frame as it does on a ledger: `role` is optional, and the
-    columns it annotates (ion_formula, dbe, the assignability flags, confidence,
-    commentary, tier_reason) are each written only when present (the merged
-    ledger carries no flag, so none is written there)."""
+    columns it annotates (ion_formula, dbe, commentary, tier_reason) are each
+    written only when present."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"reagent_n_relabeled": 0}
     hc_with_mh = {str(ledger.at[j, "neutral_formula"] or "")
@@ -1097,16 +1209,12 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "ion_formula"] = C.format_formula({**m2, "H": m2.get("H", 0) + 1}) + "+"
         if "dbe" in ledger.columns:
             ledger.at[i, "dbe"] = C.dbe(m2)
-        if str(ledger.at[i, "tier"]) == "Assigned":
-            ledger.at[i, "tier"] = "Candidate"
-        L.mark_lead(ledger, i, "reagent_n")
-        if "confidence" in ledger.columns:
-            ledger.at[i, "confidence"] = "Low (reagent-N re-read)"
         note = (f"re-read {f_raw} {add_label} as [M+H]+ "
                 f"of {new}: a pure hydrocarbon has no site to bind the reagent N-cluster and "
                 "would show [M+H]+ if it ionized -- the cluster N belongs to the analyte "
                 "(N-heterocycle), not [M+reagent]+ of a hydrocarbon; tentative (this region "
-                "is often reagent background)")
+                "is often reagent background); the same ion, so the tier stands and the "
+                "split stays open")
         if "commentary" in ledger.columns:
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
@@ -1815,6 +1923,8 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
     zacc = getattr(cfg, "cal_z_accept", 2.0)
+    carry = getattr(cfg, "axis_edge_carry", None)      # the batch axis model's edge carry
+    has_mz = "mz" in ledger.columns
     has_ba = "below_assignability" in ledger.columns
     is_m0 = ledger["role"] == L.ROLE_M0 if "role" in ledger.columns else pd.Series(True, index=ledger.index)
     # neutrals with a primary-channel (non-minor) M0 assignment somewhere
@@ -1830,7 +1940,10 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         ad = str(ledger.at[i, "adduct"]) if "adduct" in ledger.columns else ""
         ppm = ledger.at[i, "ppm_error"]
-        z = abs((float(ppm) - mu) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
+        # at the row's m/z: a row just outside the batch axis model's scope is judged at
+        # the centre plus the model's edge (masscal.carried_centre)
+        centre = MC.carried_centre(carry, mu, ledger.at[i, "mz"]) if carry and has_mz else mu
+        z = abs((float(ppm) - centre) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
         comm = str(ledger.at[i, "commentary"] or "")
         reason = None
         lead = None            # the lead's setter code (ledger.LEAD_SETTERS); None = hard
@@ -1927,7 +2040,7 @@ def run_cleanup(client, sample_id, ledger, profile, cfg, *, log=print) -> dict:
     rhc = relabel_reagent_halocarbons(ledger, reagent=getattr(cfg, "reagent_element", None),
                                       log=log)
     art = flag_ringing_artifacts(ledger, log=log)
-    sat = reclaim_satellites(ledger, log=log)
+    sat = reclaim_satellites(ledger, cfg=cfg, log=log)
     tails = reclaim_envelope_tails(ledger, log=log)   # deep poly-halogen envelope (k>=2)
     # NB: demote_unconfirmed_fluorine is NOT called here -- it must run AFTER
     # tiers.apply_tiers (which recomputes tier and would re-promote the F-monster).
@@ -1987,10 +2100,10 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     [M+(CH4N2O)H]+ parent traces):
 
       * KEEP as [M+NH4]+ adduct when it TRACKS a shaped parent (r >= r_min,
-        overlap >= min_overlap) -- confirmed same molecule. A WEAK X
-        (`nh4_weak_neutral`: <= 1 O or <= 4 C) is kept but capped Candidate:
-        its source-made amide tracks the carbonyl too, so tracking cannot tell
-        the two apart.
+        overlap >= min_overlap) -- confirmed same molecule. A WEAK X that
+        tracking cannot settle (`nh4_weak_tracked`: a weak X with <= 6 C, or
+        no O) is kept but capped Candidate: its source-made amide tracks the
+        carbonyl too, so tracking cannot tell the two apart.
       * a multifunctional X (>= 2 O on >= 5 C) that is not confirmed stays the
         [M+NH4]+ adduct (tier unchanged): NH4+ adducts of such oxygenates are the
         rule, in NH4+ CIMS and on the Ur+ side channel alike (see AMINE_WEAK_*).
@@ -2000,26 +2113,33 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         re-read; on an NH4+ run (`nh4_main`, the profile's own adduct) many
         oxygenates show no other channel, so their absence says nothing.
       * OTHERWISE (a weak X) default to [M+H]+ of the protonated CHON (amine
-        X+NH3), at Candidate tier: independent time trace (r <= r_reject), only
-        weak tracking (r_reject<r<r_min), a flat unconfirmable parent, or a
-        parent absent from the TS.
+        X+NH3): independent time trace (r <= r_reject), only weak tracking
+        (r_reject<r<r_min), a flat unconfirmable parent, or a parent absent
+        from the TS. The re-read keeps the tier the vote gave the ion (below).
 
     Overriding exceptions (keep [M+NH4]+):
       * X contains Si: ammonium adducts of siloxanes are real contaminant chemistry;
-        the +NH3 re-read would fabricate an "aminosiloxane". (Tier unchanged.)
+        the +NH3 re-read would fabricate an "aminosiloxane".
       * X is PROTECTED -- identity established by curation/cross-channel evidence
         independent of the NH4 channel (reflist-rescue / known-species / certified
         provenance; pass the neutral-formula set as `protected`). Holds e.g. NBBS.
-        (Tier unchanged.)
       * the amine X+NH3 is valence-impossible (saturated X -> negative DBE): the
-        ammonium reading is the only valid one, kept but capped Candidate.
+        ammonium reading is the only valid one, kept, unconfirmed.
 
     Without a time series (single-sample run) nothing can be confirmed, so every
-    non-Si/protected [M+NH4]+ of a weak X defaults to the protonated CHON
-    (Candidate); a multifunctional X keeps its adduct reading.
+    non-Si/protected [M+NH4]+ of a weak X defaults to the protonated CHON; a
+    multifunctional X keeps its adduct reading.
 
-    A re-read changes neutral_formula + adduct and caps the tier at Candidate (the
-    ion/m-z/score/ppm are identical). Mutates in place; returns a summary."""
+    A re-read changes neutral_formula + adduct only: the ion/m-z/score/ppm are
+    identical, so the row keeps the tier the vote gave the ion (the tier answers
+    "is the ion right?"; tiers.REAGENT_N_OPEN_MARK). Which neutral the ion is --
+    the amine default or the adduct -- is the split, which the evidence level
+    keeps open (docs/EVIDENCE_LEVELS.md §6.5). Until 0.10 every re-read and every
+    unconfirmed amine-impossible keep was capped at Candidate, which decided the
+    tier per batch from a 2-h trace test and flipped one ion's tier from batch to
+    batch. The one cap left here is not a re-read: a tracking weak X kept as
+    [M+NH4]+ (`nh4_weak_tracked`) is capped Candidate. Mutates in place; returns
+    a summary."""
     keys = ["relabeled", "kept_covary", "kept_protected", "kept_si", "forced_nh4",
             "kept_covary_weak", "kept_default"]
     if not {"neutral_formula", "adduct"} <= set(ledger.columns):
@@ -2037,25 +2157,24 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
 
     def _reread(i, X, *, why):
         """DEFAULT reading for an unconfirmed [M+NH4]+ mass: read it as [M+H]+ of the
-        protonated CHON (the amine X+NH3), at Candidate tier. Ammonium adducts are
-        rare, so the CHON reading wins unless the adduct is confirmed by tracking. If
-        the amine is valence-impossible the ammonium reading is the only valid one --
-        keep it, but still cap to Candidate (it is unconfirmed)."""
+        protonated CHON (the amine X+NH3). Ammonium adducts are rare, so the CHON
+        reading wins unless the adduct is confirmed by tracking. If the amine is
+        valence-impossible the ammonium reading is the only valid one -- keep it,
+        unconfirmed. Either way the ion and its tier stand: the doubt is the split's."""
         cnt = C.parse_formula(X)
         cnt["N"] = cnt.get("N", 0) + 1
         cnt["H"] = cnt.get("H", 0) + 3
         ok, _ = C.dbe_ok(cnt)
         if not ok:                                        # amine impossible -> keep NH4
-            _cap_tier(i)
             _note(ledger, i, f"[M+NH4]+ kept (amine valence-impossible), unconfirmed "
-                  f"({why}); capped Candidate")
+                  f"({why}); the split stays open, the tier reads the ion")
             counts["forced_nh4"] += 1
             return
         ledger.at[i, "neutral_formula"] = C.format_formula(cnt)
         ledger.at[i, "adduct"] = "[M+H]+"
-        _cap_tier(i)
-        _note(ledger, i, f"read as protonated CHON (amine {C.format_formula(cnt)}), "
-              f"Candidate: [M+NH4]+ of {X} not confirmed ({why})")
+        _note(ledger, i, f"read as protonated CHON (amine {C.format_formula(cnt)}): "
+              f"[M+NH4]+ of {X} not confirmed ({why}); the same ion, so the tier stands "
+              "and the split stays open")
         counts["relabeled"] += 1
 
     _WHY = {"reject": "independent time trace",
@@ -2094,11 +2213,11 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
                   f"(>= {AMINE_WEAK_MAX_O + 1} O, >= {AMINE_WEAK_MAX_C + 1} C), unconfirmed ({why})")
             counts["kept_default"] += 1
             continue
-        _reread(i, X, why=why)                            # DEFAULT for a weak X: protonated CHON, Candidate
+        _reread(i, X, why=why)                            # DEFAULT for a weak X: protonated CHON, tier kept
 
     mode = "co-variation" if ts_peaks is not None else "presence"
     log(f"[uronium-amine] ({mode}) default->CHON: {counts['relabeled']} read as "
-        f"protonated CHON (Candidate); {counts['kept_covary']} kept as [M+NH4]+ adduct "
+        f"protonated CHON (tier kept); {counts['kept_covary']} kept as [M+NH4]+ adduct "
         f"(tracks parent) + {counts['kept_covary_weak']} tracking but weak (capped Candidate); "
         f"{counts['kept_default']} multifunctional oxygenates kept as [M+NH4]+ by default; "
         f"{counts['kept_protected']} protected + {counts['kept_si']} Si "
@@ -2139,6 +2258,29 @@ def cap_implausible_urea_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     return out
 
 
+#: the notes the two batch-level re-reads write on a merged row (relabel_reagent_n_adducts,
+#: prefer_amine_over_ammonium; the amine note before 0.10 read "..., Candidate: ..."):
+#: what `reread_source` reads back
+_REREAD_HC_RE = re.compile(r"re-read (\S+) (\[M\+[^\]]*\]\+) as \[M\+H\]\+ of (\S+?):")
+_REREAD_AMINE_RE = re.compile(r"read as protonated CHON \(amine (\S+)\)(?:, Candidate)?: "
+                              r"\[M\+NH4\]\+ of (\S+) not confirmed")
+
+
+def reread_source(tier_reason) -> tuple[str, str] | None:
+    """The (neutral, adduct) reading a batch-level re-read replaced, read back
+    from the note it wrote on the row's tier_reason; None when the row carries
+    no such note. The re-read row is the same ion as that reading: the
+    evidence level of its pooled pair is the ion's (evidence.stamp_merged)."""
+    t = "" if _is_na(tier_reason) else str(tier_reason)
+    m = _REREAD_AMINE_RE.search(t)
+    if m:
+        return m.group(2), "[M+NH4]+"
+    m = _REREAD_HC_RE.search(t)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
 def _is_na(v) -> bool:
     """Scalar NA test that is safe on the ledger's mixed object cells (pd.NA
     raises on truth-testing, so `cell or ""` is not an option)."""
@@ -2171,15 +2313,18 @@ def _covariation_verdict(ledger, ts_peaks, r_min, r_reject, min_overlap):
 
       'keep'            r >= r_min against a SHAPED parent -> real adduct.
       'reject'          r <= r_reject against a shaped parent -> re-read to amine.
-      'ambiguous'       r between the thresholds -> keep but cap Candidate.
+      'ambiguous'       r between the thresholds -> weak tracking, unconfirmed.
       'presence-keep'   no shaped parent overlaps testably, but X IS assigned as
-                        [M+H]+/urea in the ledger -> (no-TS path) keep uncapped.
-      'presence-cap'    same, but the TS path caps it Candidate (a present-but-flat
-                        parent cannot confirm the adduct).
+                        [M+H]+/urea in the ledger (the no-TS path).
+      'presence-cap'    same, on the TS path (a present-but-flat parent cannot
+                        confirm the adduct).
       'presence-reread' no shaped parent AND X is absent as [M+H]+/urea -> the
                         parent channels are missing, which refutes the ammonium
                         reading (a real X would protonate / form the dominant urea
                         adduct); re-read to the amine.
+
+    Only 'keep' keeps the [M+NH4]+ reading in `prefer_amine_over_ammonium`; every
+    other tag re-reads it (the tier stands either way).
 
     A parent is a valid correlation target only if it is SHAPED (cv >= FLAT_CV): a
     flat parent (steady background) has no time structure to track, and two flat

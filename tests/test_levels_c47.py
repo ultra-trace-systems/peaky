@@ -136,3 +136,27 @@ class TestFluorineCeiling:
         assert TD._one(dict(TD.ACID, below=True, iso_veto=True), below=below).evidence_level == "5b"
         both = {self.K: dict(setters=["carbon cluster", "unconfirmed fluorine"])}
         assert TD._one(dict(TD.ACID, below=True), below=both).evidence_level == "5b"
+
+    def test_a_reading_whose_cf2_ladder_a_line_refutes_is_refuted_not_capped(self):
+        """The fluorine ceiling meets the CF2 ladder: a ladder its own 13C line refutes
+        (fluorine.verdicts' veto) keeps the unconfirmed-fluorine flag, and its refusal note
+        is a second setter, so the reading is refuted (5b), not only unconfirmed (5a). The
+        same reading with the flag alone stays at the ceiling."""
+        import test_fluorine as TF
+        from peaky.assignment import cleanup as CL
+        from peaky.assignment import fluorine as FL
+        from peaky.assignment import ledger as L
+        h0 = 400.0
+        led = TF._ledger(TF.SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"},
+                         extra=[("c13", TF._mz("C8H5F11O2") + FL.IR.D13C, h0 * 0.0107 * 3)])
+        L.attach_isotopologue(led, "c13", "C8H5F11O2", iso_label="13C")
+        TF.T.apply_tiers(led, cfg=TF._cfg(floor=5.0))
+        CL.demote_unconfirmed_fluorine(led, cfg=TF._cfg(floor=5.0), log=lambda *a: None)
+        assert bool(TF._row(led, "C8H5F11O2")["below_assignability"])
+        k = ("C8H5F11O2", TF.ADD)
+        setters = DC.below_classes({"s01": led})[k]["setters"]
+        assert setters == ["refuted fluorine ladder", "unconfirmed fluorine"]
+        K = self.K
+        assert TD._one(dict(TD.ACID, below=True), below={K: dict(setters=setters)}).evidence_level == "5b"
+        assert TD._one(dict(TD.ACID, below=True),
+                       below={K: dict(setters=["unconfirmed fluorine"])}).evidence_level == "5a"

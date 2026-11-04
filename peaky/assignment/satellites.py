@@ -935,3 +935,503 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
     else:
         out["why"] = "; ".join(notes) + ("" if cal.calibrated else f" ({cal.describe()})")
     return out
+
+
+# ---------------------------------------------------------------------------
+# the COMMIT contract: a reading shows its own diagnostic line, or is refused
+# ---------------------------------------------------------------------------
+# The heteroatom routes (pass-7 certificates, the contaminant families, the
+# residual series, the isotope-gated recovery, pass 0) propose a neutral MASS;
+# none of them needed the element's own line to commit, so a reading whose 34S /
+# 37Cl / 81Br / 29Si line is absent in every file of a batch committed anyway
+# and the tier engine only demoted it afterwards (the slot stayed filled). The
+# contract asks the question at the commit: a reading whose NEUTRAL carries S,
+# Cl, Br or Si must show its own line where the line is predicted at
+# COMMIT_LINE_X_FLOOR x the file's resolved height gate; absent there (no line
+# at the exact offset within the run's twin window, floored at the envelope
+# sweep's ISO_POS_MIN_PPM, and no neighbour within the file's own line width
+# that could hold it as a blend), the commit is refused and the peak stays
+# free for a later route. A line predicted under the multiple, masked by the
+# reagent's own halogen, or held by a taller line is UNTESTABLE: today's
+# behaviour stands (a route that declares the strict contract commits it no
+# higher than Candidate).
+# A line present at any ratio is no refusal under TWIN_REFUTE_X_FLOOR (its
+# per-file height is censored there, see the module note); above it a picked
+# line under TWIN_MIN_FRAC of its prediction refutes, as the tier's twin test.
+# Orbitrap-class runs only (cfg.instrument_class, not trace-first's synthetic
+# sample): a TOF's M+2 is one blended cluster, and an unknown class has no
+# exact-offset test -- everything is untestable there.
+#: the multiple of the resolved height gate at which an absent own line refuses a commit
+COMMIT_LINE_X_FLOOR = 2.0
+#: under TWIN_REFUTE_X_FLOOR a picked line counts as the element's own from this fraction of its
+#: prediction up (the per-file height is censored low there; the blend guard's smallest real line)
+COMMIT_LINE_MIN_FRAC = EE_BLEND_MIN_FRAC
+#: the elements the contract tests (P, F and I are monoisotopic: no line)
+COMMIT_LINE_ELEMENTS = ("Br", "Cl", "S", "Si")
+#: the verdicts: the line seen; refused (absent or low where testable); untestable; no element to test
+LG_SHOWN, LG_REFUSED, LG_UNTESTABLE, LG_NONE = "shown", "refused", "untestable", "none"
+#: the reason a refused commit leaves on the peak's row: 'REFUSED (own_line: ...)'
+LINE_GATE_REASON = "own_line"
+#: how a route applies the contract: 'refuse' (an absent line refuses, an untestable one keeps
+#: today's outcome) or 'strict' (an untestable one commits no higher than Candidate)
+LINE_GATE_MODES = ("refuse", "strict")
+
+
+def own_line_verdict(mz, h, mz0, h0, neutral_counts: dict, ion_counts: dict | None, floor, *,
+                     ppm: float, fwhm=None, blend_mz=None, blend_h=None, blend_ppm: float | None = None,
+                     x_floor: float = COMMIT_LINE_X_FLOOR) -> dict:
+    """The commit contract's verdict on one reading at one parent line.
+
+    `mz` / `h`: the file's lines (sorted by m/z; `_peak_lines`), `blend_mz` /
+    `blend_h` the lines the blend guard reads (default the same); `mz0` / `h0`
+    the parent (the ion's all-light line); `neutral_counts` choose the elements
+    (COMMIT_LINE_ELEMENTS the neutral carries), `ion_counts` scale the
+    prediction (None: the neutral's); `floor` the resolved height gate (cps;
+    None: nothing is testable); `ppm` the search window; `blend_ppm` the
+    position tolerance of the blend guard (default `ppm`; a search window
+    widened for a pulled satellite does not widen the guard's reach); `fwhm`
+    mz -> FWHM (Da) for the blend guard (default an Orbitrap at
+    EE_FALLBACK_R200).
+
+    Per line: pred = h0 x per-atom ratio x the ION's count, at the exact offset.
+    'seen' a line in the window at <= EE_RATIO_HIGH x pred (and, at >=
+    TWIN_REFUTE_X_FLOOR x the floor, >= TWIN_MIN_FRAC x pred, under it >=
+    COMMIT_LINE_MIN_FRAC x pred); 'low' one under that fraction at >= x_floor x
+    the floor; 'held' one above EE_RATIO_HIGH (another ion's line); 'absent'
+    none, pred >= x_floor x the floor, and no neighbour that could hold it
+    (`_blended`); 'blended' / 'dim' otherwise. An element is shown when any of
+    its lines is seen, refused when none is and one is absent or low, else
+    untestable; the reagent adduct's own halogen in the same M+2 window
+    (`reagent_masks`) makes the element untestable. The reading: refused when
+    any element is refused, else untestable when any is, else shown; 'none'
+    with no element to test.
+
+    Returns {'verdict', 'elements': {el: verdict}, 'lines': [records], 'why'}."""
+    out = {"verdict": LG_NONE, "elements": {}, "lines": [], "why": ""}
+    nc = {k: int(v) for k, v in (neutral_counts or {}).items() if v}
+    els = [el for el in COMMIT_LINE_ELEMENTS if nc.get(el, 0) > 0]
+    if not els:
+        return out
+    ion = {k: int(v) for k, v in (ion_counts or nc).items() if v}
+    try:
+        mz0, h0 = float(mz0), float(h0)
+    except (TypeError, ValueError):
+        mz0, h0 = float("nan"), float("nan")
+    try:
+        fl = float(floor) if floor is not None else float("nan")
+    except (TypeError, ValueError):
+        fl = float("nan")
+    mz = np.asarray(mz, dtype=float)
+    h = np.asarray(h, dtype=float)
+    bmz = mz if blend_mz is None else np.asarray(blend_mz, dtype=float)
+    bh = h if blend_h is None else np.asarray(blend_h, dtype=float)
+    fw = fwhm or _fwhm_fn(None)
+    refused, untestable, shown = [], [], []
+    for el in els:
+        masked = reagent_masks(el, nc, ion)
+        n_ion = int(ion.get(el, 0)) or nc[el]
+        if masked or not (np.isfinite(mz0) and np.isfinite(h0) and h0 > 0) or not (np.isfinite(fl) and fl > 0):
+            out["elements"][el] = LG_UNTESTABLE
+            untestable.append(f"{el}: " + (masked or ("no parent line" if not (np.isfinite(h0) and h0 > 0)
+                                                     else "no resolved height gate")))
+            continue
+        seen, bad, notes = [], [], []
+        for delta, per, label in TWIN_LINES[el]:
+            pred = h0 * per * n_ion
+            tgt = mz0 + delta
+            x = pred / fl
+            tol = tgt * float(ppm) * 1e-6
+            btol = tol if blend_ppm is None else tgt * float(blend_ppm) * 1e-6
+            j = _nearest(mz, tgt, tol)
+            rec = {"element": el, "label": label, "pred": pred, "x": x, "obs_ratio": None, "status": ""}
+            if j is not None:
+                r = float(h[j]) / pred
+                rec["obs_ratio"] = r
+                lo = TWIN_MIN_FRAC if x >= TWIN_REFUTE_X_FLOOR else COMMIT_LINE_MIN_FRAC
+                if r > EE_RATIO_HIGH:
+                    rec["status"] = "held"
+                elif r >= lo:
+                    rec["status"] = "seen"
+                elif x >= x_floor:
+                    rec["status"] = "low"
+                else:
+                    rec["status"] = "dim"
+            elif x < x_floor:
+                rec["status"] = "dim"
+            elif _blended(bmz, bh, tgt, pred, btol, fw(tgt)):
+                rec["status"] = "blended"
+            else:
+                rec["status"] = "absent"
+            out["lines"].append(rec)
+            desc = f"{label} predicted {_cps(pred)} cps ({x:.1f}x the {fl:.0f}-cps gate)"
+            if rec["status"] == "seen":
+                seen.append(f"{label} line at {rec['obs_ratio']:.2f}x its prediction")
+            elif rec["status"] == "absent":
+                bad.append(f"{desc}, no line within {float(ppm):.2f} ppm of +{delta:.4f}")
+            elif rec["status"] == "low":
+                bad.append(f"{desc}, its line at {rec['obs_ratio']:.2f} of the prediction, under "
+                           f"{(TWIN_MIN_FRAC if x >= TWIN_REFUTE_X_FLOOR else COMMIT_LINE_MIN_FRAC):g}")
+            else:
+                notes.append(f"{desc}: " + {"held": "a taller line holds the position",
+                                            "blended": "a neighbour could hold it",
+                                            "dim": f"under {x_floor:g}x the gate"}[rec["status"]])
+        if seen:
+            out["elements"][el] = LG_SHOWN
+            shown.append("; ".join(seen))
+        elif bad:
+            out["elements"][el] = LG_REFUSED
+            refused.append("; ".join(bad))
+        else:
+            out["elements"][el] = LG_UNTESTABLE
+            untestable.append("; ".join(notes))
+    if refused:
+        out["verdict"], out["why"] = LG_REFUSED, "; ".join(refused)
+    elif untestable:
+        out["verdict"], out["why"] = LG_UNTESTABLE, "; ".join(untestable)
+    else:
+        out["verdict"], out["why"] = LG_SHOWN, "; ".join(shown)
+    return out
+
+
+def pool_line_verdicts(verdicts) -> dict:
+    """One reading's contract over several of its ions (a certificate's member
+    channels): an element is shown when any ion shows it, refused when none does
+    and one refuses it, else untestable; the reading as `own_line_verdict`
+    combines its elements. `why` joins the refusing ions' reasons."""
+    els: dict = {}
+    whys: dict = {}
+    for v in verdicts:
+        for el, ev in (v.get("elements") or {}).items():
+            els.setdefault(el, []).append(ev)
+        if v.get("verdict") == LG_REFUSED:
+            whys.setdefault(LG_REFUSED, []).append(v.get("why", ""))
+        elif v.get("verdict") == LG_UNTESTABLE:
+            whys.setdefault(LG_UNTESTABLE, []).append(v.get("why", ""))
+    pooled = {}
+    for el, evs in els.items():
+        pooled[el] = (LG_SHOWN if LG_SHOWN in evs else LG_REFUSED if LG_REFUSED in evs else LG_UNTESTABLE)
+    if not pooled:
+        return {"verdict": LG_NONE, "elements": {}, "why": ""}
+    vals = set(pooled.values())
+    verdict = LG_REFUSED if LG_REFUSED in vals else LG_UNTESTABLE if LG_UNTESTABLE in vals else LG_SHOWN
+    return {"verdict": verdict, "elements": pooled,
+            "why": " | ".join(w for w in whys.get(verdict, []) if w)}
+
+
+# ---------------------------------------------------------------------------
+# where an isotopologue line a stage reads as the parent's OWN may sit
+# ---------------------------------------------------------------------------
+#: an isotopologue line a stage attaches to a parent or reads as its own (the
+#: envelope sweep's heteroatom M+1 / M+2 lines, the isotope-gated recovery's
+#: halogen M+2) sits within max(ISO_POS_MIN_PPM, ISO_POS_SIGMA_K x the file's
+#: calibration sigma) of its expected offset on an Orbitrap-class run -- never
+#: wider than the stage's own window -- at ISO_RATIO_BAND x its prediction. A
+#: fixed 5-ppm / 6-mDa window took a neighbour ion 2.6-4.8 ppm off a predicted
+#: 34S / 18O / 37Cl / 29Si position at 2-3.7x the ratio as the parent's line, and
+#: a recovery read another ion's M0 5.6 mDa off as its 37Cl line. The floor is
+#: the satellite's, not the bright backbone's sigma: a weak heteroatom line on
+#: the shoulder of a taller fine-structure line is picked pulled toward it (the
+#: 29Si / 30Si lines of cyclosiloxanes on calibrated Orbitrap files sit up to
+#: +1.7 ppm off, toward 13C / 13C2: 28-33 % of them beyond 1 ppm, <= 3 % beyond
+#: 2 ppm, while the 13C lines themselves stay within +-0.4 ppm).
+ISO_POS_SIGMA_K = 3.0
+ISO_POS_MIN_PPM = 2.0
+ISO_RATIO_BAND = (0.5, 2.0)
+
+
+def orbitrap_class(cfg) -> bool:
+    """An Orbitrap-class run that is not trace-first's synthetic sample."""
+    return (cfg is not None and getattr(cfg, "instrument_class", None) == "orbitrap"
+            and not getattr(cfg, "trace_sample", False))
+
+
+def iso_position_ppm(cfg, sigma_ppm, wide: float) -> float:
+    """The window (ppm) an own isotopologue line must sit in: on an
+    Orbitrap-class run with a calibration sigma, min(`wide`, max(ISO_POS_MIN_PPM,
+    ISO_POS_SIGMA_K x sigma)); else `wide` (a TOF's lines, an uncalibrated
+    file's, keep the stage's own window)."""
+    try:
+        sg = float(sigma_ppm)
+    except (TypeError, ValueError):
+        sg = float("nan")
+    if not orbitrap_class(cfg) or not (np.isfinite(sg) and sg > 0):
+        return float(wide)
+    return float(min(float(wide), max(ISO_POS_MIN_PPM, ISO_POS_SIGMA_K * sg)))
+
+
+def iso_ratio_ok(obs_ratio: float) -> bool:
+    """An observed / predicted height ratio inside ISO_RATIO_BAND."""
+    lo, hi = ISO_RATIO_BAND
+    return bool(np.isfinite(obs_ratio) and lo <= obs_ratio <= hi)
+
+
+class LineGate:
+    """One file's commit contract (`own_line_verdict`), built once per stage:
+    the class gate, the resolved height gate, the search window, the width
+    model, and -- read lazily, the first time a reading carries an element --
+    the file's lines (`_peak_lines`: real picked peaks, artifact rows out; the
+    blend guard reads them too). `active` False (off an Orbitrap, on the trace
+    sample, no resolved gate): every verdict is 'untestable' (or 'none' with
+    nothing to test), and the routes keep today's behaviour.
+
+    The search window is the twin window (`twin_ppm`) floored at
+    ISO_POS_MIN_PPM: the parent's own line is where the envelope sweep reads it
+    (a weak 29Si / 30Si line pulled 1-2 ppm toward a taller fine-structure line
+    is seen, not 'absent'); the blend guard keeps the twin window as its
+    position tolerance. The width model is `resolution`, else the one the run stamped on
+    the cfg (cfg.width_model, assign.run), else the blend guard's conservative
+    fallback (`_fwhm_fn`)."""
+
+    def __init__(self, ledger: pd.DataFrame, cfg=None, *, resolution=None):
+        klass = getattr(cfg, "instrument_class", None) if cfg is not None else None
+        if cfg is not None and getattr(cfg, "trace_sample", False):
+            klass = None
+        try:
+            floor = float(cfg.height_cutoff) if cfg is not None else None
+        except Exception:  # noqa: BLE001 -- an unresolved gate: nothing is testable
+            floor = None
+        self.floor = floor if floor is not None and np.isfinite(floor) and floor > 0 else None
+        self.active = klass == "orbitrap" and self.floor is not None
+        self.blend_ppm = twin_ppm(cfg)
+        self.ppm = max(ISO_POS_MIN_PPM, self.blend_ppm)
+        if resolution is None and cfg is not None:
+            resolution = getattr(cfg, "width_model", None)
+        self.fwhm = _fwhm_fn(resolution)
+        self._ledger = ledger
+        self._lines = None
+
+    def _peaks(self):
+        if self._lines is None:
+            self._lines = (_peak_lines(self._ledger, artifacts=False), _peak_lines(self._ledger))
+        return self._lines
+
+    def verdict(self, mz0, h0, neutral, ion=None) -> dict:
+        """The contract's verdict on `neutral` (a formula or counts) read as `ion`
+        (a formula string -- its charge sign dropped -- or counts; None: the
+        neutral's) at the parent line (`mz0`, `h0`)."""
+        nc = _counts_of(neutral)
+        ic = _ion_body(ion) if isinstance(ion, str) else (dict(ion) if ion else None)
+        if not any(nc.get(el, 0) for el in COMMIT_LINE_ELEMENTS):
+            return {"verdict": LG_NONE, "elements": {}, "lines": [], "why": ""}
+        if not self.active:
+            return {"verdict": LG_UNTESTABLE, "elements": {}, "lines": [],
+                    "why": "no exact-offset test on this run (not Orbitrap-class, or no resolved height gate)"}
+        (mz, h), (bmz, bh) = self._peaks()
+        return own_line_verdict(mz, h, mz0, h0, nc, ic or None, self.floor, ppm=self.ppm, fwhm=self.fwhm,
+                                blend_mz=bmz, blend_h=bh, blend_ppm=self.blend_ppm)
+
+    def row_verdict(self, ledger: pd.DataFrame, pid, neutral, ion=None) -> dict:
+        """`verdict` at the ledger row of `pid` (its height times its
+        `assigned_fraction` on a composite)."""
+        idx = ledger.index[ledger["peak_id"] == pid]
+        if not len(idx):
+            return self.verdict(float("nan"), float("nan"), neutral, ion)
+        i = idx[0]
+        h0 = pd.to_numeric(ledger.at[i, "height"], errors="coerce")
+        if "assigned_fraction" in ledger.columns:
+            af = pd.to_numeric(ledger.at[i, "assigned_fraction"], errors="coerce")
+            if pd.notna(af) and 0 < float(af) <= 1 and pd.notna(h0):
+                h0 = float(h0) * float(af)
+        return self.verdict(ledger.at[i, "mz"], h0, neutral, ion)
+
+    def refuse(self, ledger: pd.DataFrame, pid, neutral, ion=None, *, reading: str, route: str) -> bool:
+        """The contract at one commit: True -- and the reason written on the
+        peak's row (`record_refusal`) -- when `neutral`'s own line is refused at
+        `pid`; False with nothing to test, the line shown, or untestable."""
+        if not any(_counts_of(neutral).get(el, 0) for el in COMMIT_LINE_ELEMENTS):
+            return False
+        v = self.row_verdict(ledger, pid, neutral, ion)
+        if v["verdict"] != LG_REFUSED:
+            return False
+        record_refusal(ledger, pid, reading=reading, route=route, why=v["why"],
+                       ion=ion if isinstance(ion, str) else None)
+        return True
+
+
+def _counts_of(formula) -> dict:
+    """Element counts of a neutral formula string (or a counts dict, copied)."""
+    if isinstance(formula, dict):
+        return {k: int(v) for k, v in formula.items() if v}
+    if not isinstance(formula, str) or not formula.strip():
+        return {}
+    from peaky.chem import chemistry as C
+    return C.parse_formula(formula.strip())
+
+
+def record_refusal(ledger: pd.DataFrame, pid, *, reading: str, route: str, why: str,
+                   ion=None, score=None, ppm=None) -> bool:
+    """Write a refused commit's reason on the peak's row -- 'REFUSED (own_line:
+    <reading> [<route>] -- <why>)' appended to its commentary -- when the peak
+    is still unexplained (an M0 the route did not displace keeps its own
+    commentary); the same note once only. True when written. The refused
+    reading ('<neutral> <adduct>', with the route's `ion` / `score` / `ppm`
+    where it has them) is also the peak's blocked reading (blocked.note, gate
+    'own_line: <why> [<route>]'; a no-op outside a run)."""
+    if ledger is None or "commentary" not in ledger.columns:
+        return False
+    idx = ledger.index[ledger["peak_id"] == pid]
+    if not len(idx) or str(ledger.at[idx[0], "role"]) != L.ROLE_UNEXPLAINED:
+        return False
+    from peaky.assignment import blocked as BL     # lazy: blocked reads the ledger module at stamp time
+    neutral, _, adduct = str(reading).partition(" ")
+    BL.note(pid, BL.short(f"{LINE_GATE_REASON}: {why} [{route}]"), neutral=neutral or None,
+            adduct=adduct or None, ion=ion, score=score, ppm=ppm)
+    i = idx[0]
+    note = f"REFUSED ({LINE_GATE_REASON}: {reading} [{route}] -- {why})"
+    old = ledger.at[i, "commentary"]
+    old = old if isinstance(old, str) and old.strip() else ""
+    if note in old:
+        return False
+    ledger.at[i, "commentary"] = f"{old}; {note}" if old else note
+    return True
+
+
+# ---------------------------------------------------------------------------
+# the element's OWN line, seen: a confirmation, never a refutation
+# ---------------------------------------------------------------------------
+# `element_evidence` asks whether a heteroatom count is CONTRADICTED, and the
+# commit contract above whether a reading's own line is ABSENT where the file
+# would show it. Three places need the other half -- a heteroatom the run's
+# budget or grid does not admit, admitted on the one evidence an isotope
+# element can give:
+#
+#   * the element-budget demote (`plausibility.demote_off_budget`): a commit
+#     outside the budget is a tentative lead unless its own 37Cl / 81Br / 34S
+#     line is seen, the standing a committed CF2 step gives fluorine;
+#   * the isotope-gated pass-3 families (`contexts.CONTAMINANT_FAMILIES`, key
+#     'iso_gate'; `passes.directors.run_pass3`): a positive source budgets no
+#     halogen (max_Cl 0) and grids no sulfur, so `organochlorine` commits a Cl
+#     reading only on a peak that shows the ion's own 37Cl line, and
+#     `organosulfur_34s` an S reading only on its own 34S line -- or, where
+#     that line is predicted under OWN_LINE_TESTABLE_X x the floor
+#     (`own_line_testable`), as a row the tier engine holds at Candidate;
+#   * that tier hold (`tiers.compute_tiers`), which reads the line again.
+#
+# Seen means a picked line (an artifact row is no line) within OWN_LINE_PPM of
+# the exact offset from the parent, at OWN_LINE_RATIO x the first-order
+# prediction (h0 x per-atom ratio x the ion's atom count), fitting that count
+# better than one atom fewer and one atom more: a Cl1 reading under a Cl2
+# ion's line is not confirmed, nor is a Cl2 reading under a Cl1 line (which
+# sits at 0.5x the Cl2 prediction, inside the band) -- the line has to show
+# the atoms in question, the reagent adduct's own halogen and a budget cap's
+# count included, not merely the element.
+#
+# The window is a flat 1 ppm, not a multiple of the file's calibration sigma:
+# the line and its parent shift together, so the offset between them does not
+# carry the file's calibration error (measured 13C offsets on a 100-microscan
+# Orbitrap batch: |offset| p99 0.62 ppm; the 37Cl lines of a field campaign's
+# chlorinated certificates: 95 % within 0.4 ppm). It is an Orbitrap-class
+# window (`own_line_window_ppm`): on a TOF the lines scatter by several ppm and
+# an M+2 cluster is one line, so nothing is confirmed there.
+#
+# A gated family's winner also commits through the commit contract
+# (`own_line_verdict`, at `commit_winners`), which reads the same line at the
+# tier's twin bar (>= TWIN_MIN_FRAC of the prediction where it is predicted at
+# >= TWIN_REFUTE_X_FLOOR x the floor): a line both tests see is the family's
+# evidence, so a 0.5-0.6x line there passes the gate and is refused at the
+# commit.
+#
+# Not `element_evidence`'s 'confirmed'. That predicate answers whether a
+# widened search's count is CONTRADICTED (`plausibility.gate_element_evidence`
+# clears a commit on it), so its band is wide on purpose (a 4-sigma window, a
+# low edge from the file's own 13C response, 2.5x high) and a line in it only
+# keeps a count from being refuted. Here a line ADMITS an element nothing else
+# admits, so the band is the narrower one, and the count must fit better than
+# its neighbours.
+#
+# Known degeneracy: the 37Cl offset (1.99705 Da) is the composition difference
+# O3 - CH2S to 0.03 mDa, so the O3-for-CH2S analogue of an S-bearing ion sits
+# exactly where that ion's 37Cl line would, and neither position nor ratio can
+# tell them apart (seen on a field campaign's uronium ledgers: a C7H12O2 urea
+# adduct at 1.9x the height of the peak 1.997 Da below it). The count test
+# above refuses most such pairs (the analogue's height owes nothing to a
+# chlorine count), and a gated family's winner must still win its own
+# arbitration on score; the rest is a known limit, not a test.
+#: the elements whose own line can confirm them (P, F, I are monoisotopic; Si
+#: keeps its own ladder rule)
+OWN_LINE_ELEMENTS = ("Br", "Cl", "S")
+#: the window (ppm of the line's position) on an Orbitrap-class run
+OWN_LINE_PPM = 1.0
+#: the observed / predicted band a seen line sits in
+OWN_LINE_RATIO = (0.5, 2.0)
+#: a line predicted at this multiple of the file's floor (its resolved height
+#: gate, cfg.height_cutoff) is TESTABLE: an isotope-gated route that does not
+#: see it refuses the reading; under it nothing could have been seen
+OWN_LINE_TESTABLE_X = 2.0
+
+
+def own_line_window_ppm(cfg=None) -> float | None:
+    """The own-line window (ppm) of a run, or None where no line can confirm
+    an element: OWN_LINE_PPM on an Orbitrap-class run (cfg.instrument_class,
+    not trace-first's synthetic sample) only."""
+    if cfg is None or getattr(cfg, "instrument_class", None) != "orbitrap" \
+            or getattr(cfg, "trace_sample", False):
+        return None
+    return OWN_LINE_PPM
+
+
+def own_line_testable(h0: float, ion_counts: dict, element: str, floor) -> bool:
+    """Whether `element`'s own line of an ion with `ion_counts`, under a parent
+    line of height `h0`, is predicted at >= OWN_LINE_TESTABLE_X x `floor` (the
+    file's resolved height gate). No floor or no parent height: False (nothing
+    can be said to be testable)."""
+    n = int((ion_counts or {}).get(element, 0) or 0)
+    if element not in OWN_LINE_ELEMENTS or n <= 0:
+        return False
+    try:
+        h0, fl = float(h0), float(floor)
+    except (TypeError, ValueError):
+        return False
+    if not (np.isfinite(h0) and np.isfinite(fl) and h0 > 0 and fl > 0):
+        return False
+    return h0 * TWIN_LINES[element][0][1] * n >= OWN_LINE_TESTABLE_X * fl
+
+
+def own_line(mz: np.ndarray, h: np.ndarray, mz0: float, h0: float, ion_counts: dict, element: str, *,
+             window_ppm: float) -> dict:
+    """Is `element`'s own diagnostic line seen beside the parent line (`mz0`,
+    `h0`, the ion's all-light line)? `mz` / `h`: the file's real peak lines,
+    sorted by m/z (`_peak_lines(ledger, artifacts=False)`). The line must fit
+    `ion_counts`' count better than one atom fewer and one atom more.
+
+    Returns {'confirmed', 'element', 'label', 'pred', 'obs_ratio', 'ppm', 'why'}
+    -- `pred` and `obs_ratio` relative to the parent's height."""
+    el = element
+    n = int((ion_counts or {}).get(el, 0) or 0)
+    out = {"confirmed": False, "element": el, "label": None, "pred": None, "obs_ratio": None,
+           "ppm": None, "why": ""}
+    if el not in OWN_LINE_ELEMENTS or n <= 0:
+        out["why"] = f"no {el} line to read"
+        return out
+    try:
+        mz0, h0 = float(mz0), float(h0)
+    except (TypeError, ValueError):
+        out["why"] = "no parent line"
+        return out
+    if not (np.isfinite(mz0) and np.isfinite(h0) and h0 > 0) or window_ppm is None:
+        out["why"] = "no parent line" if window_ppm is not None else "no exact-offset window (not Orbitrap-class)"
+        return out
+    delta, per, label = TWIN_LINES[el][0]
+    pred = per * n
+    tgt = mz0 + delta
+    out.update(label=label, pred=pred)
+    j = _nearest(np.asarray(mz, dtype=float), tgt, tgt * float(window_ppm) * 1e-6)
+    if j is None:
+        out["why"] = f"no {label} line within {window_ppm:.2f} ppm of +{delta:.5f}"
+        return out
+    r = float(h[j]) / h0
+    ppm = (float(mz[j]) - tgt) / tgt * 1e6
+    out.update(obs_ratio=r, ppm=ppm)
+    lo, hi = OWN_LINE_RATIO
+    if not lo * pred <= r <= hi * pred:
+        out["why"] = (f"{label} line at {r:.3f}x the parent, outside {lo:g}-{hi:g}x the predicted "
+                      f"{pred:.3f} ({ppm:+.2f} ppm)")
+        return out
+    for k in (n - 1, n + 1):
+        if k >= 1 and _log_fit(r, per * k) <= _log_fit(r, pred):
+            out["why"] = (f"{label} line at {r:.3f}x the parent fits {el}{k} ({per * k:.3f}) as well as "
+                          f"{el}{n} ({pred:.3f})")
+            return out
+    out["confirmed"] = True
+    out["why"] = f"{label} line at {r / pred:.2f}x its prediction ({r:.3f}x the parent), {ppm:+.2f} ppm"
+    return out

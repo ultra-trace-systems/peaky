@@ -128,6 +128,13 @@ class PassConfig:
     # (`assign.instrument_class_of`). Distinct from `instrument_type`, which is the
     # scoring snapshot's raw label ('orbi' / 'tof' / None).
     instrument_class: str | None = None
+    # The run's peak-width model (chem.resolution.Resolution; assign.run stamps
+    # the one its `resolvability` stage reads, None without one). Runtime. The
+    # commit contract's blend guard (satellites.LineGate) reads it on every
+    # route: without it the guard assumes a conservative R(200) = 60k, ~3x the
+    # measured FWHM of a 160-180k Orbitrap file, and reads a resolved neighbour
+    # 2-6 mDa off a predicted line as a possible blend.
+    width_model: object = None
     # True on trace-first's synthetic sample, whose heights are batch means over
     # traces, not one spectrum: stages that compare lines of ONE spectrum stay off.
     trace_sample: bool = False
@@ -268,12 +275,28 @@ class PassConfig:
     cal_mz_lo: float | None = None
     cal_mz_hi: float | None = None
     cal_trend_n: int | None = None   # backbone points the accepted trend kept
+    # The batch axis model's EDGE CARRY (masscal.edge_carry_at; a sub-ppm lock model's
+    # record, io_mascope.axis_edge_carry): a line outside the model's scope within its
+    # reach of the first / last lock sits on the measured axis while the centres are
+    # fitted on the corrected one, so every calibrated centre at a line's m/z
+    # (cal_center, z_of, the direct cal_mu readers, the tier calibration, the
+    # degeneracy window) adds the model's correction there, and calibrate() fits on
+    # the carried scale. None = nothing carried (no axis correction, or one applied at
+    # 1 ppm or more). Runtime: assign.run stamps it per sample.
+    axis_edge_carry: dict | None = None
     # C42: once calibrate() accepts a mass trend, assign.run re-scores the file
     # from pass 0 with every candidate line judged against the trend's centre at
     # its own m/z (io_mascope.set_scoring_trend) instead of the one constant
     # offset. False: the run fits no scoring trend of its own (the pre-C42
     # behaviour); a trend a stand-in inherited with its snapshot still applies.
     score_at_trend: bool = True
+    # The SELF-CENTRE (assignment/selfcentre.py): an Orbitrap-class file scored locally
+    # with no centre of its own -- fewer than io_mascope.MIN_OFFSET_ANCHORS anchors and no
+    # batch axis correction, so its snapshot reads `mu_source` "assumed_zero" -- measures
+    # its centre before pass 0 on a backbone chosen without the mass term (bright, unique,
+    # 13C-confirmed CHO / CHON ions) and is scored at it (`mu_source` "self"). False: such
+    # a file is scored at zero (the behaviour before).
+    self_centre: bool = True
     # Isotope-line scoring on an Orbitrap-class run (assignment/iso_response.py): "auto" reads every line's
     # ratio by AREA and, once calibrate has run, fits the file's minor-line response on its committed
     # CHO / CHON rows (a 13C line near the scans' floor is under-read by the summed peak list) and re-runs
@@ -380,6 +403,7 @@ class PassConfig:
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
         "noise_edge_batch_cps", "instrument_type",          # C46: the batch and assign.run stamp them
         "instrument_class", "trace_sample",                 # the batch / assign.run stamp them too
+        "width_model",                                      # assign.run: the run's peak-width model
         # passes.calibrate fits these onto the cfg during a run: they are the
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make
@@ -390,6 +414,7 @@ class PassConfig:
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi", "cal_trend_n",
         "cal_mu", "cal_sigma",
+        "axis_edge_carry",                                  # assign.run: the batch axis model's
         "occurrence_threshold", "occurrence_resolved",
         "iso_response_fit", "iso_area")
 

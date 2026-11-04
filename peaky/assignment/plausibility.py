@@ -26,10 +26,11 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.assignment import fluorine as FL
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.6.2"   # skeleton_reliance / rests_on_skeleton (the tier cap's predicate); 0.6.1 a peak gate_element_evidence clears is locked; 0.6.0 NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
+__version__ = "0.7.0"   # the off-budget demote keeps an isotope element its own line confirms; the carbon-cluster rule spares C=O / N=O unsaturation (hetero_unsaturated); 0.6.2 skeleton_reliance / rests_on_skeleton (the tier cap's predicate); 0.6.1 a peak gate_element_evidence clears is locked; 0.6.0 NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -76,6 +77,20 @@ F_HIGH = 4          # F>=this -> heavily fluorinated; F is monoisotopic, so the 
 #     aromatics that sit below 1.0 and MUST be spared.
 OC_MONSTER = 1.3            # O/C strictly above this -> oxygen-lattice monster
 DBE_PER_C_MONSTER = 1.0     # DBE/C at or above this (C>=2) -> carbon cluster
+#
+#   * ... UNLESS THE HETEROATOMS CARRY IT: DBE/C >= 1.0 reads every double bond
+#     as carbon skeleton, but a C=O or an N=O is unsaturation on a heteroatom.
+#     Oxalic acid (C2H2O4), glyoxal (C2H2O2), nitrooxyacetic acid (C2H3NO5),
+#     croconic acid (C5H2O5), dinitrophenol and a pyrimidinone (C4H4N2O) all sit
+#     at DBE/C 1.0 and none is a bare-carbon fit. So a formula is spared when its
+#     O + N reach HETERO_PER_C_MIN per carbon AND its SKELETON DBE (`skeleton_dbe`:
+#     the DBE less the most C=O / N=O its oxygen can form) is under the cutoff,
+#     on a hydrogen skeleton (H/C >= HC_FLOOR) with no F or Si -- the decorations
+#     the bare-carbon fits wear (DBE reads F as an H and Si as a C): C12HF,
+#     C15HFO2, C25H3F3, C5H2, C4H2O (O/C 0.25), C2O (no H, and its one C=O leaves
+#     DBE/C 1.0) and the Si-N fits stay clusters. Ring N is not credited: an
+#     O-free azine (C4H4N2) or triazole reads as before.
+HETERO_PER_C_MIN = 0.3      # (O+N)/C at or above this -> the heteroatom exemption may apply
 
 
 def _oc(cnt: dict) -> float:
@@ -127,6 +142,32 @@ def _small_acid(cnt: dict, profile) -> bool:
     return X.small_acid_band_applies(cnt, profile)
 
 
+def skeleton_dbe(cnt: dict) -> float:
+    """The DBE of `cnt` less the most unsaturation its oxygen can carry on a
+    heteroatom double bond: k NO2 / ONO2 groups (one N=O each, two O each, k <=
+    N) and one C=O per remaining O, at most one per carbon -- the largest such
+    count. A lower bound on the unsaturation the carbon skeleton itself holds
+    (heavy-isotope labels fold: '^N' is N)."""
+    c = C.fold_isotopes(cnt)
+    o, n, nc = c.get("O", 0), c.get("N", 0), c.get("C", 0)
+    het = max(k + min(o - 2 * k, nc) for k in range(min(n, o // 2) + 1))
+    return C.dbe(c) - het
+
+
+def hetero_unsaturated(cnt: dict) -> bool:
+    """The carbon-cluster rule's heteroatom exemption (see HETERO_PER_C_MIN): a
+    C>=1 formula with no F or Si, H/C >= HC_FLOOR, (O+N)/C >= HETERO_PER_C_MIN
+    and a skeleton DBE (`skeleton_dbe`) under DBE_PER_C_MONSTER per carbon --
+    its DBE/C >= 1 is C=O / N=O unsaturation, not a bare-carbon skeleton."""
+    c = C.fold_isotopes(cnt)
+    nc = c.get("C", 0)
+    if nc < 1 or c.get("F", 0) or c.get("Si", 0):
+        return False
+    if c.get("H", 0) / nc < HC_FLOOR or (c.get("O", 0) + c.get("N", 0)) / nc < HETERO_PER_C_MIN:
+        return False
+    return skeleton_dbe(c) / nc < DBE_PER_C_MONSTER
+
+
 def is_carbon_cluster(cnt: dict, profile=None) -> bool:
     """C>=2 skeleton whose DBE/C >= DBE_PER_C_MONSTER, EXCLUDING radicals
     (half-integer DBE are exempt). H+halogen <= N+2 is the equivalent integer
@@ -136,6 +177,9 @@ def is_carbon_cluster(cnt: dict, profile=None) -> bool:
     (PFCA DBE/C~0.2) can never trip this gate, while C12HF / C25H3F3 style
     bare-carbon fits (DBE/C~1) previously slipped through on an F-free clause
     (2026-07-04 [15N]-nitrate run: 15 such F-decorated clusters tier-Assigned).
+    A formula whose unsaturation its O and N carry (`hetero_unsaturated`:
+    oxalic acid, glyoxal, nitrooxyacetic acid, a pyrimidinone) is exempt on
+    every run.
     With a `profile` that reads NOx skeletons, a nitroaromatic is a cluster only
     when its skeleton is one too (dinitrophenol reads as phenol, DBE/C 0.67);
     with its small-acid band, a C3-C4 polycarbonyl acid the band admits
@@ -148,7 +192,9 @@ def is_carbon_cluster(cnt: dict, profile=None) -> bool:
         return False
     if _small_acid(cnt, profile):
         return False
-    return min(C.dbe(r) / nc for r in _readings(cnt, profile)) >= DBE_PER_C_MONSTER
+    if min(C.dbe(r) / nc for r in _readings(cnt, profile)) < DBE_PER_C_MONSTER:
+        return False
+    return not hetero_unsaturated(cnt)
 
 
 def _hetero_flag(cnt: dict) -> str | None:
@@ -407,7 +453,7 @@ def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print, profi
 
 
 def demote_off_budget(ledger: pd.DataFrame, *, context,
-                      curated=frozenset(), audit=None, log=print) -> dict:
+                      curated=frozenset(), audit=None, log=print, cfg=None) -> dict:
     """Demote M0 commits whose neutral lies outside the run context's ELEMENT
     BUDGET (contexts.element_budget: the structural gate, the carbon-free
     allowlist, the heteroatom caps) and that no curated list names.
@@ -441,6 +487,21 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
     peak pairs one CF2 apart were 20x chance on the labelled-nitrate Orbitrap and
     4x on the ~10k TOF (where ~1 in 4 such pairs is chance), and the fluorinated
     rows the budget would demote from Assigned were almost all NOT chain members.
+    A row whose CF2 LADDER holds enough committed members (fluorine.py: lines of
+    the same remaining composition +/- k CF2, k <= 3, none refuted by its 15N
+    alias's 14N twin or its own 13C line) is kept the same way -- its steps may
+    skip a member -- and counts with them (`cfg`: the file's PassConfig, for the
+    ladder's windows and 13C floor; the own-line window below).
+
+    The isotope elements earn that standing from their own line. With `cfg`
+    on an Orbitrap-class run (satellites.own_line_window_ppm), a formula whose
+    every budget violation is a Cl / Br / S count (fluorine on a committed CF2
+    step or a full CF2 ladder beside them) is KEPT when each such element's own 37Cl / 81Br / 34S
+    line is seen in the file (satellites.own_line: within 1 ppm of the exact
+    offset, at 0.5-2x the first-order prediction, fitting the ion's count --
+    the reagent's own halogen included -- better than one atom fewer and one
+    atom more). The kept row says so in its commentary. P, F and I have no line, Si keeps its ladder rule, and on a TOF
+    or with no `cfg` nothing is confirmed (no `budget_iso_kept` count either).
     Demote-only; `context=None` is a no-op."""
     if not context:
         return {"budget_demoted": 0, "budget_cf2_kept": 0}
@@ -449,9 +510,13 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
     open_f = dataclasses.replace(profile, max_F=10 ** 6)   # the budget with fluorine lifted
     curated = frozenset(curated or ())
     verdict: dict = {}
-    n = kept = 0
+    n = kept = iso_kept = 0
     has_method = "method" in ledger.columns
     committed = _committed_pairs(ledger)
+    ladder = None
+    from peaky.assignment import satellites as SAT
+    win = SAT.own_line_window_ppm(cfg)
+    lines = SAT._peak_lines(ledger, artifacts=False) if win is not None else None
     for i in _m0_index(ledger):
         neutral = ledger.at[i, "neutral_formula"]
         if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
@@ -466,9 +531,32 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
         if ok:
             continue
         adduct = ledger.at[i, "adduct"] if "adduct" in ledger.columns else None
-        if (X.element_budget(neutral, open_f)[0]
-                and any((nb, adduct) in committed for nb in _cf2_neighbours(neutral))):
-            kept += 1          # fluorine is the only violation and its CF2 step is committed
+        cf2 = any((nb, adduct) in committed for nb in _cf2_neighbours(neutral))
+        if X.element_budget(neutral, open_f)[0]:
+            if cf2:
+                kept += 1      # fluorine is the only violation and its CF2 step is committed
+                continue
+            if ladder is None:
+                ladder = FL.verdicts(ledger, cfg=cfg)
+            fl = ladder.get(ledger.at[i, "peak_id"]) if "peak_id" in ledger.columns else None
+            if fl is not None and fl.full:
+                kept += 1      # ... or its CF2 ladder holds enough committed members
+                continue
+        seen = None
+        if win is not None:
+            # the fluorine beside an over-budget Cl / Br / S stands on a committed
+            # CF2 step -- or, as above, a full CF2 ladder
+            f_step = cf2
+            if not f_step and C.parse_formula(neutral).get("F", 0):
+                if ladder is None:
+                    ladder = FL.verdicts(ledger, cfg=cfg)
+                fl = ladder.get(ledger.at[i, "peak_id"]) if "peak_id" in ledger.columns else None
+                f_step = fl is not None and fl.full
+            seen = _own_lines_lift(ledger, i, neutral, adduct, profile, lines, win, f_step)
+        if seen:
+            iso_kept += 1      # every over-budget isotope element shows its own line
+            _append_note(ledger, i, "kept outside the " + profile.label + " element budget (" + str(why)
+                         + ") on its own isotope line" + ("s" if len(seen) > 1 else "") + ": " + "; ".join(seen))
             continue
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
@@ -481,8 +569,56 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
                     degeneracy_note=note, n_iso=ni, lead="off_budget")
         n += 1
     log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
-        f"(not on a curated list); kept {kept} fluorinated CF2-series members")
-    return {"budget_demoted": n, "budget_cf2_kept": kept}
+        f"(not on a curated list); kept {kept} fluorinated CF2-series members"
+        + (f", {iso_kept} on their own 37Cl / 81Br / 34S line" if win is not None else ""))
+    out = {"budget_demoted": n, "budget_cf2_kept": kept}
+    if win is not None:
+        out["budget_iso_kept"] = iso_kept
+    return out
+
+
+def _own_lines_lift(ledger: pd.DataFrame, i, neutral: str, adduct, profile, lines, win: float,
+                    cf2: bool) -> list[str] | None:
+    """The off-budget exemption's own-line test for M0 row `i`
+    (`demote_off_budget`): one description per over-cap Cl / Br / S element
+    when EVERY such element shows its own line (satellites.own_line) and the
+    neutral then passes the budget with those caps lifted (and fluorine's,
+    where `cf2`: its CF2 step is committed, or its CF2 ladder is full); else None. The parent line is
+    the row's own (its height x assigned_fraction on a composite), on the
+    ion's all-light m/z."""
+    from peaky.assignment import satellites as SAT
+    from peaky.chem import contexts as X
+    nc = C.parse_formula(neutral)
+    over = [el for el in SAT.OWN_LINE_ELEMENTS if nc.get(el, 0) > getattr(profile, f"max_{el}", 99)]
+    if not over:
+        return None
+    ion = T._ion_counts(neutral, adduct)
+    if not ion:
+        return None
+    mz0 = pd.to_numeric(ledger.at[i, "mz"], errors="coerce") if "mz" in ledger.columns else float("nan")
+    h0 = pd.to_numeric(ledger.at[i, "height"], errors="coerce") if "height" in ledger.columns else float("nan")
+    if "assigned_fraction" in ledger.columns:
+        af = pd.to_numeric(ledger.at[i, "assigned_fraction"], errors="coerce")
+        if pd.notna(af) and 0 < float(af) <= 1 and pd.notna(h0):
+            h0 = float(h0) * float(af)
+    try:
+        mono = C.ion_mz(neutral, str(adduct))
+    except Exception:  # noqa: BLE001 -- an unparseable adduct: no line to place
+        return None
+    if not (pd.notna(mz0) and np.isfinite(mono) and abs(float(mz0) - mono) <= SAT.EE_MONO_DA):
+        return None          # committed on a heavy isotopologue: its lines are not where we look
+    seen = []
+    for el in over:
+        # the line must show the ion's whole count, so a count one over the cap
+        # (or beside the reagent's own halogen) is read against the smaller one
+        v = SAT.own_line(lines[0], lines[1], mz0, h0, ion, el, window_ppm=win)
+        if not v["confirmed"]:
+            return None
+        seen.append(f"{el}{nc[el]}: {v['why']}")
+    lift = {f"max_{el}": 10 ** 6 for el in over}
+    if cf2:
+        lift["max_F"] = 10 ** 6
+    return seen if X.element_budget(neutral, dataclasses.replace(profile, **lift))[0] else None
 
 
 def _committed_pairs(ledger: pd.DataFrame) -> set:
@@ -711,13 +847,14 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
 
 
 def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
-                       context=None, curated=frozenset()) -> dict:
+                       context=None, curated=frozenset(), cfg=None) -> dict:
     """The shared-oracle demotes that fire on a single-file or merged ledger
     without a time series: O-monster + carbon-cluster, and -- given the run's
     `context` (a name, or the run's ContextProfile with its run-level switches,
     which the O-monster and carbon-cluster reads honour) -- the element-budget
     demote (`demote_off_budget`). All are demote-only and feed the same audit
-    list."""
+    list. `cfg`: the file's PassConfig (the CF2 ladder's windows; in
+    demote_off_budget it also lets an isotope element's own line keep its row)."""
     profile = None
     if context:
         from peaky.chem import contexts as X
@@ -726,7 +863,7 @@ def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
     c = demote_carbon_clusters(ledger, audit=audit, log=log, profile=profile)
     if not context:
         return {**o, **c}
-    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log)
+    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log, cfg=cfg)
     return {**o, **c, **b}
 
 

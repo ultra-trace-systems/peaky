@@ -201,6 +201,18 @@ JOIN_MAX_DA = 30.0     # a JOIN up to a segment from seeds bridges a gap no wide
                        # (SEG_SPAN_DA); wider, the axis in between is unseen: left uncorrected
 SCOPE_SLACK_PPM = 3.0  # a segment's domain: its extreme locks' MEASURED m/z, +- the bin width
                        # (20 ppm carried a correction across a step to a peak 17 ppm past the edge)
+EDGE_LOCK_DA = 5.0     # the edge carry's value at an end (edge_carry_record): the model there plus the
+                       # median residual of the end segment's non-bright locks within this many Da of
+                       # it. A spline's end knot can sit off its own end locks (a uronium axis: -0.41
+                       # ppm at its first lock, the locks there -0.15..-0.25, an independent axis
+                       # -0.20; read here -0.28). Measured on a field campaign's 44 lock-model ends:
+                       # the nearest 9 locks wherever they lie reach 44 Da into a sparse segment and
+                       # read a labelled-nitrate end 0.05 ppm further from its out-of-scope lines
+EDGE_LOCKS_MIN = 3     # fewer locks there: the model's own end value. A median of three ignores one
+                       # stray lock (2.5 % of those 44 models' locks read > 0.5 ppm off the model,
+                       # 0.8 % > 1 ppm); an end read off one or two would carry it 30 Da
+REFIT_SEL_DA = 1e-4    # a lock table's row belongs to a segment within this of its domain's ends (Da): the
+                       # table rounds m/z to 5 decimals, the domains are the unrounded end locks
 CACHE_PPM = 16.0       # the walk's candidate cache spans this around each bin (> MAX_ERR_PPM + NARROW_PPM)
 RANSAC_DRAWS = 2000
 RANSAC_MAX_SLOPE = 0.1  # ppm per Da; the steepest smooth stretch measured is ~0.07
@@ -560,6 +572,92 @@ class AxisModel:
         out.stats["max_abs_ppm"] = round(out.max_abs_ppm(), 3)
         return out
 
+    def edge_carry_record(self, reach_da: float, locks=None) -> dict:
+        """The record of the model's EDGE CARRY (masscal.edge_carry_at): the axis at its
+        first lock (`below`) and at its last (`above`), each carried into the scoring
+        centre of the lines up to `reach_da` beyond it, with the domains' slack the
+        served-axis boundary is read at. Gaps and holes between segments are not in it:
+        a step there is unseen. Granted by assign_batch._lock_model (stats
+        'edge_carry'); peaks are never moved by it.
+
+        Each end's `ppm` is read off the END LOCKS (`locks`: the fit's lock table, rows
+        of mz / ppm / bright): the model at the edge plus the median residual of the
+        end segment's non-bright locks within EDGE_LOCK_DA of it (`_edge_value`), so a
+        spline whose end knot left its own end locks is put back on them; `model_ppm`
+        is the model's own end value, `n_locks` the locks read (0: no table, or fewer
+        than EDGE_LOCKS_MIN there -- the model's end value stands)."""
+        first, last = self.segments[0], self.segments[-1]
+        return {"reach_da": float(reach_da), "slack_ppm": float(SCOPE_SLACK_PPM),
+                "below": self._edge_value(first, float(first["lo"]), locks),
+                "above": self._edge_value(last, float(last["hi"]), locks)}
+
+    def _edge_value(self, seg, edge: float, locks) -> dict:
+        """{mz, ppm, model_ppm, n_locks} of one end (edge_carry_record)."""
+        own = float(self._eval(seg, edge))
+        out = {"mz": float(edge), "ppm": own, "model_ppm": own, "n_locks": 0}
+        t = pd.DataFrame(locks) if locks is not None else None
+        if t is None or not len(t) or not {"mz", "ppm"} <= set(t.columns):
+            return out
+        m = pd.to_numeric(t["mz"], errors="coerce").to_numpy(dtype=float)
+        p = pd.to_numeric(t["ppm"], errors="coerce").to_numpy(dtype=float)
+        bright = (t["bright"].astype(str).str.strip().str.lower().eq("true").to_numpy(dtype=bool)
+                  if "bright" in t.columns else np.zeros(len(t), dtype=bool))
+        sel = np.isfinite(m) & np.isfinite(p) & ~bright
+        sel[sel] = self._domain(seg, m[sel]) & (np.abs(m[sel] - edge) <= EDGE_LOCK_DA)
+        if sel.sum() < EDGE_LOCKS_MIN:
+            return out
+        m, p = m[sel], p[sel]
+        out["ppm"] = own + float(np.median(p - self._eval(seg, m)))
+        out["n_locks"] = int(len(m))
+        return out
+
+    @property
+    def edge_carry(self) -> dict | None:
+        """The edge carry the batch granted this model (`edge_carry_record`, kept in
+        `stats` so it travels with as_dict / from_dict), or None: a model the batch
+        applied at 1 ppm or more, or one built before the record existed."""
+        rec = (self.stats or {}).get("edge_carry")
+        return dict(rec) if rec else None
+
+    def refit(self, locks, off_ppm: float, k: int = LOCAL_K) -> tuple["AxisModel", list]:
+        """The model with each SPLINE segment refitted without the locks that disagree with
+        their neighbours (assign_batch._lock_model's sub-ppm branch, LOCK_REFIT_PPM): the
+        segment's non-bright locks of `locks` (the fit's lock table: mz / ppm / bright) lose,
+        one at a time and the worst first (`_worst_first`), the lock furthest off a Theil-Sen
+        line through its `k` nearest while that distance exceeds `off_ppm`; the smoothing
+        spline (GCV, `_Curve`) is refitted on the rest and resampled on the segment's own grid.
+        Line segments, every domain (lo / hi, holes) and the grid stay as built; a segment that
+        drops nothing -- or whose refit would bend faster than SPLINE_MAX_SLOPE -- is the
+        as-built segment, so a model that drops nothing is the as-built model. The refitted
+        segment's `n` counts the locks kept, `refit_dropped` those dropped. Returns (model,
+        the dropped rows' index labels in `locks`); `self` is not changed."""
+        t = pd.DataFrame(locks) if locks is not None else pd.DataFrame()
+        out = AxisModel(segments=[dict(s) for s in self.segments], n_locks=self.n_locks, stats=dict(self.stats))
+        if not len(t) or not {"mz", "ppm"} <= set(t.columns):
+            return out, []
+        m = pd.to_numeric(t["mz"], errors="coerce").to_numpy(dtype=float)
+        p = pd.to_numeric(t["ppm"], errors="coerce").to_numpy(dtype=float)
+        bright = (t["bright"].astype(str).str.strip().str.lower().eq("true").to_numpy(dtype=bool)
+                  if "bright" in t.columns else np.zeros(len(t), dtype=bool))
+        ok = np.isfinite(m) & np.isfinite(p) & ~bright
+        dropped = []
+        for si, seg in enumerate(out.segments):
+            if seg["kind"] != "spline":
+                continue
+            sel = np.flatnonzero(ok & (m >= seg["lo"] - REFIT_SEL_DA) & (m <= seg["hi"] + REFIT_SEL_DA))
+            sel = sel[np.argsort(m[sel], kind="stable")]
+            keep = _worst_first(m[sel], p[sel], off_ppm, k)
+            if keep.all():
+                continue
+            cur = _Curve(m[sel][keep], p[sel][keep])
+            if cur.max_slope()[0] > SPLINE_MAX_SLOPE:
+                continue
+            x = np.asarray(seg["x"], dtype=float)
+            out.segments[si] = dict(seg, y=np.asarray(cur(x), dtype=float), n=int(keep.sum()),
+                                    refit_dropped=int((~keep).sum()))
+            dropped += [t.index[i] for i in sel[~keep]]
+        return out, dropped
+
     def max_abs_ppm(self) -> float:
         """The largest correction the model applies anywhere in its domains."""
         vals = [np.abs(self._eval(s, np.linspace(s["lo"], s["hi"], 400))).max() for s in self.segments]
@@ -700,6 +798,41 @@ def _local_outliers(x, y, k: int = LOCAL_K) -> np.ndarray:
         icpt = float(np.median(ya - slope * xa))
         out[i] = abs(y[i] - (icpt + slope * x[i])) > OFF_CURVE_PPM
     return out
+
+
+def _local_dev(x, y, k: int) -> np.ndarray:
+    """|y - the Theil-Sen line through each lock's k nearest locks (itself left out)| (x sorted)."""
+    n = len(x)
+    dev = np.zeros(n)
+    for i in range(n):
+        # x sorted: the k nearest lie within k places either side
+        cand = np.r_[max(0, i - k):i, i + 1:min(n, i + k + 1)]
+        nb = cand[np.argsort(np.abs(x[cand] - x[i]), kind="stable")[:k]]
+        xa, ya = x[nb], y[nb]
+        dx = xa[:, None] - xa[None, :]
+        dy = ya[:, None] - ya[None, :]
+        ok = dx > 0.5
+        slope = float(np.median(dy[ok] / dx[ok])) if ok.any() else 0.0
+        dev[i] = abs(y[i] - (float(np.median(ya - slope * xa)) + slope * x[i]))
+    return dev
+
+
+def _worst_first(x, y, off_ppm: float, k: int = LOCAL_K) -> np.ndarray:
+    """The keep mask of AxisModel.refit: while the lock furthest off the Theil-Sen line
+    through its k nearest kept locks sits more than `off_ppm` off it, that one lock goes
+    (and no fewer than k + 1 stay). One per round: judged all at once, a cluster of high
+    locks drags its good neighbours' lines up and takes them out with it (on a labelled-
+    nitrate batch two good locks, +0.006 and -0.159 ppm, went with a +0.6..+0.9 cluster)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    keep = np.ones(len(x), dtype=bool)
+    while keep.sum() > k + 1:
+        idx = np.flatnonzero(keep)
+        dev = _local_dev(x[idx], y[idx], k)
+        j = int(np.argmax(dev))
+        if dev[j] <= off_ppm:
+            break
+        keep[idx[j]] = False
+    return keep
 
 
 def _ransac(m, e, w, *, tol=SEG_TOL_PPM, seed=0):

@@ -394,7 +394,7 @@ def test_stamp_merged_joins_by_ion_and_a_re_read_gets_no_level():
     assert list(out.evidence_level[:2]) == ["4b", "NA"] and pd.isna(out.evidence_level.iloc[2])
     assert list(out.claim) == ["ion", "not assessed", "tentative"]
     assert out.evidence.iloc[2] == EV.NO_POOLED_PAIR_TEXT == "no pooled pair: a batch-level re-read"
-    assert out.would_lift.iloc[0] == "w" and pd.isna(out.would_lift.iloc[2])
+    assert out.would_lift.iloc[0] == "w" and out.would_lift.iloc[2] == EV.NO_POOLED_PAIR_LIFT
     out0 = EV.stamp_merged(merged, pairs.iloc[0:0])
     assert out0.evidence_level.isna().all() and set(EV.COLUMNS) <= set(out0.columns)
     assert (out0.claim == "tentative").all() and (out0.evidence == EV.NO_POOLED_PAIR_TEXT).all()

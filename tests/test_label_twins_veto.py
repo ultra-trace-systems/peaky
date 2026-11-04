@@ -343,11 +343,12 @@ def test_the_table_keeps_its_documented_columns():
     """label_twins.csv (docs/OUTPUTS.md): column order, bool flags, str notes, committed readings."""
     assert LT.TABLE_COLUMNS == (
         "neutral_formula", "adduct", "committed", "mz", "mz_partner", "n14", "n_codetected", "partner_share",
-        "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "line_verdict",
-        "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note")
+        "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "shadow_parent", "shadow_mz",
+        "shadow_n", "shadow_ratio", "shadow_sd", "shadow_r", "shadow_c13", "shadow_twin_sd", "shadow",
+        "line_verdict", "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note")
     t = _measure(_refs_spec(**{Y: {"phase": 1.0, "q": None}}))
     assert list(t.columns) == list(LT.TABLE_COLUMNS)
-    for c in ("committed", "reference", "cluster_k", "alias_only_tie", "untie", "alien", "veto"):
+    for c in ("committed", "reference", "cluster_k", "shadow", "alias_only_tie", "untie", "alien", "veto"):
         assert t[c].dtype == bool, c
     assert t["note"].map(lambda v: isinstance(v, str)).all()
     assert set(t.loc[~t["veto"], "note"]) == {""}

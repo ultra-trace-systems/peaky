@@ -36,9 +36,10 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
+from peaky.assignment import satellites as SAT
 from peaky.assignment.passes import PassConfig, confidence_label, z_of, _prefer_adduct_reading
 
-__version__ = "0.2.0"  # gap-fill draws from the admission gate (persistence OR brightness)
+__version__ = "0.3.0"  # + the commit contract (satellites.own_line_verdict); 0.2.0 gap-fill draws from the admission gate (persistence OR brightness)
 
 _D_BR = 1.99795
 _D_13C = 1.0033548
@@ -203,6 +204,7 @@ def run_ladder_gapfill(client, sample_id: str, ledger: pd.DataFrame, profile,
         return out
     base = scored[scored["is_base"] & scored["sample_peak_id"].notna()
                   & scored["ion_score"].notna()].copy()
+    gate = SAT.LineGate(ledger, cfg)     # the commit contract (Orbitrap-class; inert elsewhere)
     for pid, p in proposals.items():
         f, _ = form_of[pid]
         rows = base[base["compound_formula"] == f]
@@ -244,6 +246,12 @@ def run_ladder_gapfill(client, sample_id: str, ledger: pd.DataFrame, profile,
                            "ion_formula": r["ion_formula"], "raw_score": raw})
             w = _prefer_adduct_reading(w, cfg)
             note = w["_relabel_note"] if "_relabel_note" in w else ""
+            # the commit contract: its own S / Cl / Br / Si line where the file
+            # would show it (satellites.own_line_verdict; Orbitrap-class only)
+            if gate.refuse(ledger, pid, str(w["neutral"]), r["ion_formula"],
+                           reading=f"{w['neutral']} {w['adduct']}", route="pass 6 ladder:gapfill"):
+                out["own_line_refused"] = out.get("own_line_refused", 0) + 1
+                continue
             L.commit_assignment(
                 ledger, pid, neutral_formula=w["neutral"], adduct=w["adduct"],
                 ion_formula=r["ion_formula"], ion_score=float(r["ion_score"]),

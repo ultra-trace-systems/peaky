@@ -106,7 +106,11 @@ ANCHORS (Pass 1)                 RESIDUAL peaks                 committed ledger
 9. **Neutral masses** (`_neutral_masses`). One entry per distinct assigned neutral,
    **excluding unconfirmed-fluorine "monsters"** (`_is_f_monster`: F ≥ 4, not a
    PFCA `CₙHF₍₂ₙ₋₁₎O₂`, no Cl/Br/S anchor — ¹⁹F is monoisotopic, so these are mass
-   coincidences) so the fluorinated panel shows real PFAS.
+   coincidences) so the fluorinated panel shows real PFAS. A monster the ledger did
+   **not** refuse is kept: one read off its CF2 ladder (`assignment/fluorine.py`)
+   carries no `below_assignability` flag, and a full ladder may reach Assigned,
+   which a refused row never does (on the merged ledger, which carries the tier but
+   not the flag, only an Assigned one is kept).
 
 10. **Family panels** (`present_families`, `_panel`, base `kmd`). One small-multiple
     per `FAMILIES` entry (alkyl/CH₂, oxidation/O, alkoxylate/C2H4O, siloxane/C2H6OSi,
@@ -177,7 +181,7 @@ ANCHORS (Pass 1)                 RESIDUAL peaks                 committed ledger
   a family.
 - **F-monsters are excluded from the figure.** ¹⁹F is monoisotopic, so an
   unconfirmed high-F formula is a mass coincidence; the fluorinated panel shows the
-  real PFCAs, not the demoted coincidence fits.
+  real PFCAs and the readings a CF2 ladder lifted, not the demoted coincidence fits.
 - **"No series → don't plot."** A family (organic *or* element) appears only if its
   longest ladder exceeds 3 members; a lone D3→D4 siloxane pair is dropped.
 - **CH₂ is the canonical base** because it leaves KMD and DBE unchanged — that is

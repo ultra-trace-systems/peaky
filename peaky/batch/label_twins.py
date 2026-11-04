@@ -42,6 +42,20 @@ arbitrates the other's reading, in its own direction:
         E_MIN and it is seen in <= REFUTE_SHARE x E of them (passes >= PASS_SHARE x
         E; untestable when E < E_MIN): the reagent's two isotopologues refute the
         cluster reading, a hard input (5b).
+  shadow (14N line -> the 13C line above it; Orbitrap-class batches, `klass`):
+        a 14N line CxHyNOz- sits SHADOW_DMZ (13C + H - N, 8.106 mDa) below the
+        13C line of P = C(x+1)H(y+1)Oz-. Where P's ion is committed, the line can
+        be a fixed fraction of that 13C line rather than any ion of its own:
+        over >= SHADOW_N_MIN spectra holding both, median(h14 / h13) <=
+        SHADOW_S_MAX, sd(log h14 / h13) <= SHADOW_SD_MAX, r(log h14, log h13) >=
+        SHADOW_R_MIN, the +8.1 mDa line confirmed as P's 13C line (median(h13 /
+        h12) / ((x + 1) C13_PER_C) in SHADOW_C13), and the line follows that 13C
+        line more tightly than its own 15N twin (sd below the cluster-k sd, else
+        below the raw sd(log h14 / h15) over >= PARTNER_MIN_SPECTRA spectra). Such
+        a line is `shadow` (it outranks every other verdict): refuted (5b) and
+        alien, never untied, out of the cluster-k reference pool (the test is
+        re-run without it), and every Assigned merged reading on it is Candidate
+        (`shadow_gate`, no re-vote).
 
 Measured on the labelled-nitrate regression batch (2026-09-26 output audit rule K,
 re-measured on the trunk 2026-09-27): 14 of the
@@ -58,6 +72,18 @@ move a level, the third is the first one's line under another formula, already
 cluster of an identified acid) and every testable N-free [M-H]- control.
 `untie` in the table marks a line that WOULD clear a tie; the level's
 `label_untie` records where it did (the pooled pair was tied).
+The shadow test, measured on a 15N-labelled nitrate benchmark batch (Orbitrap,
+R ~125k at m/z 200, 305 spectra; replayed on its stored series and ledgers): of
+its 796 14N lines (264 committed on [X+NO3]-), 86 have a committed P and 31 hold
+P's 13C line in >= 50 spectra; two are shadows. C10H18NO7-, a committed and
+known-false [X+NO3]- reading the cluster-k test read as tracking, runs at 0.11x
+the 13C line of C11H19O7- (sd 0.10-0.11, r 0.94-0.96 over 209-238 spectra on two
+axis corrections; its twin's cluster-k sd 0.14-0.17); P's 12C line, 8x brighter
+than that 13C line, has no line 8.1 mDa below it in any spectrum, so this is no
+fixed-offset lobe of every bright line. The uncommitted 14N line of a C10H18O6
+cluster runs at 0.17x the 13C line of C11H19O9- (sd 0.094, twin 0.19) and leaves
+the reference pool. The nearest line that does not fire reads sd 0.195 (twin
+0.20). On six labelled-nitrate field batches (R ~175k) no line is a shadow.
 The table is batch-only (it needs the stamped time series), never an axis, never
 in `cross`, never per file.
 """
@@ -98,9 +124,29 @@ PARTNER_PRESENT_SHARE = 0.8
 #: decision: the aged-SOA tracer C8H12O6 runs at 2.1x with its partner in 98 %);
 #: `absent` -- no 15N partner: undecided (5b), gives X nothing; `untestable` --
 #: gives X nothing
-LINE_VERDICTS = ("tracks", "consistent", "excess", "absent", "untestable")
-FOREIGN = ("excess", "absent", "untestable")
-REFUTED = ("excess", "absent")
+#: `shadow` -- the line follows the 13C line of the committed ion 8.1 mDa above it
+#: (the shadow test, module docstring): undecided (5b), gives X nothing, and its
+#: Assigned merged readings are Candidate (`shadow_gate`)
+LINE_VERDICTS = ("tracks", "consistent", "excess", "absent", "shadow", "untestable")
+FOREIGN = ("excess", "absent", "shadow", "untestable")
+REFUTED = ("excess", "absent", "shadow")
+# the 13C shadow (Orbitrap-class batches)
+#: a 14N line CxHyNOz- sits this far below the 13C line of P = C(x+1)H(y+1)Oz- (Da;
+#: 13C + 12C + H - N = 8.106 mDa)
+SHADOW_DMZ = D13C + C.M["C"] + C.M["H"] - C.M["N"]
+#: a shadow: median(h14 / h13) at most this ...
+SHADOW_S_MAX = 1.0 / 3.0
+#: ... sd(log h14 / h13) at most this (the nearest real line measured: 0.195) ...
+SHADOW_SD_MAX = 0.15
+#: ... r(log h14, log h13) at least this ...
+SHADOW_R_MIN = 0.9
+#: ... over at least this many spectra holding both lines ...
+SHADOW_N_MIN = STATS_MIN
+#: ... with median(h13 / h12) / ((x + 1) C13_PER_C) in this band: the +8.1 mDa line is
+#: P's 13C line
+SHADOW_C13 = (0.5, 1.6)
+#: the classes the test runs on: a TOF does not resolve two lines 8.1 mDa apart
+SHADOW_CLASSES = ("orbitrap",)
 # the veto (14N twin)
 C13_PER_C = 0.0107
 PDET_MIN_C = 4
@@ -111,9 +157,12 @@ REFUTE_SHARE = 0.2
 PASS_SHARE = 0.5
 TABLE_COLUMNS = (
     "neutral_formula", "adduct", "committed", "mz", "mz_partner", "n14", "n_codetected", "partner_share",
-    "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "line_verdict",
+    "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "shadow_parent", "shadow_mz",
+    "shadow_n", "shadow_ratio", "shadow_sd", "shadow_r", "shadow_c13", "shadow_twin_sd", "shadow", "line_verdict",
     "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note",
 )
+SHADOW_COLUMNS = ("shadow_parent", "shadow_mz", "shadow_n", "shadow_ratio", "shadow_sd", "shadow_r", "shadow_c13",
+                  "shadow_twin_sd", "shadow")
 
 
 def in_scope(prof) -> bool:
@@ -328,13 +377,89 @@ def _twin_veto(tr: _Traces, neutrals: list, f: float, curve: np.ndarray) -> pd.D
     return out
 
 
+def _ion_set(com: pd.DataFrame) -> set:
+    """The committed ions' compositions ({element: n} frozensets, the label its own key)."""
+    from peaky.assignment import tiers as T
+    out = set()
+    for n, a in zip(com["neutral_formula"], com["adduct"]):
+        cnt = T._ion_counts(n, a, labelled=True)
+        if cnt:
+            out.add(frozenset(cnt.items()))
+    return out
+
+
+def _parent_of(neutral: str) -> dict | None:
+    """P = C(x+1)H(y+1)Oz- of the 14N line CxHyNOz- of [X+NO3]- (X CHO only: one 14N), or None."""
+    from peaky.assignment import tiers as T
+    ion = T._ion_counts(neutral, NO3, labelled=True) or {}
+    if set(ion) - {"C", "H", "N", "O"} or ion.get("N") != 1 or not ion.get("C"):
+        return None
+    return {k: v for k, v in (("C", ion["C"] + 1), ("H", ion.get("H", 0) + 1), ("O", ion.get("O", 0))) if v}
+
+
+def _shadows(tr: _Traces, neutrals: list, ions: set, twin_sd) -> pd.DataFrame:
+    """The 13C-shadow test on the 14N line of every neutral in `neutrals` whose P ion is
+    in `ions` (module docstring); `twin_sd` per neutral: the cluster-k sd of its line
+    (NaN: the raw sd(log h14 / h15) stands in). One row per neutral, SHADOW_COLUMNS."""
+    out = pd.DataFrame({"neutral_formula": list(neutrals)})
+    for c in SHADOW_COLUMNS:
+        out[c] = np.nan
+    out["shadow_parent"] = out["shadow_parent"].astype(object)
+    out["shadow"] = False
+    idx, nc = [], []
+    for j, n in enumerate(neutrals):
+        p = _parent_of(n)
+        if p is None or frozenset(p.items()) not in ions:
+            continue
+        idx.append(j)
+        nc.append(p["C"])
+        out.at[j, "shadow_parent"] = C.format_formula(p) + "-"
+    if not idx:
+        return out
+    m14 = np.array([C.ion_mz(neutrals[j], NO3) for j in idx])
+    m15 = np.array([C.ion_mz(neutrals[j], NO3L) for j in idx])
+    H14, H13 = tr.heights(m14), tr.heights(m14 + SHADOW_DMZ)
+    H12, H15 = tr.heights(m14 + SHADOW_DMZ - D13C), tr.heights(m15)
+    tw = np.asarray(twin_sd, dtype=float)
+    with np.errstate(all="ignore"):
+        for k, (j, ncp) in enumerate(zip(idx, nc)):
+            a, b, c12, d = H14[:, k], H13[:, k], H12[:, k], H15[:, k]
+            both = np.isfinite(a) & np.isfinite(b) & (a > 0) & (b > 0)
+            n_ = int(both.sum())
+            out.at[j, "shadow_mz"] = float(m14[k] + SHADOW_DMZ)
+            out.at[j, "shadow_n"] = n_
+            if n_ < 3:
+                continue
+            la, lb = np.log(a[both]), np.log(b[both])
+            out.at[j, "shadow_ratio"] = float(np.exp(np.median(la - lb)))
+            out.at[j, "shadow_sd"] = float(np.std(la - lb, ddof=1))
+            out.at[j, "shadow_r"] = float(np.corrcoef(la, lb)[0, 1])
+            k12 = both & np.isfinite(c12) & (c12 > 0)
+            if k12.sum() >= 3:
+                out.at[j, "shadow_c13"] = float(np.median(b[k12] / c12[k12]) / (ncp * C13_PER_C))
+            twin = tw[j] if j < len(tw) else np.nan
+            if not np.isfinite(twin):
+                k15 = np.isfinite(a) & np.isfinite(d) & (a > 0) & (d > 0)
+                if k15.sum() >= PARTNER_MIN_SPECTRA:
+                    twin = float(np.std(np.log(a[k15] / d[k15]), ddof=1))
+            out.at[j, "shadow_twin_sd"] = twin
+    lo, hi = SHADOW_C13
+    out["shadow"] = ((out["shadow_n"] >= SHADOW_N_MIN) & (out["shadow_ratio"] <= SHADOW_S_MAX)
+                     & (out["shadow_sd"] <= SHADOW_SD_MAX) & (out["shadow_r"] >= SHADOW_R_MIN)
+                     & out["shadow_c13"].between(lo, hi)
+                     & (out["shadow_sd"] < out["shadow_twin_sd"])).fillna(False).astype(bool)
+    return out
+
+
 def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | None = None,
-            log=print) -> pd.DataFrame:
+            klass: str | None = None, log=print) -> pd.DataFrame:
     """The label-twin table: one row per committed [X+^NO3]- neutral's 14N line
     (the untie) and per committed [Y+^NO3]- (the veto). Empty with a header when
     the profile is not a labelled-nitrate channel, the batch has no time series,
     or nothing is committed on either nitrate adduct. `alias_ties`: {label:
-    alias_only_ties(ledger)}."""
+    alias_only_ties(ledger)}. `klass`: the batch's resolved instrument class
+    (iso_checks.batch_class); the 13C-shadow test runs on SHADOW_CLASSES only,
+    elsewhere its columns are empty."""
     if not in_scope(prof) or ts is None or not len(ts):
         return _empty()
     com = _committed(frames)
@@ -343,7 +468,20 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     if not n15 and not n14:
         return _empty()
     tr = _Traces(ts)
-    ck = _cluster_k(tr, sorted(set(n15) | n14), ref_pool=n15)
+    neutrals = sorted(set(n15) | n14)
+    ck = _cluster_k(tr, neutrals, ref_pool=n15)
+    if klass in SHADOW_CLASSES:
+        # the 13C shadow: judged against the twin's cluster-k sd of the pool as committed;
+        # a shadow line then leaves the reference pool and the cluster-k test is re-run
+        sh = _shadows(tr, neutrals, _ion_set(com), ck["k_sd"].to_numpy(dtype=float))
+        gone = set(sh.loc[sh["shadow"], "neutral_formula"]) & set(ck.loc[ck["reference"], "neutral_formula"])
+        if gone:
+            ck = _cluster_k(tr, neutrals, ref_pool=[n for n in n15 if n not in gone])
+    else:
+        sh = _shadows(tr, neutrals, set(), [])
+    for c in SHADOW_COLUMNS:
+        ck[c] = sh[c].to_numpy()
+    ck.loc[ck["shadow"], "line_verdict"] = "shadow"
     # the untie guard: every file's tie on the [X+NO3]- reading is with same-ion aliases only
     parts = [t for t in (alias_ties or {}).values() if t is not None and len(t)]
     if parts:
@@ -365,7 +503,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     for c in TABLE_COLUMNS:
         if c not in out.columns:
             out[c] = np.nan
-    for c in ("committed", "reference", "cluster_k", "alias_only_tie", "untie", "alien", "veto"):
+    for c in ("committed", "reference", "cluster_k", "shadow", "alias_only_tie", "untie", "alien", "veto"):
         out[c] = out[c].fillna(False).astype(bool)
     out["note"] = out["note"].fillna("")
     out = out[list(TABLE_COLUMNS)].sort_values(["neutral_formula", "adduct"]).reset_index(drop=True)
@@ -378,6 +516,10 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
 
 
 def _line_note(r) -> str:
+    if r.line_verdict == "shadow":
+        return (f"13C shadow: the 14N line runs at {r.shadow_ratio:.2f}x the 13C line of {r.shadow_parent} "
+                f"{SHADOW_DMZ * 1e3:.1f} mDa above it (sd {r.shadow_sd:.2f}, r {r.shadow_r:.2f} over "
+                f"{int(r.shadow_n)} spectra; its 15N twin's sd {r.shadow_twin_sd:.2f}); not X's cluster")
     if r.line_verdict == "absent":
         return (f"no 15N partner: seen in {int(r.n_codetected)} of the {int(r.n14)} spectra of the 14N line; "
                 f"cluster or organonitrate undecided")
@@ -417,6 +559,51 @@ def veto(table: pd.DataFrame | None) -> dict:
     notes = t["note"] if "note" in t.columns else pd.Series([""] * len(t), index=t.index)
     return {(str(n), str(a)): (str(x) if isinstance(x, str) else "")
             for n, a, x in zip(t["neutral_formula"], t["adduct"], notes)}
+
+
+def shadow_gate(merged: pd.DataFrame, table: pd.DataFrame | None, *, mass_scale=None, log=print) -> dict:
+    """The 13C-shadow gate on the merged ledger (in place): every Assigned merged
+    reading within the batch's merge window (iso_checks._merge_ppm) of a 14N line
+    the table calls `shadow` is Candidate -- the line is no reading's own ion. No
+    re-vote: the winner and its reading stay, the row says why (as the TOF gates,
+    iso_checks.tof_m2_gates). The pooled pair's label veto (5b) does not reach the
+    merged tier, which is the vote's.
+
+    Returns counts for batch_summary['merge_gates']['label_shadow']: `ran` (an
+    in-scope table), `lines` (shadow lines), `demoted`, `demoted_rows`; `skipped`
+    when there is no table."""
+    out = {"ran": False, "lines": 0, "demoted": 0, "demoted_rows": []}
+    if table is None or not len(table) or not {"line_verdict", "mz", "adduct"} <= set(table.columns):
+        out["skipped"] = "no label-twin table (out of scope, or no time series)"
+        return out
+    out["ran"] = True
+    sh = table[(table["adduct"].astype(str) == NO3) & (table["line_verdict"].astype(str) == "shadow")]
+    out["lines"] = int(len(sh))
+    if sh.empty or merged is None or not len(merged) or not {"tier", "mz"} <= set(merged.columns):
+        return out
+    from peaky.assignment.cleanup import _note
+    from peaky.batch.iso_checks import _merge_ppm
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    ppm = _merge_ppm(mass_scale)
+    mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(dtype=float)
+    for r in sh.itertuples(index=False):
+        line = float(r.mz)
+        with np.errstate(invalid="ignore"):
+            near = np.abs(mz - line) / line * 1e6 <= ppm
+        why = (f"Candidate: the line is the 13C shadow of {r.shadow_parent} ({r.shadow_ratio:.2f}x its 13C line "
+               f"{SHADOW_DMZ * 1e3:.1f} mDa above, sd {r.shadow_sd:.2f}, r {r.shadow_r:.2f} over {int(r.shadow_n)} "
+               f"spectra; the 15N twin's sd {r.shadow_twin_sd:.2f}), not this reading's ion (label_twins)")
+        for i in merged.index[near]:
+            if str(merged.at[i, "tier"]) != "Assigned":
+                continue
+            merged.at[i, "tier"] = "Candidate"
+            _note(merged, i, why)
+            out["demoted"] += 1
+            out["demoted_rows"].append(f"{merged.at[i, 'neutral_formula']} {merged.at[i, 'adduct']}")
+    log(f"[label_twins] 13C-shadow gate: {out['lines']} shadow line(s), {out['demoted']} Assigned merged "
+        f"reading(s) -> Candidate" + (f" ({'; '.join(out['demoted_rows'])})" if out["demoted_rows"] else ""))
+    return out
 
 
 def _truth(v) -> bool:

@@ -492,7 +492,10 @@ def test_assign_run_hands_the_files_scoring_snapshot_to_the_stage():
     lines = []
     IO.unregister_offline_sample(SID)
     try:
-        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74), peaks=table,
+        # its ion scores 0.59 (the 81Br line 20 ppm off): under tau_low, so the bar is lowered for a
+        # pass to commit it (the bromo-organic family did at tau_suspect before the families took
+        # pass 1's bar); the stage under test is the TOF line test, not the score bar
+        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74, tau_low=0.55), peaks=table,
                     use_cache=False, scoring=snap, adducts=["[M-H]-", "[M+Br]-", "[M+NO3]-"],
                     reagent_n_relabel=False, resolving_power=Resolution.from_r(10_000),
                     log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))

@@ -455,7 +455,7 @@ check("known_evidence: two confirmed records (route / exact mass), one lead with
                          family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
                          verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
                          summary="no diagnostic twin to test (monoisotopic)", n_channels=1, n_satellites=0,
-                         ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
+                         n_c13=0, ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
 check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
 # the route is read off the ROW: a chlorinated paraffin names no "corroborated by"
 # but records the 37Cl lines it locked on; a PFCA's recorded 81Br line is the
@@ -918,16 +918,20 @@ try:
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision, "
-              "the reagent-water ladder, the isotopologue rows, the element-signature removal and the "
-              "TOF ion-M+2 gates, the label-twin tier cap and the ringing-line release always -- nothing "
-              "pooled, no rung or "
-              "signature veto here, the isotopologue gate skipped on a height-only series, the TOF gates "
-              "skipped on an Orbitrap-class batch; no polarity gate in negative mode)",
-              set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue",
+              "the reagent-water ladder, the isotopologue rows, the 13C-shadow gate, the "
+              "element-signature removal and the TOF ion-M+2 gates, the label-twin tier cap and the "
+              "ringing-line release always -- nothing pooled, no rung or signature veto here, the "
+              "isotopologue gate skipped on a height-only series, the shadow gate skipped off a "
+              "labelled-nitrate channel, the TOF gates skipped on an Orbitrap-class batch; no polarity "
+              "gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue", "label_shadow",
                                                     "element_signature", "label_veto", "tof_m2",
                                                     "ringing_lines"}
               and summ["merge_gates"]["label_veto"] == {"capped": 0}
               and summ["merge_gates"]["ringing_lines"]["released"] == 0
+              and summ["merge_gates"]["label_shadow"] == {
+                  "ran": False, "lines": 0, "demoted": 0, "demoted_rows": [],
+                  "skipped": "no label-twin table (out of scope, or no time series)"}
               and summ["merge_gates"]["isotopologue"]["ran"] is False
               and "no peak areas" in summ["merge_gates"]["isotopologue"]["skipped"]
               and summ["merge_gates"]["element_signature"] == {"removed": 0, "pairs": []}
@@ -1196,17 +1200,27 @@ try:
         # keeps the ammonium reading through the reagent-N pass for the whole batch;
         # the amine gate then has no trace to confirm the adduct against (the
         # synthetic TS holds no such ion) and, by its default-to-CHON policy, reads
-        # it as the amine -- and SAYS so on the merged row.
+        # it as the amine -- and SAYS so on the merged row. Both re-reads are the
+        # same ion as the reading they replace, so each keeps the tier the vote gave
+        # it (Assigned in every file here); the amine re-read takes the level of the
+        # pooled pair it replaced, the split open (4b, claim 'ion').
         check("positive run: the reagent-N pass re-read ONE reading (C11H20) and kept C15H22, which protonates in one file",
               summp["merge_gates"]["reagent_n"] == {"reagent_n_relabeled": 1}, summp.get("merge_gates"))
         check("positive run: the amine gate's re-read of C15H22 [M+NH4]+ is explained in tier_reason",
               r_nh4["neutral_formula"] == "C15H25N" and r_nh4["adduct"] == "[M+H]+"
-              and r_nh4["tier"] == "Candidate"
+              and r_nh4["tier"] == "Assigned"
               and "protonated CHON" in str(r_nh4["tier_reason"]) and "C15H22" in str(r_nh4["tier_reason"]),
               r_nh4.to_dict())
+        check("positive run: the amine re-read is levelled from the pooled pair it replaced (4b, split open)",
+              r_nh4["evidence_level"] == "4b" and r_nh4["claim"] == "ion"
+              and str(r_nh4["evidence"]).startswith("4b · ion: ")
+              and "split: open -- batch-level re-read of the pooled pair C15H22 [M+NH4]+, the same ion"
+              in str(r_nh4["evidence"])
+              and str(r_nh4["would_lift"]).startswith("split not pinned: batch-level re-read"),
+              (r_nh4["evidence_level"], r_nh4["evidence"], r_nh4["would_lift"]))
         check("positive run: C11H20 uronium (no [M+H]+ anywhere) re-read ONCE, naming the reading it replaced",
               r_ur["neutral_formula"] == "C12H24N2O" and r_ur["adduct"] == "[M+H]+"
-              and r_ur["tier"] == "Candidate" and r_ur["n_files_winner"] == 3
+              and r_ur["tier"] == "Assigned" and r_ur["n_files_winner"] == 3
               and str(r_ur["tier_reason"]).startswith("re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O"),
               r_ur.to_dict())
         check("positive run: batch_summary carries both gates' counts",

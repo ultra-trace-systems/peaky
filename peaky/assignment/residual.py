@@ -40,12 +40,14 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
+from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
+from peaky.assignment import satellites as SAT
 from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.4"  # the pair window stays wide until the file is calibrated; 0.3.3 the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
+__version__ = "0.4.0"  # + the commit contract on both stages; 0.3.5 the acceptance rule's refusals noted as blocked readings (blocked.py); 0.3.4 the pair window stays wide until the file is calibrated; 0.3.3 the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
                        # tie-break (#8); 0.3.0: stage B draws from the admission gate (persistence
                        # OR brightness)
 
@@ -280,6 +282,13 @@ def _accept(score: float, ppm: float | None, has_pattern: bool,
     return False, f"|ppm|={a:.2f} without pattern evidence"
 
 
+def _why_text(why: str, w, cfg: PassConfig) -> str:
+    """`_accept`'s refusal as a blocked_by reason, the score floor with its numbers."""
+    if why == "score below floor" and w.get("raw_score") is not None:
+        return f"score {float(w['raw_score']):.2f}<{cfg.tau_suspect:.2f}"
+    return why
+
+
 def _cap_conf(conf: str) -> str:
     return conf.replace("High", "Good")
 
@@ -381,6 +390,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     pair_by_light = {p["light_pid"]: p for _, p in pairs.iterrows()}
+    gate = SAT.LineGate(ledger, cfg)     # the commit contract (Orbitrap-class; inert elsewhere)
     for _, w in win.iterrows():
         pid = w["peak_id"]
         if pid not in pair_by_light:
@@ -396,6 +406,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
         ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg,
                           w.get("sample_peak_mz"))
         if not ok:
+            BL.note_winner(w, f"pass4:{_why_text(why, w, cfg)} (iso-pair)")
             continue
         try:
             if L.role_of(ledger, pid) != L.ROLE_UNEXPLAINED:
@@ -404,6 +415,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
                 w["raw_score"], w["ppm_error"], w["n_iso"], w["tied"], cfg,
                 suffix="iso-pair", mz=w.get("sample_peak_mz")))
             if conf == "Reject":
+                BL.note_winner(w, "pass4:confidence Reject (iso-pair)")
                 continue
             # reagent-halogen reading: a covalent Y(Br) [M+Br]- iso-pair winner
             # is the SAME ion as the Br-free SOA core Y' [M+HBr+Br]- (di-bromide
@@ -412,6 +424,9 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
             # [M+HBr+Br]-), consistent with passes 1/3/5.
             w = _prefer_adduct_reading(w, cfg)
             note = w["_relabel_note"] if "_relabel_note" in w else ""
+            if _own_line_refused(gate, ledger, pid, w, "pass 4 residual:iso-pair"):
+                out["own_line_refused"] = out.get("own_line_refused", 0) + 1
+                continue
             L.commit_assignment(
                 ledger, pid, neutral_formula=w["neutral"], adduct=w["adduct"],
                 ion_formula=w["ion_formula"], ion_score=w["ion_score"],
@@ -465,6 +480,14 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
     return out
 
 
+def _own_line_refused(gate, ledger: pd.DataFrame, pid, w, route: str) -> bool:
+    """The commit contract on a residual winner (satellites.own_line_verdict):
+    True -- and the reason written on the peak's row -- when its neutral's own
+    S / Cl / Br / Si line is absent where the file would show it."""
+    return gate.refuse(ledger, pid, str(w["neutral"]), w.get("ion_formula"),
+                       reading=f"{w['neutral']} {w['adduct']}", route=route)
+
+
 # ---------------------------------------------------------------------------
 # Stage B -- deep series / cluster propagation
 # ---------------------------------------------------------------------------
@@ -501,6 +524,9 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
             # them here now, exactly as max_F/max_P=0 handle F and P.
             keep, _why = X.filter_by_context(f, profile)
             if not keep:
+                if BL.active():
+                    BL.note_at(prow["peak_id"], "context:" + BL.compact_reason(_why), prow["mz"], neutral=f,
+                               adduct=prop.adduct, to_score=True)
                 continue
             ok, _why = C.dbe_ok(f)        # structural gates: DBE + oxygen cap
             if ok:
@@ -524,6 +550,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
         out["scoring_empty"] = True
         return out
     arb = arbitrate(scored, cfg, profile)
+    gate = SAT.LineGate(ledger, cfg)     # the commit contract (Orbitrap-class; inert elsewhere)
     for _, w in arb.get("winners", pd.DataFrame()).iterrows():
         f = w["neutral"]
         meta = proposals.get(f)
@@ -533,6 +560,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
         ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg,
                           w.get("sample_peak_mz"))
         if not ok:
+            BL.note_winner(w, f"pass4:{_why_text(why, w, cfg)} (deep series)")
             continue
         pid = w["peak_id"]
         try:
@@ -542,6 +570,10 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
                 w["raw_score"], w["ppm_error"], w["n_iso"], w["tied"], cfg,
                 suffix="deep-series", mz=w.get("sample_peak_mz")))
             if conf == "Reject":
+                BL.note_winner(w, "pass4:confidence Reject (deep series)")
+                continue
+            if _own_line_refused(gate, ledger, pid, w, "pass 4 residual:series"):
+                out["own_line_refused"] = out.get("own_line_refused", 0) + 1
                 continue
             L.commit_assignment(
                 ledger, pid, neutral_formula=f, adduct=w["adduct"],

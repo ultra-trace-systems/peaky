@@ -59,9 +59,13 @@ from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import fluorine as FL
 from peaky.assignment import satellites as SAT
 
-__version__ = "0.10.0"  # + the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
+__version__ = "0.11.0"  # + the reagent-N isobar is an open split, never a tier cap (the tier reads the ion; REAGENT_N_OPEN_MARK);
+                       #   an isobar ion that is N-rich in every reading and has nothing but its mass stays Candidate (REAGENT_N_RICH_MARK);
+                       #   the isotope-gated family hold (a gated route's heteroatom without its own line is Candidate)
+                       # 0.10.0: the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
                        # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
                        # owned by PassConfig) + persistent-weak cap
@@ -151,6 +155,56 @@ BACKGROUND_CHANNELS = ("[M+CO3]-", "[M+HBr+CO3]-", "[M+O2]-", "[M]-.")
 # pair from EITHER side: the N-free neutral on the donor adduct, and the
 # protonated N-richer neutral whose same-ion alias sits on a donor adduct.
 N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
+#: The tier answers "is the ion right?"; a doubt about the neutral / adduct split
+#: or the ionization process is the evidence level's (its split step keeps the
+#: pair open) and never moves the tier. The two readings of a reagent-N pair are
+#: ONE ion, so the isobar no longer caps the tier, and the ion keeps its own
+#: corroboration (its isotope lines, a second channel of the neutral). The row
+#: says the split is open with this mark when the nitrogen count is not fixed;
+#: the merge vote's label stage reads the mark (`split_open`), so the label of a
+#: same-ion pair is still decided by the files that could fix the nitrogen count.
+#: Until 0.10 the isobar capped such a row at Candidate ("reagent-N isobar
+#: unresolved"): on a uronium Orbitrap field campaign it held about a quarter of
+#: the merged Candidates while the ion was established in most files.
+REAGENT_N_OPEN_MARK = "reagent-N split open"
+#: The ion's own bar the isobar rows still meet (an ion-level rule, independent of
+#: the split): where EVERY stored reading of the ion carries at least this many
+#: analyte nitrogens (`_poorest_n`: the winner's neutral and each same-ion
+#: alternative's) and the ion has no isotope line, second channel or series anchor,
+#: its composition is a mass-only claim in the nitrogen-rich formula space, and the
+#: row is Candidate (REAGENT_N_RICH_MARK) -- the bar the speculative-residual demote
+#: sets a residual fit (N >= 3 with no isotope corroboration). Measured on a uronium
+#: Orbitrap file whose mass axis was shifted by +9 and by -9 ppm (decoy arms, where
+#: every Assigned reading is wrong): of the rows the isobar no longer capped, those
+#: with an N-rich ion were 16 of the 26 on the shifted arms and 1 of the 161 on the
+#: unshifted file; on a uronium field campaign they were 133 per-file rows, none on a
+#: grade-A/B line of its synthetic truth set and 13 on a line of another ion.
+REAGENT_N_RICH_MIN = 3
+REAGENT_N_RICH_MARK = "nitrogen-rich ion on mass alone"
+
+
+def reagent_n_note(formula, adduct, flag, *, fixed: bool, how: str = "") -> str:
+    """The note a reagent-N isobar row carries (`flag` = _reagent_n_isobar's
+    tuple): the split open (`REAGENT_N_OPEN_MARK`, naming the same-ion alias and
+    what would fix the nitrogen count) or, `fixed`, how the count was fixed."""
+    if fixed:
+        return f"reagent-N isobar: nitrogen count fixed by {how}"
+    if flag[0] == "donor":
+        return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]}, a "
+                "protonated N-heavier neutral, and no N-free channel / joint NH4+urea / series anchor "
+                "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, "
+                "not the ion: the tier reads the ion, the split is the evidence level's to decide")
+    return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]} (the "
+            "N-poorer neutral on an N-donating reagent adduct), and no second channel / series anchor "
+            "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, not "
+            "the ion: the tier reads the ion, the split is the evidence level's to decide")
+
+
+def split_open(tier_reason) -> bool:
+    """Whether a row's tier_reason says its reagent-N split is open (the
+    nitrogen count not fixed in that file: `REAGENT_N_OPEN_MARK`)."""
+    return REAGENT_N_OPEN_MARK in _txt(tier_reason)
+
 
 # Honest cross-family mass degeneracy (degeneracy.measure_degeneracy, stamped as
 # degeneracy_density / degeneracy_note). The per-pass candidate_density only
@@ -172,6 +226,13 @@ DEGEN_DEMOTE_DENSITY = 2
 
 _TRAILS_RE = re.compile(r"trails by ([0-9.]+)")
 
+
+#: The isotope-gated families' hold (compute_tiers): a row an isotope-gated
+#: pass-3 family committed (contexts.family_iso_gate) whose ion does not show
+#: its own line of the gate element (satellites.own_line) is Candidate, its
+#: `tier_reason` led by this mark -- the line is what the route admits the
+#: element on, and an untestable one commits only on organosulfur_34s.
+GATED_HOLD = "isotope-gated route, its own line unseen"
 
 #: The organonitrate-skeleton reading (contexts.nox_skeletons) widens the context
 #: and plausibility windows on the premise that the sample holds organonitrates
@@ -557,6 +618,20 @@ def _reagent_n_isobar(row, alts_all: list[dict]):
     return None
 
 
+def _poorest_n(row, alts_all: list[dict]) -> int:
+    """The fewest analyte nitrogens any stored reading of the row's ion carries:
+    the winner's neutral and every same-ion alternative's (REAGENT_N_RICH_MIN
+    asks whether even the N-poorest reading is nitrogen-rich)."""
+    n = C.parse_formula(_txt(row.get("neutral_formula"))).get("N", 0)
+    ion0 = _ion_counts(row.get("neutral_formula"), row.get("adduct"))
+    if ion0 is None:
+        return n
+    for a in alts_all:
+        if _ion_counts(a.get("formula"), a.get("adduct")) == ion0:
+            n = min(n, C.parse_formula(_txt(a.get("formula"))).get("N", 0))
+    return n
+
+
 def _margin_density_tie(row, alts: list[dict], n_aliased: int,
                         n_stored: int) -> tuple[float | None, int, bool, bool]:
     """(margin to best real alternative, candidate density, capped?, tied?).
@@ -607,51 +682,72 @@ def density_text(density: int, capped: bool) -> str:
     return f">={density}" if capped else str(density)
 
 
+#: where a file's tier calibration came from (the `tier_calibration` column on
+#: its M0 rows and its batch_summary `per_file` entry): its own core
+#: (`_calibrate`), the batch's pooled core (assignment/calpool.py), or none
+CAL_SOURCE_PER_FILE, CAL_SOURCE_POOLED, CAL_SOURCE_NONE = "per_file", "pooled", "none"
+#: the window word a reason uses for a calibration of each source
+_WINDOW_WORD = {CAL_SOURCE_PER_FILE: "calibrated window", CAL_SOURCE_POOLED: "batch-pooled calibrated window"}
+#: the M0 rows' column naming where their file's tier calibration came from
+#: (CAL_SOURCE_PER_FILE / CAL_SOURCE_POOLED / CAL_SOURCE_NONE); NA on every other row
+TIER_CALIBRATION = "tier_calibration"
+
+
 class _Cal(tuple):
     """(mu, sigma) of the ppm error -- a plain 2-tuple for every `mu, sigma = cal`
     consumer -- that also carries the mass trend (masscal) as attributes:
     `a`, `b`, `sigma_t`, `mz_lo`, `mz_hi` (ppm = a + b*1000/mz on the backbone's
-    m/z coverage; None = constant model) and `abs_floor_mda`, the absolute floor
-    on the trend sigma (from PassConfig.cal_abs_floor_mda)."""
+    m/z coverage; None = constant model), `abs_floor_mda`, the absolute floor
+    on the trend sigma (from PassConfig.cal_abs_floor_mda), `source`, where
+    the core came from (CAL_SOURCE_PER_FILE: the file's own; CAL_SOURCE_POOLED:
+    the batch's pooled core, assignment/calpool.py), and `carry`, the batch axis
+    model's edge carry the core was read under (PassConfig.axis_edge_carry;
+    None = none): `_cal_z` adds it at a line's m/z."""
     def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None, mz_lo=None, mz_hi=None,
-                abs_floor_mda=MC.ABS_FLOOR_MDA):
+                abs_floor_mda=MC.ABS_FLOOR_MDA, source=CAL_SOURCE_PER_FILE, carry=None):
         obj = super().__new__(cls, (mu, sigma))
         obj.a, obj.b, obj.sigma_t = a, b, sigma_t
         obj.mz_lo, obj.mz_hi = mz_lo, mz_hi
         obj.abs_floor_mda = abs_floor_mda
+        obj.source = source
+        obj.carry = carry
         return obj
 
 
-def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
-               abs_floor_mda: float = MC.ABS_FLOOR_MDA) -> _Cal | None:
-    """(mu, sigma) of the ppm-error distribution from the corroborated CHO/CHON
-    core (a _Cal, which also carries the masscal trend when accepted), or None
-    if the core is too small. Robust (median + scaled MAD). The core is
-    deliberately pure-organic (no halogen/Si/S, N<=1), High/Good, and
-    isotopologue-backed -- the assignments we are most certain are correct, so
-    their mass errors define the instrument's real accuracy for this run.
-    `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its default when the
-    caller has no cfg, e.g. a report-time re-tier)."""
-    ppms = []
-    mzs = []
-    for _, r in m0.iterrows():
-        counts = C.parse_formula(_txt(r.get("neutral_formula")))
-        if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
-            continue
-        if counts.get("N", 0) > 1:
-            continue
-        if base_confidence(r.get("confidence")) not in ("High", "Good"):
-            continue
-        if not ((kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))):
-            continue
-        p = r.get("ppm_error")
-        if p is None or pd.isna(p) or abs(float(p)) > 15:   # gross-garbage guard
-            continue
-        ppms.append(float(p))
-        mzs.append(float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
-    if len(ppms) < CAL_MIN_N:
+def _cal_source(cal) -> str:
+    """CAL_SOURCE_* of a calibration (None = CAL_SOURCE_NONE; a bare tuple is a file's own)."""
+    if cal is None:
+        return CAL_SOURCE_NONE
+    return getattr(cal, "source", CAL_SOURCE_PER_FILE)
+
+
+def core_point(r, kids_of) -> tuple[float, float] | None:
+    """(ppm_error, mz) of one M0 row when it belongs to the calibration core,
+    else None: pure-organic (no F/Cl/Br/Si/S, N <= 1), High/Good, isotopologue-
+    backed (an iso_child row pointing at it -- `kids_of` = their counts by
+    parent_peak_id -- or a stored isotopologue), |ppm| <= 15 (the gross-garbage
+    guard). mz is NaN when the row has none. `_calibrate` and the batch-pooled
+    core (assignment/calpool.py) read the same test."""
+    counts = C.parse_formula(_txt(r.get("neutral_formula")))
+    if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
         return None
-    s = pd.Series(ppms)
+    if counts.get("N", 0) > 1:
+        return None
+    if base_confidence(r.get("confidence")) not in ("High", "Good"):
+        return None
+    if not ((kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))):
+        return None
+    p = r.get("ppm_error")
+    if p is None or pd.isna(p) or abs(float(p)) > 15:   # gross-garbage guard
+        return None
+    return float(p), (float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
+
+
+def robust_centre(ppms, min_n: int) -> tuple[float, float, list]:
+    """(mu, sigma, kept positions) of a core's ppm errors: median + scaled MAD
+    (sigma floored at CAL_SIGMA_FLOOR) over the errors within 2 ppm of their
+    median -- all of them when fewer than `min_n` are."""
+    s = pd.Series(list(ppms), dtype=float)
     # Outlier guard is RELATIVE to the robust median, not a 0-centered |ppm|<=2
     # window: an absolute window excludes the entire backbone of a source with a
     # large systematic offset (the uronium instrument sits at ~-2.4 ppm), leaving
@@ -659,36 +755,83 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
     # for a well-calibrated source (where the median is ~0) AND for an offset one.
     center = float(s.median())
     core = s[(s - center).abs() <= 2.0]
-    if len(core) < CAL_MIN_N:
+    if len(core) < min_n:
         core = s
-    _keep = list(core.index)
     mu = float(core.median())
     sigma = max(float(1.4826 * (core - mu).abs().median()), CAL_SIGMA_FLOOR)
+    return mu, sigma, list(core.index)
+
+
+def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
+               abs_floor_mda: float = MC.ABS_FLOOR_MDA, carry=None) -> _Cal | None:
+    """(mu, sigma) of the ppm-error distribution from the corroborated CHO/CHON
+    core (a _Cal, which also carries the masscal trend when accepted), or None
+    if the core is too small. Robust (median + scaled MAD). The core is
+    deliberately pure-organic (no halogen/Si/S, N<=1), High/Good, and
+    isotopologue-backed -- the assignments we are most certain are correct, so
+    their mass errors define the instrument's real accuracy for this run
+    (`core_point`). `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its
+    default when the caller has no cfg, e.g. a report-time re-tier). A batch
+    whose file falls short calibrates it on a pooled core (calpool.py).
+    `carry` (PassConfig.axis_edge_carry) puts a core row outside the batch axis
+    model's scope within its reach on the carried scale -- its ppm less the
+    model's edge value (masscal.edge_carry_at) -- and rides on the result."""
+    ppms = []
+    mzs = []
+    for _, r in m0.iterrows():
+        pt = core_point(r, kids_of)
+        if pt is None:
+            continue
+        ppms.append(pt[0])
+        mzs.append(pt[1])
+    if len(ppms) < CAL_MIN_N:
+        return None
+    if carry:
+        ppms = list(np.asarray(ppms, dtype=float) - MC.edge_carry_at(carry, np.asarray(mzs, dtype=float)))
+    mu, sigma, _keep = robust_centre(ppms, CAL_MIN_N)
     # mass-dependent centre (masscal): fitted on the same core, when accepted
     fit = MC.fit_mass_trend(np.asarray(mzs, dtype=float)[np.asarray(_keep)],
                             np.asarray(ppms, dtype=float)[np.asarray(_keep)],
                             min_n=CAL_MIN_N, sigma_floor=CAL_SIGMA_FLOOR)
     if fit is not None:
         return _Cal(mu, sigma, fit.a, fit.b, fit.sigma, fit.mz_lo, fit.mz_hi,
-                    abs_floor_mda=abs_floor_mda)
-    return _Cal(mu, sigma, abs_floor_mda=abs_floor_mda)
+                    abs_floor_mda=abs_floor_mda, carry=carry)
+    return _Cal(mu, sigma, abs_floor_mda=abs_floor_mda, carry=carry)
 
 
 def _cal_z(cal, ppm, mz=None) -> float:
     """Signed z of a ppm error against the tier calibration; mass-dependent
     centre and sigma (masscal.centre / sigma_at, clamped to the backbone range)
-    when the fit exists and an m/z is given, else the constant ones."""
+    when the fit exists and an m/z is given, else the constant ones. A line
+    outside the batch axis model's scope within its reach (the calibration's
+    `carry`) is judged at that centre plus the model's edge value."""
     mu, sigma = cal[0], cal[1]
     b = getattr(cal, "b", None)
     if b is not None and mz is not None and not pd.isna(mz):
         mu = MC.centre(cal.a, b, mz, cal.mz_lo, cal.mz_hi)
         sigma = MC.sigma_at(cal.sigma_t or sigma, mz, cal.abs_floor_mda)
+    carry = getattr(cal, "carry", None)
+    if carry and mz is not None and not pd.isna(mz):
+        mu = MC.carried_centre(carry, mu, float(mz))
     return (float(ppm) - mu) / sigma
 
 
 def _abs_floor(cfg) -> float:
     """PassConfig.cal_abs_floor_mda, or its default when no cfg is given."""
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
+
+
+def _carry(cfg):
+    """PassConfig.axis_edge_carry (the batch axis model's edge carry), or None."""
+    return getattr(cfg, "axis_edge_carry", None) if cfg is not None else None
+
+
+def _with_carry(cal, carry) -> _Cal:
+    """`cal` (a _Cal or a bare (mu, sigma)) with the edge carry `carry` on it."""
+    return _Cal(cal[0], cal[1], getattr(cal, "a", None), getattr(cal, "b", None),
+                getattr(cal, "sigma_t", None), getattr(cal, "mz_lo", None), getattr(cal, "mz_hi", None),
+                abs_floor_mda=getattr(cal, "abs_floor_mda", MC.ABS_FLOOR_MDA), source=_cal_source(cal),
+                carry=carry)
 
 
 def lock_score_floor(cfg) -> float:
@@ -729,14 +872,30 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
     return None, "file"
 
 
-def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
+#: compute_tiers' default `cal`: calibrate on the ledger's own core (`_calibrate`)
+OWN_CAL = object()
+
+
+def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
+                  _split_rows=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
     supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
     lock score floor; None = their defaults. `profile` (the run's
     ContextProfile): with its NOx-skeleton reading on, an Assigned row the run
     admits only through that reading is Candidate (NOX_SKELETON_CAP_MARK), and a
-    skeleton-only row left as it was says so (NOX_SKELETON_NOTE)."""
+    skeleton-only row left as it was says so (NOX_SKELETON_NOTE). `cal`: the
+    mass calibration the z-tail gate reads -- by default the ledger's own
+    (`_calibrate`); None = uncalibrated; a _Cal from elsewhere (the batch's
+    pooled core, calpool.py), whose source the reasons name.
+
+
+    A reagent-N isobar row (`_reagent_n_isobar`) is tiered on its ION's
+    corroboration; the rules are run once more, split-aware, on those rows
+    (`_split_rows`: the private second call -- isotopes set aside, only the
+    channels that fix the nitrogen count counted, the isobar capping as it did
+    until 0.10), and where the two verdicts differ the row's tier_reason says
+    the split is open (`reagent_n_note`)."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # the skeleton cap (NOX_SKELETON_CAP_MARK): which rows the NOx-skeleton reading
     # changed, and how ({} when the profile reads no skeletons)
@@ -755,7 +914,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     adducts_of = m0.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str)))
     # (mu, sigma) ppm [+ the masscal trend], or None when uncalibrated
-    cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg))
+    if cal is OWN_CAL:
+        cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg), carry=_carry(cfg))
+    elif cal is not None and getattr(cal, "carry", None) is None and _carry(cfg):
+        # a calibration from elsewhere (the batch's pooled core) judges this file's lines
+        # outside the batch axis model's scope at its centre plus the model's edge too
+        cal = _with_carry(cal, _carry(cfg))
+    # the window the reasons name: the file's own calibration, or the batch's pooled one
+    window = _WINDOW_WORD.get(_cal_source(cal), "calibrated window")
+    pooled = _cal_source(cal) == CAL_SOURCE_POOLED
     # primary detected channels = adducts carrying the High pass-1 backbone
     # (the unambiguous real reagent ions). A background channel that shows up
     # here (a genuine CO3-CIMS run) is treated as primary, not demoted.
@@ -777,9 +944,23 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     score_floor = lock_score_floor(cfg)
     # the twin test's window: the exact-offset one on an Orbitrap-class run
     twin_ppm = SAT.twin_ppm(cfg)
+    # fluorine by evidence: each F reading's CF2 ladder in this file (fluorine.py)
+    f_ladder = FL.verdicts(ledger, cfg=cfg)
+    # the series hold (fluorine.series_alias_holds): on a 15N-nitrate ledger a row
+    # whose untested F / S count has an open 15N alias takes no series credit --
+    # the C2F3 -> H2^NO4 / C8S -> H^NO7 swap keeps every series step
+    alias_holds = FL.series_alias_holds(ledger, cfg=cfg)
+    # the isotope-gated families' hold (GATED_HOLD): their own-line window (None
+    # off an Orbitrap-class run: nothing is seen) and the file's real lines,
+    # read once and only when such a row exists
+    own_win = SAT.own_line_window_ppm(cfg)
+    own_lines = None
 
-    rows = []
+    split_aware = _split_rows is not None
+    rows, isobars = [], {}
     for _, r in m0.iterrows():
+        if split_aware and r["peak_id"] not in _split_rows:
+            continue
         formula = _txt(r.get("neutral_formula"))
         counts = C.parse_formula(formula)
         base = base_confidence(r.get("confidence"))
@@ -798,24 +979,42 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
         iso_ev = (kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))
         cross_channel = int(chan_count.get(formula, 0)) >= 2
         has_anchor = pd.notna(r.get("anchor_peak_id")) or pd.notna(r.get("series_unit"))
+        alias_hold = alias_holds.get(r["peak_id"])
+        if alias_hold:
+            has_anchor = False
         # reagent-N isobar (positive mode): the winner and a same-ion alias disagree
         # only on the nitrogen count, which isotopes and N-donating channels cannot
-        # settle. Downgrade the corroboration to what actually discriminates: an
-        # N-free sibling channel, the joint NH4+urea pair, or a series anchor.
+        # settle. That doubt is the SPLIT's, not the ion's (REAGENT_N_OPEN_MARK): the
+        # tier reads the ion's own corroboration. Only the split-aware call
+        # downgrades the corroboration to what fixes the nitrogen count: an N-free
+        # sibling channel, the joint NH4+urea pair, or a series anchor.
         reagent_n = _reagent_n_isobar(r, alts_all)
         nfree_sib = nh4_urea = second_chan = False
+        split_cross = cross_channel
         if reagent_n:
             adset = adducts_of.get(formula, set())
-            iso_ev = False                        # same ion => isotopes tell nothing
             if reagent_n[0] == "donor":
                 nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
                 nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
-                cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+                split_cross = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
             else:
                 # the amine side: the N-poorer alias can present as THIS ion only,
                 # so any second channel of the protonated neutral discriminates
                 second_chan = len(adset) >= 2
-                cross_channel = second_chan
+                split_cross = second_chan
+            if split_aware:
+                iso_ev = False                    # same ion => isotopes tell nothing
+                cross_channel = split_cross
+            else:
+                isobars[r["peak_id"]] = (formula, r.get("adduct"), reagent_n, split_cross or has_anchor, (
+                    "an N-free sibling channel" if nfree_sib
+                    else "the joint [M+NH4]+/[M+urea·H]+ pair (unfakeable by one neutral)" if nh4_urea
+                    else "a second ionization channel of the protonated neutral" if second_chan
+                    else "series-anchor support"))
+        # the isobar caps (and words a fixed count) only in the split-aware call
+        cap_n = reagent_n if split_aware else None
+        # ...and the ion's own bar on such a row: the N-poorest reading's nitrogens
+        n_poor = _poorest_n(r, alts_all) if reagent_n else 0
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
         # admission provenance: a peak that was eligible for formula search only
@@ -845,6 +1044,27 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                 _ion = _ion_counts(formula, r.get("adduct")) or counts
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
                                         masked_by=SAT.reagent_masks(_el, counts, _ion), ppm=twin_ppm)
+                if alias_hold and _el == "S":
+                    # the series hold read the 34S position (fluorine.s_line_read): a
+                    # line far above the 34S line's prediction is another ion's, so
+                    # neither the hold nor the tier reads it as the S count's line
+                    twin = FL.s_line_read(twin)
+        # a heteroatom an isotope-gated pass-3 family proposed (contexts.family_iso_gate:
+        # the positive sources' organosulfur_34s / organochlorine) stands on its own
+        # line or not at all: read it again here (satellites.own_line)
+        gated = None
+        _bm = SAT.base_method(method)
+        if _bm.startswith("contaminant:"):
+            from peaky.chem import contexts as X
+            _gel = X.family_iso_gate(_bm.split(":")[1])
+            _gion = (_ion_counts(formula, r.get("adduct")) or counts) if _gel else {}
+            if _gel and int(_gion.get(_gel, 0) or 0) > 0:
+                if own_lines is None:
+                    own_lines = SAT._peak_lines(ledger, artifacts=False)
+                gated = SAT.own_line(own_lines[0], own_lines[1], r.get("mz"), r.get("height"), _gion, _gel,
+                                     window_ppm=own_win)
+                gated["family"] = _bm.split(":")[1]
+                gated["n"] = int(_gion[_gel])
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None
@@ -912,6 +1132,17 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             # or a series step cannot put back a line that is not there.
             tier = TIER_CANDIDATE
             reason = f"{twin['twin']} count refuted by its isotope envelope: {twin['why']}"
+        elif gated is not None and not gated["confirmed"]:
+            # the gated family admits the element on its own line alone (the context
+            # budgets none, or the grid never proposes it); where that line was
+            # untestable the reading committed, and nothing else tests the element: a
+            # 13C child pins the carbons, a second channel or a series step the
+            # neutral mass -- none of them the sulfur or the chlorine
+            tier = TIER_CANDIDATE
+            reason = (f"{GATED_HOLD}: {gated['element']}{gated['n']} proposed by the isotope-gated "
+                      f"{gated['family']} family without its own line ({gated['why']}); that line is the "
+                      "one evidence the route admits the element on, so no isotope / cross-channel / "
+                      "series corroboration lifts the reading past Candidate")
         elif persist_only and not corroborated:
             tier = TIER_CANDIDATE
             _occ = r.get("occurrence")
@@ -931,16 +1162,26 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             reason = ("mixed Br/Cl halogenation: the isotope envelope pins the "
                       "halogen count but the backbone candidates stay ambiguous")
         elif (counts.get("F", 0) >= 1 and counts.get("H", 0) > 1
-              and counts["F"] < F_H_COHERENCE * counts["H"] and not iso_ev):
+              and counts["F"] < F_H_COHERENCE * counts["H"] and not iso_ev
+              and not (r["peak_id"] in f_ladder and f_ladder[r["peak_id"]].full)):
             # F is monoisotopic: no isotope evidence can confirm a fluorine
             # count, and a partially-fluorinated reading (H-rich, sub-PFAS F)
             # is the classic mass-fit absorber. A 13C child is the one real
-            # discriminator (it pins the carbon count), so it rescues.
+            # discriminator (it pins the carbon count), so it rescues. So does
+            # a CF2 ladder (fluorine.py): with enough lines the reading is not
+            # refused but stays Candidate; with enough COMMITTED members the
+            # normal tier rules below apply (the branch is skipped).
             tier = TIER_CANDIDATE
-            reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}) "
-                      "below PFAS-like F/H coherence; F has no minor isotope, so "
-                      "the fluorine count is a mass-only claim with no possible "
-                      "isotope confirmation")
+            _fl = f_ladder.get(r["peak_id"])
+            if _fl is not None and _fl.lift:
+                reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}): "
+                          + FL.lift_note(_fl))
+            else:
+                reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}) "
+                          "below PFAS-like F/H coherence; F has no minor isotope, so "
+                          "the fluorine count is a mass-only claim with no possible "
+                          "isotope confirmation"
+                          + (f"; {FL.veto_note(_fl)}" if _fl is not None and _fl.veto else ""))
         elif counts.get("Si", 0) >= 1 and not corroborated:
             # Si carries a genuine, diagnostic 29Si(4.7%)+30Si(3.1%) M+1/M+2 twin,
             # so a real silicon species confirms it (a multi-Si siloxane trivially;
@@ -1012,7 +1253,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                           f"two peaks of this height ratio separate only beyond {_dc:.2f}, so the "
                           "centroid is displaced and the fitted mass is not this ion's own; no "
                           "isotope / cross-channel / series corroboration")
-        elif reagent_n and not corroborated:
+        elif cap_n and not corroborated:
             # positive-mode reagent-N isobar with nothing to fix the nitrogen
             # count: the ion reads equally as an N-free neutral on an N-donating
             # reagent adduct or as the protonated N-heavier neutral, and there is
@@ -1029,6 +1270,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                           "N-poorer neutral on an N-donating reagent adduct), and no "
                           "second channel / series anchor fixes the nitrogen count "
                           "(isotopes cannot — identical ion)")
+        elif reagent_n and not corroborated and n_poor >= REAGENT_N_RICH_MIN:
+            # the ion's own bar where the isobar no longer caps (the split-aware call
+            # never gets here: its cap above takes the row first): every reading of
+            # this ion is nitrogen-rich and nothing but its mass supports it
+            tier = TIER_CANDIDATE
+            reason = (f"{REAGENT_N_RICH_MARK}: every stored reading of this ion carries "
+                      f">= {n_poor} analyte nitrogens and no isotope / cross-channel / series "
+                      "corroboration pins its composition; an N-rich composition on mass "
+                      "alone is speculative (Candidate for want of evidence, not against it)")
         elif tied and not (cross_channel or has_anchor):
             # a spectral eff-score tie cannot be broken by isotopes (they are
             # already in the score) -- only extra-spectral corroboration
@@ -1056,7 +1306,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             z = _cal_z(cal, r["ppm_error"], r.get("mz"))
             tier = TIER_CANDIDATE
             reason = (f"mass error {float(r['ppm_error']):+.2f} ppm is {z:+.1f}"
-                      f"σ off the calibrated instrument accuracy "
+                      f"σ off the {'batch-pooled' if pooled else 'calibrated'} instrument accuracy "
                       f"({cal[0]:+.2f}±{cal[1]:.2f} ppm) with no isotope / "
                       "cross-channel / series corroboration "
                       "(mass-error-distribution test)")
@@ -1069,7 +1319,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             tier = TIER_CANDIDATE
             if degen_density is not None:
                 reason = (f"mass-degenerate: {degen_density} plausible formulas "
-                          "share this mass within the calibrated window "
+                          f"share this mass within the {window} "
                           "(degeneracy audit) and no isotope / cross-channel / "
                           "series corroboration to break the tie — not "
                           "identifiable from accurate mass alone")
@@ -1078,7 +1328,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                           "isotope / cross-channel / series corroboration to "
                           "break the tie — not identifiable from accurate mass "
                           "alone")
-        elif reagent_n:
+        elif cap_n:
             # resolved reagent-N isobar: nitrogen count IS pinned -- say how, and
             # do NOT claim 'unique in the window' (the same-ion N-heavier reading
             # exists; it is simply ruled out by the discriminating channel).
@@ -1095,7 +1345,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                 # degeneracy audit; where it never ran (an uncalibrated file:
                 # degeneracy.measure_degeneracy skipped, no stamp) the search
                 # merely stored no rival -- say that, not uniqueness (C42c).
-                parts.append(("unique formula in the calibrated window"
+                parts.append((f"unique formula in the {window}"
                               if degen_density is not None else
                               "no rival formula in the search window (degeneracy not "
                               "measured" + ("" if cal is not None else
@@ -1115,11 +1365,19 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             if twin is not None and twin["kind"] == "supported":
                 parts.append(f"{twin['twin']} envelope line present in the spectrum")
             elif twin is not None and twin["kind"] == "untestable" and sat_floor is not None:
-                parts.append(f"{twin['twin']} count untested (its line predicted under the floor)")
+                parts.append(f"{twin['twin']} count untested "
+                             f"({twin.get('untested') or 'its line predicted under the floor'})")
+            if gated is not None:
+                parts.append(f"{gated['element']}{gated['n']} on its own line (isotope-gated "
+                             f"{gated['family']}: {gated['why']})")
             if resolv in ("blended", "unresolvable"):
                 parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
                              "the corroboration")
             reason = "; ".join(parts)
+        if alias_hold:
+            # the series credit the hold withheld, and why (the evidence scale's
+            # `anchor` axis reads the mark: fluorine.SERIES_ALIAS_MARK)
+            reason = ((reason + "; ") if reason else "") + alias_hold
         _skel = skel_own.get(r["peak_id"]) or skel_curated.get(r["peak_id"])
         if _skel:
             # the skeleton reading (-ONO2 / -NO2 groups read off) presumes
@@ -1137,8 +1395,31 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                     _HOP_NOTE if _skel in (_HOP_ANCHOR, _HOP_COMPLETION) else NOX_SKELETON_NOTE)
         rows.append({"peak_id": r["peak_id"], "tier": tier, "tier_reason": reason,
                      "candidate_density": density, "density_capped": capped})
-    return pd.DataFrame(rows, columns=["peak_id", "tier", "tier_reason",
-                                       "candidate_density", "density_capped"])
+    out = pd.DataFrame(rows, columns=["peak_id", "tier", "tier_reason",
+                                      "candidate_density", "density_capped"])
+    if isobars:
+        # the split-aware verdict of the reagent-N rows says what the doubt is; the
+        # tier never takes it. A row another rule holds the same way keeps its
+        # reason word for word; a fixed count keeps its wording where both read
+        # Assigned; otherwise the ion's reason gains the note.
+        # the same calibration as the ion's verdict (a lent pooled window, or
+        # none): a split verdict judged in another window would differ for a
+        # reason that is not the split
+        split = compute_tiers(ledger, cfg=cfg, profile=profile, cal=cal,
+                              _split_rows=set(isobars)).set_index("peak_id")
+        for k in out.index[out["peak_id"].isin(isobars)]:
+            pid = out.at[k, "peak_id"]
+            s_tier, s_reason = split.at[pid, "tier"], split.at[pid, "tier_reason"]
+            tier, reason = out.at[k, "tier"], out.at[k, "tier_reason"]
+            if (s_tier, s_reason) == (tier, reason):
+                continue
+            if s_tier == tier == TIER_ASSIGNED:
+                out.at[k, "tier_reason"] = s_reason
+            else:
+                formula, adduct, flag, fixed, how = isobars[pid]
+                out.at[k, "tier_reason"] = ((reason + "; ") if reason else "") + reagent_n_note(
+                    formula, adduct, flag, fixed=fixed, how=how)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1556,7 @@ def apply_tof_m2(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scorin
     return out
 
 
-def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
+def stamp_calibrated_ppm(ledger: pd.DataFrame, *, carry=None) -> tuple[float, float] | None:
     """Q1: write `ppm_error_cal` = ppm_error − mu (OFFSET ONLY), where mu is the
     robust per-file mass offset the tier engine already fits from the corroborated
     CHO/CHON core (_calibrate; median + scaled MAD). The reported ppm_error is the
@@ -1296,43 +1577,67 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     `_Cal` / `PassConfig` (`cal_a` / `cal_b` / `cal_mz_lo` / `cal_mz_hi`) and is
     applied per peak by `_cal_z` and `passes.core.z_of`.
 
+    `carry` (PassConfig.axis_edge_carry): a row outside the batch axis model's scope
+    within its reach has the model's edge value removed too -- its centre is mu plus
+    that value (masscal.edge_carry_at at the row's own m/z), so its displayed error sits
+    on the corrected rows' footing; mu itself (the core's, or the Assigned rows' median
+    of an uncalibrated file) is read on that carried scale.
+
     Returns (mu, sigma) and stashes them in ledger.attrs, or None if uncalibrable."""
     if "ppm_error" not in ledger.columns:
         return None
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO,
                          "parent_peak_id"].value_counts()
-    cal = _calibrate(m0, kids_of)
+    cal = _calibrate(m0, kids_of, carry=carry)
     if cal is not None:
         mu, sigma = cal
     else:
-        assigned = pd.to_numeric(
-            m0.loc[m0.get("tier") == TIER_ASSIGNED, "ppm_error"],
-            errors="coerce").dropna()
+        sel = m0.get("tier") == TIER_ASSIGNED
+        assigned = pd.to_numeric(m0.loc[sel, "ppm_error"], errors="coerce")
+        if carry and "mz" in m0.columns:
+            # on the carried scale, as the core above: a row past the model's scope
+            # less the model's edge value
+            assigned = assigned - MC.edge_carry_at(
+                carry, pd.to_numeric(m0.loc[sel, "mz"], errors="coerce").to_numpy(dtype=float))
+        assigned = assigned.dropna()
         if not len(assigned):
             return None
         mu, sigma = float(assigned.median()), float("nan")
     ledger["ppm_error_cal"] = pd.to_numeric(ledger["ppm_error"],
                                             errors="coerce") - mu
+    if carry and "mz" in ledger.columns:
+        ledger["ppm_error_cal"] = ledger["ppm_error_cal"] - MC.edge_carry_at(
+            carry, pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float))
     ledger.attrs["cal_mu"] = mu
     ledger.attrs["cal_sigma"] = sigma
     return mu, sigma
 
 
-def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
-    """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
-    ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
-    PassConfig) supplies cal_abs_floor_mda and tau_suspect; None = their
-    defaults (report re-tier). `profile`: the run's ContextProfile, for the
-    NOx-skeleton cap (compute_tiers); None = no cap."""
-    for col in ("tier", "tier_reason", "candidate_density"):
+def _tier_columns(ledger: pd.DataFrame) -> None:
+    """Create (or widen to object) the columns the tier stage writes."""
+    for col in ("tier", "tier_reason", "candidate_density", TIER_CALIBRATION):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")
         elif ledger[col].dtype != object:
             # candidate_density holds '>=N' strings; a float column (e.g. an
             # all-NaN CSV round-trip) must widen before the stamp
             ledger[col] = ledger[col].astype("object")
-    t = compute_tiers(ledger, cfg=cfg, profile=profile)
+
+
+def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
+    """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
+    ledger (in place; returns the ledger), and `tier_calibration` (whether the
+    file's own core calibrated the tier engine: CAL_SOURCE_PER_FILE, else
+    CAL_SOURCE_NONE). Non-M0 rows keep NA. `cfg` (the run's PassConfig)
+    supplies cal_abs_floor_mda and tau_suspect; None = their defaults (report
+    re-tier). `profile`: the run's ContextProfile, for the NOx-skeleton cap
+    (compute_tiers); None = no cap."""
+    _tier_columns(ledger)
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    cal = _calibrate(m0, ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts(),
+                     abs_floor_mda=_abs_floor(cfg), carry=_carry(cfg))
+    t = compute_tiers(ledger, cfg=cfg, profile=profile, cal=cal)
     if not len(t):
         return ledger
     idx = ledger.index[ledger["peak_id"].isin(t["peak_id"])]
@@ -1344,9 +1649,59 @@ def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame
         ledger.at[i, "candidate_density"] = density_text(
             int(by_pid.at[pid, "candidate_density"]),
             bool(by_pid.at[pid, "density_capped"]))
-    stamp_calibrated_ppm(ledger)
+        ledger.at[i, TIER_CALIBRATION] = _cal_source(cal)
+    stamp_calibrated_ppm(ledger, carry=_carry(cfg))
     flag_below_assignability(ledger)
     return ledger
+
+
+def retier_calibrated(ledger: pd.DataFrame, base: pd.DataFrame, new: pd.DataFrame, *,
+                      source: str = CAL_SOURCE_POOLED) -> dict:
+    """Carry a re-run tier stage's verdicts onto a FINISHED ledger, in place.
+    `base` and `new` are compute_tiers frames over the ledger as the file's own
+    tier stage saw it: `base` the verdicts that stage gave (uncalibrated), `new`
+    those it gives with a calibration from elsewhere (the batch's pooled core,
+    calpool.py; `source` its CAL_SOURCE_*). A row whose stored tier and
+    tier_reason are still its `base` verdict takes its `new` one (tier, reason,
+    candidate_density); a row a later stage only demoted (its tier moved, its
+    reason is still the tier stage's: the plausibility demotes write theirs to
+    the commentary) takes the new reason and keeps that tier; a row a later
+    stage rewrote (a re-read, the ion-only bucket, a rescue committed after the
+    tier stage) keeps what it has -- that stage had the last word in the run
+    and keeps it. `tier_calibration` reads `source` on the rows the re-run
+    judged (the first two kinds); a kept row keeps its own (the uncalibrated
+    stage's 'none' its verdict was given in, or NA on a row committed after the
+    tier stage, as in a run that is not re-tiered). Returns {rows, retiered,
+    demoted, promoted, reworded, kept}."""
+    _tier_columns(ledger)
+    out = {"rows": 0, "retiered": 0, "demoted": 0, "promoted": 0, "reworded": 0, "kept": 0}
+    b = base.set_index("peak_id") if len(base) else pd.DataFrame(columns=["tier", "tier_reason"])
+    n = new.set_index("peak_id") if len(new) else pd.DataFrame(columns=["tier", "tier_reason"])
+    for i in ledger.index[ledger["role"] == L.ROLE_M0]:
+        pid = ledger.at[i, "peak_id"]
+        out["rows"] += 1
+        stored = (_txt(ledger.at[i, "tier"]), _txt(ledger.at[i, "tier_reason"]))
+        if pid not in b.index or pid not in n.index or stored[1] != _txt(b.at[pid, "tier_reason"]):
+            out["kept"] += 1
+            continue
+        ledger.at[i, TIER_CALIBRATION] = source
+        verdict = (_txt(n.at[pid, "tier"]), _txt(n.at[pid, "tier_reason"]))
+        if stored[0] != _txt(b.at[pid, "tier"]):
+            verdict = (stored[0], verdict[1])      # a later stage's tier, the calibrated words
+        if verdict == stored:
+            continue
+        ledger.at[i, "tier"] = verdict[0]
+        ledger.at[i, "tier_reason"] = verdict[1]
+        ledger.at[i, "candidate_density"] = density_text(int(n.at[pid, "candidate_density"]),
+                                                         bool(n.at[pid, "density_capped"]))
+        out["retiered"] += 1
+        if stored[0] == TIER_ASSIGNED and verdict[0] == TIER_CANDIDATE:
+            out["demoted"] += 1
+        elif stored[0] == TIER_CANDIDATE and verdict[0] == TIER_ASSIGNED:
+            out["promoted"] += 1
+        else:
+            out["reworded"] += 1
+    return out
 
 
 def flag_below_assignability(ledger: pd.DataFrame) -> int:

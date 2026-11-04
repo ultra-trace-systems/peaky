@@ -3,8 +3,9 @@ pooled files, one file, or a decoy arm) needs before its pairs are levelled.
 
 A `RunContext` carries the width model and instrument class, the per-file peak
 arrays (`FileArr`: every row with height > 0, its gate and scan edges), the
-calibrated mass window of every file and of the run, the enumeration space and
-channels, the isotope position window (`position_sigma`), the measured
+calibrated mass window of every file and of the run, the enumeration space
+(the families with real evidence, without cross-family mixtures; D4) with its
+shadow and channels, the isotope position window (`position_sigma`), the measured
 per-element line efficiency, the observed carbon counts (+ their single-file se
 model), the labelled reagent's 15N twin ratios and the indexes of committed
 readings and their predicted isotope lines.
@@ -52,6 +53,19 @@ NMIN_FILES = 3                # files where an isotope test is possible (a batch
 # run the scale was validated on, ONE Candidate row in ONE file opened
 # `fluorinated` for all 1196 pairs (131 moved behind F competitors).
 FAMILY_MIN_FILES = 2
+# D4: a family that committed rows opened (`contaminant:<family>` M0 rows, the degeneracy audit's
+# `opened_families`) counts for a file only on REAL evidence there (`family_evidence`): a row of the family
+# that is Assigned, or whose own diagnostic isotope line the file committed (its iso child / isotopologue
+# record, the tier engine's bookkeeping). Fluorine has no minor isotope and a fluorinated row's Assigned tier
+# rests on mass alone, so 'fluorinated' needs a CF2-step chain of >= FAMILY_F_CHAIN_MIN Assigned F-bearing
+# readings: distinct neutrals one CF2 apart (the step plausibility.demote_off_budget accepts as fluorine
+# evidence), on any adduct -- a perfluoroacid series a file commits partly as [M-H]- and partly as a nitrate
+# cluster is one series (a neutral read on both counts once). The context's declared pass-3 families and the
+# reagent's own family are the context's space, not an opening: kept. Before, Candidate junk rows in >= 2 files
+# opened 'fluorinated' on a uronium run and its competitors (C2H-6N2O2 == FPSi, 0.064 mDa) parked the CHO urea
+# adducts at 5a.
+FAMILY_DIAG_LINES = {"S": ("34S",), "Si": ("29Si", "30Si"), "Cl": ("37Cl",), "Br": ("81Br",)}
+FAMILY_F_CHAIN_MIN = 3
 NMIN_FILES_ARM = 1            # a single-file source ("adapted" minima)
 ORBI_MIN_PPM, ORBI_K = 1.0, 4.0   # the isotope position window without a fit: 1 ppm (ISO.position_window_ppm's floor)
 DEFAULT_FWHM_DA = 0.02        # the line merge width without a width model
@@ -359,6 +373,124 @@ def file_families(summary: dict, led: pd.DataFrame) -> tuple[str, ...]:
     return DG.opened_families(ctx, reagent, None, led)
 
 
+def cf2_chain(neutrals) -> int:
+    """The longest CF2-step chain among ``neutrals``: distinct neutral
+    formulas, each one CF2 from the next, whatever adduct each was read on (a
+    neutral read on two adducts counts once; 0 when none)."""
+    ns: set = set()
+    for n in neutrals:
+        if isinstance(n, str) and n:
+            try:
+                f = C.format_formula({el: v for el, v in C.parse_formula(n).items() if v})
+            except Exception:  # noqa: BLE001 -- an unreadable formula is no member
+                continue
+            if f:
+                ns.add(f)
+    best = 0
+    seen: set = set()
+    for n0 in ns:
+        if n0 in seen:
+            continue
+        comp, stack = {n0}, [n0]
+        while stack:
+            cnt = C.parse_formula(stack.pop())
+            for k in (-1, 1):
+                c = dict(cnt)
+                c["C"] = c.get("C", 0) + k
+                c["F"] = c.get("F", 0) + 2 * k
+                if c["C"] < 1 or c["F"] < 0:
+                    continue
+                f = C.format_formula({el: v for el, v in c.items() if v})
+                if f in ns and f not in comp:
+                    comp.add(f)
+                    stack.append(f)
+        seen |= comp
+        best = max(best, len(comp))
+    return best
+
+
+def _has_f(neutral) -> bool:
+    try:
+        return isinstance(neutral, str) and C.parse_formula(neutral).get("F", 0) > 0
+    except Exception:  # noqa: BLE001 -- an unreadable formula carries nothing
+        return False
+
+
+def family_evidence(led: pd.DataFrame, family: str) -> str:
+    """The file's real evidence for ``family`` in the level space ('' when
+    none; D4): 'fluorinated', a CF2-step chain of >= FAMILY_F_CHAIN_MIN
+    Assigned F-bearing neutrals (`cf2_chain`, any route, on any adduct); any
+    other family, an Assigned ``contaminant:<family>`` M0 row, or such a row
+    whose own diagnostic line (FAMILY_DIAG_LINES of the family's elements) the
+    file committed as its isotope child or recorded in its ``isotopologues`` -- a
+    line of an element the row's NEUTRAL carries and its adduct adds none of
+    (the 81Br line of an [M+Br]- reagent cluster is the adduct's, no evidence)."""
+    if "role" not in led.columns or "neutral_formula" not in led.columns:
+        return ""
+    m0 = led[led["role"] == "M0"]
+    tier = m0["tier"].astype(str) if "tier" in m0.columns else pd.Series("", index=m0.index)
+    els = SP.family_elements(family)
+    if "F" in els:
+        ok = (tier == T.TIER_ASSIGNED) & m0["neutral_formula"].map(_has_f)
+        k = cf2_chain(m0.loc[ok, "neutral_formula"])
+        return f"a CF2-step chain of {k} Assigned F readings" if k >= FAMILY_F_CHAIN_MIN else ""
+    if "method" not in m0.columns:
+        return ""
+    meth = m0["method"].astype(str)
+    own = m0[meth.map(lambda m: m.startswith("contaminant:") and m.split(":")[1] == family)]
+    if not len(own):
+        return ""
+    if (tier.loc[own.index] == T.TIER_ASSIGNED).any():
+        return "an Assigned row"
+    if not any(FAMILY_DIAG_LINES.get(el) for el in els):
+        return ""
+    kids: dict = defaultdict(set)
+    if "iso_label" in led.columns and "parent_peak_id" in led.columns:
+        ch = led[led["role"] == "iso_child"]
+        for p, lab in zip(ch["parent_peak_id"].astype(str), ch["iso_label"]):
+            if isinstance(lab, str):
+                kids[p].update(x for x in lab.split("+") if x)
+    iso = own["isotopologues"] if "isotopologues" in own.columns else pd.Series(None, index=own.index)
+    ad = own["adduct"] if "adduct" in own.columns else pd.Series("", index=own.index)
+    for pid, n, a, cell in zip(own["peak_id"].astype(str), own["neutral_formula"], ad, iso):
+        want = {lab for el in SP.own_heteroatoms(n, a) & els for lab in FAMILY_DIAG_LINES.get(el, ())}
+        got = _diag_isotopes(set(T._iso_labels(cell)) | kids.get(pid, set())) & want
+        if got:
+            return f"its own {'/'.join(sorted(got))} line"
+    return ""
+
+
+def _diag_isotopes(labels) -> set:
+    """The heavy isotopes the label parts name, in the spelling of
+    FAMILY_DIAG_LINES: '37Cl2', '2x37Cl' and '37Cl(pair)' read 37Cl,
+    '81Br37Cl(pair)' both, either line of '81Br/37Cl(pair)' each
+    (`isotopes.parse_label_part`); an unreadable part as written."""
+    out: set = set()
+    for lab in labels:
+        for part in ISO.split_label(lab):
+            kind, v = ISO.parse_label_part(part)
+            if kind == "set":
+                out.update(v)
+            elif kind == "alt":
+                out.update(k for h in v for k in h)
+            else:
+                out.add(part)
+    return out
+
+
+def evidenced_families(summary: dict, led: pd.DataFrame, fams=None) -> tuple[str, ...]:
+    """The families a file opens in the LEVEL space (D4): its ``fams``
+    (default `file_families`) minus a family only committed rows opened that
+    has no real evidence in the file (`family_evidence`); the context's
+    declared pass-3 families and the reagent's own family are kept."""
+    fams = file_families(summary, led) if fams is None else tuple(fams)
+    if not fams:
+        return ()
+    reagent = RG.reagent_for_adducts(list(PR.resolve(summary["reagent"]).adducts))
+    declared = set(DG.opened_families(X.get_context(summary["context"]), reagent, None, None))
+    return tuple(f for f in fams if f in declared or family_evidence(led, f))
+
+
 def density_in_window(found: dict, assigned_ion, outside, mu: float, sigma: float, k: float = K_SIGMA):
     """``measure_degeneracy``'s density for a (mu, sigma) window, from a wide
     enumeration ``found``: (density or NaN, competitors [(neutral, adduct, ppm)])."""
@@ -456,8 +588,10 @@ def fit_window(led: pd.DataFrame, space: SP.Space, cal=None) -> dict:
 
 
 def fit_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
-    """D10 fallback for every file: {sid: {fams, src: 'fit'} + fit_window's record}.
-    Each file is fitted in ITS OWN space (its own opened families)."""
+    """D10 fallback for every file: {sid: {fams, fams_ev, src: 'fit'} +
+    fit_window's record}. Each file is fitted in ITS OWN space (its own opened
+    families, as the degeneracy audit enumerated them); ``fams_ev`` = the
+    families it opens in the level space (`evidenced_families`)."""
     reagent, context, active = run_space_args(summary)
     spaces: dict = {}
     out = {}
@@ -466,37 +600,81 @@ def fit_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
         sp = spaces.get(fams)
         if sp is None:
             sp = spaces[fams] = SP.Space(reagent, context, active, fams, catalog=catalog)
-        out[sid] = dict(fams=fams, src="fit", **fit_window(led, sp))
+        out[sid] = dict(fams=fams, fams_ev=evidenced_families(summary, led, fams), src="fit", **fit_window(led, sp))
     return out
 
 
-def family_union(win: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def family_union(win: dict, key: str = "fams") -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(the run's families, the families dropped): a family counts when at
-    least FAMILY_MIN_FILES of the files' window records (`fams`) opened it
-    (every family on a one-file source), in first-seen order (C47)."""
+    least FAMILY_MIN_FILES of the files' window records (``key``: `fams`,
+    what the files opened; `fams_ev`, what they hold real evidence for) name
+    it (every family on a one-file source), in first-seen order (C47)."""
     need = min(FAMILY_MIN_FILES, max(1, len(win)))
     counts: dict = {}
     for w in win.values():
-        for f in dict.fromkeys(w.get("fams", ()) or ()):
+        for f in dict.fromkeys(w.get(key, ()) or ()):
             counts[f] = counts.get(f, 0) + 1
     kept = tuple(f for f, c in counts.items() if c >= need)
     dropped = tuple(f for f, c in counts.items() if c < need)
     return kept, dropped
 
 
+def level_families(summary: dict, per_file: dict, win: dict) -> tuple[tuple, tuple, tuple]:
+    """(the level space's families, the families >= FAMILY_MIN_FILES files
+    opened that it refuses for want of evidence, the families fewer files
+    opened -- C47's dropped). A family enters the level space when >=
+    FAMILY_MIN_FILES files hold real evidence for it (`evidenced_families`,
+    the records' ``fams_ev``; recomputed from a record's ``fams`` and the
+    file's ledger where a record lacks it), in the opened families' order (D4)."""
+    opened, dropped = family_union(win)
+    ev = {}
+    for sid, w in win.items():
+        e = w.get("fams_ev")
+        if e is None:
+            led = per_file.get(sid)
+            e = evidenced_families(summary, led, w.get("fams", ()) or ()) if led is not None else ()
+        ev[sid] = {"fams_ev": e}
+    kept = set(family_union(ev, key="fams_ev")[0])
+    return (tuple(f for f in opened if f in kept), tuple(f for f in opened if f not in kept), dropped)
+
+
+def level_spaces(summary: dict, fams, fams_open, *, catalog=None):
+    """(the level space: ``fams`` without cross-family mixtures; the SHADOW
+    space: every family >= FAMILY_MIN_FILES files opened, ``fams_open``, with
+    mixtures -- the scale's space before D4, whose extra competitors are listed
+    as not counted -- or None when it enumerates the same profiles)."""
+    args = run_space_args(summary)
+    space = SP.Space(*args, fams, catalog=catalog, mixtures=False)
+    # the curated formulas are the same in both: equal profiles enumerate the same ions (a family the audit adds
+    # no profile for, unevidenced, is no shadow worth enumerating twice)
+    if DG.space_profiles(space.ctx, tuple(fams_open)) == space.profiles:
+        return space, None
+    return space, SP.Space(*args, fams_open, catalog=catalog)
+
+
 def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
     """The window record of every file: PRIMARY the persisted degeneracy-stage
     calibration (``per_file[i].degeneracy_cal`` = {mu, sigma} | null), else
-    the D10 fallback (`fit_windows`) for the files that lack it."""
+    the D10 fallback (`fit_windows`) for the files that lack it. A file the
+    batch calibrated on its pooled core (``per_file[i].tier_calibration`` =
+    'pooled', assignment/calpool.py) is marked ``pooled``: `window_table`
+    reads its window as its own, and the run window off it only when no file
+    calibrated alone. Each record carries the file's opened families
+    (``fams``) and the families it opens in the level space (``fams_ev``,
+    `evidenced_families`)."""
     stats = {p.get("sample_id"): p for p in (summary.get("per_file") or [])}
     out, missing = {}, {}
     for sid, led in per_file.items():
         st = stats.get(sid) or {}
         if "degeneracy_cal" in st:
             cal = st["degeneracy_cal"]
-            rec = dict(fams=file_families(summary, led), src="degeneracy_cal", n_m0=int((led["role"] == "M0").sum()))
+            fams = file_families(summary, led)
+            rec = dict(fams=fams, fams_ev=evidenced_families(summary, led, fams), src="degeneracy_cal",
+                       n_m0=int((led["role"] == "M0").sum()))
             if cal:
                 rec.update(cal=(float(cal["mu"]), float(cal["sigma"])), fit=(float(cal["mu"]), float(cal["sigma"])))
+                if st.get("tier_calibration") == T.CAL_SOURCE_POOLED:
+                    rec["pooled"] = True
             else:
                 rec.update(cal=None, mu_stamp=mu_stamp(led))
             out[sid] = rec
@@ -508,9 +686,12 @@ def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
 
 def window_table(win: dict) -> tuple[dict, tuple[float, float]]:
     """({sid: (mu, sigma)}, run window): the run window is the median of the
-    calibrated files' (mu, sigma); an uncalibrated file takes (its mu_stamp,
-    else the run mu; the run sigma)."""
-    fitted = [w["fit"] for w in win.values() if w.get("fit")]
+    calibrated files' (mu, sigma) -- of the files that calibrated alone, the
+    batch's pooled windows (`pooled`) only when none did: a pooled window is
+    the batch's own core again, not one more file's; an uncalibrated file takes
+    (its mu_stamp, else the run mu; the run sigma)."""
+    fitted = ([w["fit"] for w in win.values() if w.get("fit") and not w.get("pooled")]
+              or [w["fit"] for w in win.values() if w.get("fit")])
     run_window = (float(np.median([f[0] for f in fitted])), float(np.median([f[1] for f in fitted]))) \
         if fitted else (float("nan"), float("nan"))
     windows = {}
@@ -559,6 +740,8 @@ class RunContext:
         self.window_records: dict = {}
         self.families: tuple = ()
         self.families_dropped: tuple = ()   # opened by fewer than FAMILY_MIN_FILES files (C47)
+        self.families_unevidenced: tuple = ()   # opened by enough files, real evidence in too few (D4)
+        self.space_shadow = None      # the space of every opened family with mixtures (D4: listed, not counted)
         self.n_13c_children = 0
         self.cl37_flips = 0
         self.cl37_blend = 0
@@ -576,7 +759,8 @@ class RunContext:
         return w * mz * 1e-6
 
     def decompositions(self, counts: dict, n, a, adducts=None) -> list[dict]:
-        return SP.decompositions(self.space, counts, n, a, self.decomp_adducts if adducts is None else adducts)
+        ads = self.decomp_adducts if adducts is None else adducts
+        return SP.decompositions(SP.space_of(self, n), counts, n, a, ads)   # D4: the reading's own space
 
     def lines(self, counts: dict, fwhm: float, anchor_shift: float) -> list[dict]:
         return LN.cand_lines(counts, fwhm, anchor_shift, self.purity)
@@ -606,7 +790,9 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
     indexes (`prepare_context` adds them): width model + class, FileArr per file
     with its gate (``height_gate_cps``, else ``noise_edge_cps``, else the file's
     1st-percentile height), the windows (``win`` = `run_windows`), the space
-    over the families >= FAMILY_MIN_FILES files opened (`family_union`), the position-sigma fit, the
+    over the families >= FAMILY_MIN_FILES files hold real evidence for, without
+    cross-family mixtures (`level_families`, `level_spaces`; D4) and its shadow
+    (the space of every family >= FAMILY_MIN_FILES files opened, C47), the position-sigma fit, the
     channels (profile adducts), the decomposition adducts (+ every committed
     non-ion-only adduct with a composition, + [M+NH4]+ beside [M+H]+), and the
     15N twin ratios. Raises ValueError on a source the scale does not assess."""
@@ -624,8 +810,8 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
             fa.gate = fa.edge
             gates[sid] = fa.edge
     windows, run_window = window_table(win)
-    fams, fams_dropped = family_union(win)
-    space = SP.Space(*run_space_args(summary), fams, catalog=catalog)
+    fams, fams_unev, fams_dropped = level_families(summary, per_file, win)
+    space, shadow = level_spaces(summary, fams, family_union(win)[0], catalog=catalog)
     sig_fit, n13 = position_sigma(per_file)
     labelled = any("^" in a for a in space.adducts)
     committed_adducts = []
@@ -643,6 +829,8 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
     ctx.window_records = win
     ctx.families = fams
     ctx.families_dropped = fams_dropped
+    ctx.families_unevidenced = fams_unev
+    ctx.space_shadow = shadow
     ctx.n_13c_children = n13
     ctx.twin_q = twin_ratios(ctx, per_file)
     return ctx

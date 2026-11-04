@@ -74,12 +74,23 @@ buckets are reported beside them, never folded into them:
   one (per file from the file's own level, §10.1; on the merged ledger from
   the pooled level, §10.2). Isotope children, reagent ions, artifacts and
   unexplained peaks carry nothing (empty). A committed row with no level — a
-  merged row whose reading no pooled pair holds, or a file the per-file stage
-  could not level — reads `tentative`.
+  merged row whose reading no pooled pair holds and that is no levelled
+  re-read (§10.2), or a file the per-file stage could not level — reads
+  `tentative`.
 - **Tier and claim are separate verdicts.** The tier says whether the engine
   prints a formula; the claim says what the evidence lets a reader say of it.
   They are not nested, and the outputs show the two side by side. Neither is
   read off, corrected from or routed into the other.
+- **The tier answers "is the ion right?"; a doubt about the neutral / adduct
+  split or the ionization process is the claim's.** A rule whose doubt is the
+  split never moves the tier: the reagent-N isobar (the same ion read as an
+  N-free neutral on `[M+NH4]+` / urea or as a protonated N-richer neutral), the
+  amine gate's default and the hydrocarbon-on-N-cluster re-read each leave the
+  tier to the ion's own evidence, and the split step (§6) decides such a pair:
+  it keeps most open, so they read 4b (`ion`) at best, and pins a few where the
+  NH4 admissibility rule rules a reading out. Until 0.10 the three capped the
+  tier at Candidate. A reader who takes Assigned for "neutral identified" reads the
+  claim: Assigned + `ion` is an established ion whose neutral is open.
 - **Nothing upstream reads it.** Not the tiers, not the merge vote (whose
   class is its own, §13), not a check: the level and the claim change no ion,
   no tier and no assignment.
@@ -115,7 +126,7 @@ empty.
 | `evidence_level` | `3c` `4a` `4b` `5a` `5b`, or a bucket `reagent` / `NA` (§1); empty when the row has no level |
 | `evidence` | the evidence string (§2.3): the level, the decisive facts and the tags, in one line |
 | `would_lift` | what the pair lacks for the next level up (§2.4) |
-| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; empty when none |
+| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; then, after ` \|\| ` (or alone), `not counted (element family not open on evidence): <every one>`, `"; "`-joined -- the ions only the shadow space proposes (§5.2), listed for transparency, never a competitor; empty when none |
 | `tags` | the tag texts (§9), `" \| "`-joined; empty when none |
 | `context` | the context-list entries that match the neutral (§7), named and class, `"; "`-joined: `reflist:<id> = <name>`, `registry:<family> = <label>` (named) or `reflist:<id>`, `registry:<family>` (class); empty when none |
 | `context_source` | how the lists that matched were activated; when nothing matched, how the run's lists were (§2.5) |
@@ -161,11 +172,15 @@ Segments are separated by `" · "` (U+00B7 with a space on each side).
   (§10.1); a pooled pair of a batch none of whose files is calibrated reads
   `no level · no file of the source is calibrated (...): no run window to enumerate competitors in`
   (§10.2); a merged row no pooled pair holds reads
-  `no pooled pair: a batch-level re-read` (§10.2).
+  `no pooled pair: a batch-level re-read` (§10.2), unless it is a re-read
+  levelled from the pooled pair it replaced (§10.2: `split: open --
+  batch-level re-read of the pooled pair <neutral> <adduct>, the same ion
+  (that pair's split: <its split text>)`).
 
 The **ion text** is `unique in the calibrated window`, or
 `<n> competitor(s); isotopes exclude <k>; series excludes <s>; <m> left` (or
-`none left`), then `; own lines in band: <lines>` when the committed reading
+`none left`), then `; <u> not counted (element family not open on evidence)`
+when the shadow space proposes more (§5.2), then `; own lines in band: <lines>` when the committed reading
 has matched lines, then ` [committed contradicted]` when its own lines refute
 it; or `untestable (no ion composition / outside the enumerable space)`.
 
@@ -195,6 +210,8 @@ side channel would open ends
 | 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted`; the fluorine ceiling (§4): `fluorine count unconfirmable in MS1 (19F has no isotope line): not established (5a ceiling), not refuted` |
 | 5b | `refuted: <reasons>`, or `nothing could be enumerated or tested` |
 | reagent | `reagent ion / reagent cluster (not levelled)` |
+| no level: no file calibrated | a pooled source none of whose files is calibrated and whose batch-pooled core fell short: `no file of this source calibrated (needs ≥ 20 isotope-backed core rows in a file, or a batch-pooled core of ≥ 15 distinct carbon-bearing ions isotope-backed in ≥ 2 files)`; an uncalibrated file levelled alone (§10.1): `the file is not calibrated (needs ≥ 20 isotope-backed core rows)` -- the 20 is the tier engine's `CAL_MIN_N` |
+| no level: batch-level re-read | a merged row no pooled pair holds (§10.2): `batch-level re-read: the re-read pair is not levelled` |
 
 ### 2.5 `context_source`
 
@@ -274,7 +291,7 @@ Pooled over the source's files (a batch: `tied` and `lowconf` need ALL rows,
 | fact | from | what the scale does with it |
 |---|---|---|
 | `iso_veto` | the isotope checks, `tables/iso_checks.csv` (batch only; rules C / REQ / HIGH on the stamped time series, and the merged-ledger isotopologue gate's `SAT` rows) | step 0: rejected (5b). Two vetoes also take the reading out of the merged ledger, so the merged ledger and the pooled level agree: a `SAT` row (the line is another merged ion's isotopologue at its expected ratio; [MERGE.md](MERGE.md) §3 step 4c) and, on an Orbitrap-class batch, a `REQ` veto whose absent line is an element-signature line (⁸¹Br / ³⁷Cl / ³⁴S / ²⁹Si / ³⁰Si; step 6a) on a reading no curated list names and no known-species decision holds. The per-file ledgers record both decisions (the rows on a stripped line as the parent's isotopologue or unexplained; every row of a removed reading that left the merged ledger released to unexplained), so those rows no longer feed the pooled pair; a file that commits the stripped reading away from the line still levels it, at 5b through its `SAT` veto. The veto rows stay in `tables/iso_checks.csv` |
-| `label_veto` | the 15N-twin facts of a labelled-nitrate batch, `tables/label_twins.csv` (batch only) | step 0: rejected (5b); its `alien` set (a 14N line the label shows is another ion) also stops a label pin |
+| `label_veto` | the 15N-twin facts of a labelled-nitrate batch, `tables/label_twins.csv` (batch only): a 14N line above its cluster share (`excess`), without its 15N partner (`absent`) or, on an Orbitrap-class batch, the 13C shadow of the committed ion 8.1 mDa above it (`shadow`: a fixed fraction of that ion's 13C line, tighter than its own 15N twin; `batch/label_twins.py`), and a 15N reading without its 14N twin | step 0: rejected (5b); its `alien` set (a 14N line the label shows is another ion) also stops a label pin. A `shadow` line's Assigned merged readings are also Candidate ([MERGE.md](MERGE.md) §3 step 6c): the veto alone leaves the vote's tier |
 | `lowconf` | every row's confidence `Low` / `Suspect` | step 0: the 5a ceiling (§4) |
 | `below` | `below_assignability` (the assignment argues with itself) on any row | step 0: rejected (5b) by an implausible-chemistry setter; O≥11 on a mass-saturated window alone is a tag (§4) |
 | `lead` / `lead_by` | `tentative_lead` (the proposal is unsupported, not contradicted) and its setter | **no level effect**: printed as the `lead` tag on every level |
@@ -351,7 +368,7 @@ whole run.
   - the committed reading is contradicted by its own isotope lines (§5.3);
   - a `below_assignability` setter of implausible chemistry: the O-monster,
     the carbon cluster, an implausibly carbon-rich skeleton, an implausible
-    ionization, an off-calibration residual fit. The
+    ionization, an off-calibration residual fit, a refuted fluorine ladder. The
     setter is read from the row's `tier_reason` / `commentary` text; a below
     flag no setter text explains is rejected too (`below: setter not found`).
     Unconfirmed fluorine is no rejection on its own: see the ceilings below.
@@ -379,7 +396,13 @@ whole run.
   5a ceiling`), and anchors nothing. With any other rejection (a veto, own
   isotopes, another setter) it stays 5b. On a 2026 chamber campaign's
   labelled-nitrate batch this flag alone held 43 of the 49 MS2-confirmed
-  readings at 5b.
+  readings at 5b. A reading its CF2 ladder lifts (>= 2 ladder lines, one a
+  +/-1 neighbour, none refuting it) is not flagged at all, so neither the
+  ceiling nor a rejection applies to it (`assignment/fluorine.py`,
+  ASSIGNMENT_DETAIL §4.2 / §5.6). A ladder its own 13C line or the 14N twin of
+  its 15N alias refutes keeps the flag, and its refusal note (`does not lift the
+  refusal: ...`) is a second setter, `refuted fluorine ladder`: the reading is
+  refuted, not only unconfirmed, so it is 5b.
 
 ## 5. Step 1 — the ion formula → else 5a
 
@@ -390,23 +413,94 @@ The calibration is the degeneracy audit's own (`stats["degeneracy_cal"] =
 {mu, sigma}`, persisted per file since the scale exists). A run made before
 that refits it: the (mu, sigma) that reproduces the stored
 `degeneracy_density` values on a grid around the recomputed calibration
-(kept when it reproduces ≥ 99 % of them). An uncalibrated file in a batch
-takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run sigma
-being the median of the per-file sigmas. The run window is the median of the
-per-file windows. A source none of whose files is calibrated has no run
-sigma and no window: its pairs get no level (§2.3, "No level"), and the
-enumeration refuses a non-finite window.
+(kept when it reproduces ≥ 99 % of them). A file the batch calibrated on its
+pooled core (`tier_calibration: pooled` in its stats, assignment/calpool.py;
+MERGE.md §3 step 1a) has its lent window -- its own centre; the run sigma when
+any file calibrated alone, else the pooled sigma -- as its `degeneracy_cal` and
+takes it as its window; the run window is read off the files that calibrated
+alone, and off the pooled windows only when none did. An uncalibrated file in a
+batch takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run
+sigma being the median of the per-file sigmas. The run window is the median of
+the per-file windows. A source none of whose files is calibrated, alone or
+pooled, has no run sigma and no window: its pairs get no level (§2.3, "No
+level"), and the enumeration refuses a non-finite window.
 
 ### 5.2 The space and the competitors
 
-The **space** is the run's element space exactly as the degeneracy audit
-builds it: the context profile plus the contaminant families at least
-`FAMILY_MIN_FILES` (2) of its files opened (`context.family_union`; every family
-on a one-file source; a family one file alone opened is kept on
-`RunContext.families_dropped` — before, one Candidate row in one file
-opened `fluorinated` for every pair of a uronium run), plus the curated formulas (the pass-0 registry of
-the polarity and the active reference lists), over the reagent profile's
-adducts and the pair's own adduct. A committed neutral the space drops is
+The **space** is the run's element space as the degeneracy audit builds it,
+narrowed to the families with real evidence and without cross-family
+mixtures: the context profile plus the contaminant families at least
+`FAMILY_MIN_FILES` (2) of its files hold real evidence for
+(`context.level_families`; every such family on a one-file source), plus the
+curated formulas (the pass-0 registry of the polarity and the active
+reference lists), over the reagent profile's adducts and the pair's own
+adduct.
+
+- **Real evidence** (`context.family_evidence`). The context's declared
+  pass-3 families and the reagent's own family are the context's space and
+  are kept. A family that committed rows opened (`contaminant:<family>` M0
+  rows, whatever their tier or GKA suffix) counts for a file only when a row
+  of it is Assigned, or the file committed that row's own diagnostic isotope
+  line (34S; 29Si / 30Si; 37Cl; 81Br: an isotope child or an `isotopologues`
+  record, the tier engine's bookkeeping, in any of the ledger's spellings:
+  `37Cl2`, `2x37Cl`, `37Cl(pair)`, `81Br37Cl(pair)`) -- a line of an element the row's
+  neutral carries and its adduct adds none of (the 81Br line of an [M+Br]-
+  reagent cluster is the adduct's). Fluorine has no minor isotope and a
+  fluorinated row's Assigned tier rests on mass alone, so `fluorinated` needs
+  a CF2-step chain of at least `FAMILY_F_CHAIN_MIN` (3) Assigned F-bearing
+  neutrals in the file (distinct neutrals one CF2 apart, on any adduct and by
+  any route: a perfluoroacid series from the pass-0 registry counts, also when
+  the file commits some members as [M-H]- and others as a nitrate cluster; a
+  neutral read on two adducts counts once). A family at least two
+  files opened but fewer hold evidence for is kept on
+  `RunContext.families_unevidenced`; a family one file alone opened, on
+  `families_dropped`. Before, Candidate junk rows in two files opened
+  `fluorinated` for every pair of a uronium run, and its C2H-6N2O2 == FPSi
+  alias (0.064 mDa) parked the CHO urea adducts at 5a.
+- **No cross-family mixtures** (`space.level_profiles`). A family's profile
+  raises the caps the context sets to zero to the family's ceiling, as in the
+  degeneracy audit; it keeps another heteroatom of the context's budget only
+  when an open family brings that element too (N, the CHO(N) core, always).
+  With `fluorinated` open on a uronium run, a fluorine formula may carry Si
+  (siloxane / pdms are declared) but not P or S; on ambient air, not Cl or Br.
+  The context profile itself is unchanged.
+- **The shadow space** (`RunContext.space_shadow`): the space of every family
+  at least two files opened, with mixtures -- the space before this rule. The ions
+  only it proposes are not competitors: they are listed in
+  `competitors_left` after `not counted (element family not open on
+  evidence)` and counted in the ion text, and they still vouch for their own
+  in-band lines in test (b) (§5.3), so a line only such a reading explains
+  refutes the committed reading as it did before. An engine alternative only
+  the shadow space admits is not counted either. None when the two spaces
+  enumerate the same profiles.
+- **A reading the level space does not admit** (`space.space_of`). A
+  committed neutral the level space drops (a fluorine reading on a run whose
+  fluorine has no evidence, a cross-family mixture, or a neutral outside both
+  spaces, then D5-widened from the shadow) is levelled in the shadow space
+  exactly as before: its own family's competitors count, and its
+  decompositions, the split and the route aliases read the shadow too. A
+  curated formula passes every profile, so it is judged by its heteroatoms:
+  one whose elements no level profile carries together and a shadow profile
+  does (a perfluoroacid from the pass-0 registry on a run whose fluorine has
+  no evidence) is levelled in the shadow as well. The narrower level space
+  only takes competitors away from the readings it admits.
+- **A reading whose own heteroatom is unconfirmed**
+  (`competitors.unconfirmed_heteroatoms`). A committed neutral the level space
+  admits that carries a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
+  in-band isotope lines confirms (the committed reading's matched elements,
+  §5.3: a line in band in at least half of its testable files, >= 3 on a
+  batch; a line of an element its adduct adds is the adduct's, as for a
+  family's evidence: the 81Br line of a Br reading as [M+Br]- confirms
+  nothing) takes no competitor away: the ions
+  only the shadow space proposes count for it, as before. F, P and I have no
+  minor line, so a reading carrying them never qualifies. Without this, an
+  Si2 reading of a CHO urea adduct (Si2H4 == CO3, 0.41 mDa; the CHO reading
+  outside the calibrated window) whose only competitor was an unevidenced
+  fluorine reading read 4b 'ion: unique in the calibrated window' -- its
+  silicon no better evidenced than that fluorine. A CHO(N) reading, or one
+  whose every heteroatom an own line confirms, keeps the narrower space.
+
+A committed neutral the space drops is
 enumerated in the space widened to admit its class, so same-class competitors
 are still counted instead of the pair reading "unique" vacuously. On a run
 whose context profile reads NOx skeletons (`context_flags`, a nitrate-reagent
@@ -466,7 +560,9 @@ The tests, per candidate:
 - **(a)** a line absent, too high or too low in ≥ 80 % (`ABSENT_FRAC`) of ≥ 3
   testable files (`NMIN_FILES`; 1 on a single-file source);
 - **(b)** another candidate's observed in-band line this one predicts nothing
-  comparable at (> 4× what it predicts there, `B_FACTOR`);
+  comparable at (> 4× what it predicts there, `B_FACTOR`); a reading only the
+  shadow space proposes (§5.2) is such a candidate too, never itself a
+  competitor;
 - **(c)** the observed carbon count (the batch's rule-C reading where it is
   testable, else the per-file 13C line, counted in the files where rule C would
   count the spectrum: a 13C line ≥ 5× the edge and, with the server S/N, a
@@ -651,7 +747,9 @@ How the gate's result sets the split:
 | any other ion | kept | the NH4 reading stays a live decomposition |
 
 The amine default stays OPEN: the gate's fall-back to the amine is a default,
-not a confirmation (the engine caps it at Candidate).
+not a confirmation. It is the same ion, so the engine keeps the tier the merge
+vote gave the ion (until 0.10 it capped the re-read at Candidate); the open
+split is the only verdict on it.
 
 ## 7. Step 3 — level 3 = 3c only
 
@@ -776,7 +874,8 @@ the run's resolved gate (else the noise edge).
   profile) gets no level: evidence `no level · the run's reagent profile is
   unknown ...`.
 - An uncalibrated file levelled alone has no window (no run sigma to borrow):
-  no level, evidence `no level · the file is uncalibrated ...`, claim
+  no level, evidence `no level · the file is uncalibrated ...`, would_lift
+  `the file is not calibrated (needs ≥ 20 isotope-backed core rows)`, claim
   tentative.
 - The stage summary is `{levels, claims, n_levelled, n_pairs, instrument}`;
   the run's log line and `peaky assign` print the claim tally.
@@ -791,15 +890,31 @@ residual stages) as ONE source with every file-count minimum 3
 (`evidence.level_batch`), with the stamped time series, the merged ledger, the
 protected neutrals, the per-file gates and calibrations, the batch checks and
 the `--corroborate` partners (§10.3). `evidence.stamp_merged` joins the result
-onto the merged ledger by `(neutral_formula, adduct)` (one-to-one); a merged
-row no pooled pair holds (a batch-level re-read) gets no level, claim
-tentative and the evidence `no pooled pair: a batch-level re-read`. The
+onto the merged ledger by `(neutral_formula, adduct)` (one-to-one). A merged
+row no pooled pair holds is a batch-level re-read (the hydrocarbon-on-N-cluster
+re-read or the amine gate, MERGE.md step 5): no file committed its reading,
+but its note names the reading it replaced (`cleanup.reread_source`), the same
+ion, and that reading's pooled pair carries the ion's level. Where that pair
+established the ion (3c, 4a or 4b) the re-read row is **4b** with its split
+open (`split: open -- batch-level re-read of the pooled pair <neutral>
+<adduct>, the same ion (that pair's split: ...)`, `would_lift` `split not
+pinned: ...`, no positive fact, no named list, `context` empty: the pair's list
+matches name its own neutral); where the pair left a competitor (5a) the row is
+5a with the pair's competitors and `would_lift`. A rejected pair (5b) is not
+carried -- its reasons belong to the replaced reading, e.g. a hydrocarbon on an
+N-cluster -- and neither is a bucket: such a row, or a re-read whose pair is
+missing, gets no level, claim tentative, the evidence `no pooled pair: a
+batch-level re-read` and the would_lift `batch-level re-read: the re-read pair
+is not levelled`. The
 per-file ledgers keep their own per-file levels (§10.1), so a merged row can
 read 4a where its per-file rows read 4b, and the other way round. A batch
 none of whose Orbitrap-class files is calibrated (a one-file batch of an
-uncalibrated file included) has no run window: every pooled pair gets no
-level, claim tentative and the evidence `no level · no file of the source is
-calibrated ...`; one calibrated file is enough to lend the others its sigma.
+uncalibrated file included) and no pooled core (MERGE.md §3 step 1a) has no
+run window: every pooled pair gets no level, claim tentative, the evidence
+`no level · no file of the source is calibrated ...` and the would_lift `no
+file of this source calibrated (needs ≥ 20 isotope-backed core rows in a file,
+or a batch-pooled core of ≥ 15 distinct carbon-bearing ions isotope-backed in
+≥ 2 files)`; one calibrated file is enough to lend the others its sigma.
 
 `batch_summary.json` records:
 
@@ -902,7 +1017,8 @@ release in `evidence.py`).
 | `TWIN_Q`, `TWIN_MIN_PAIRS`, `TWIN_BRIGHT_X` | 0.10, 3, 10 | a file's 15N twin ratio |
 | `ROUTE_COFILES` | 2 (1 on one file) | two routes: co-seen in ≥ 2 files |
 | `LADDER_MIN_FILES`, `CROSS_MIN_FILES`, `HOMO_MIN_ANCHORS` | 2, 2, 2 | ladder, partner, anchored chain |
-| `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2) |
+| `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2): files that opened it, and files holding real evidence for it |
+| `FAMILY_DIAG_LINES`, `FAMILY_F_CHAIN_MIN` | 34S, 29Si / 30Si, 37Cl, 81Br; 3 | a family's real evidence: its own diagnostic line; for `fluorinated`, a CF2-step chain of Assigned readings (§5.2) |
 | `LOWCONF_REASON`, `LOWCONF_CEILING_WHY`, `FLUORINE_REASON`, `FLUORINE_CEILING_WHY`, `CEILING_REASONS`, `LEAD_RESCUE_SETTER`, `LIFT_3C_WITHHELD` | §4, §7 | the 5a ceilings; 3c withheld |
 | `LADDER_UNITS` | CH2, CF2 | ladders and series exclusion |
 | `MAX_PASSES` | 20 | series exclusion / ladder iteration |
@@ -928,16 +1044,32 @@ release in `evidence.py`).
   nothing in the scale can choose between them (the reagent-isobar window rule
   keeps the split open uniformly for every X). About 70 % of a uronium
   Orbitrap run's committed height sat at 4b for this reason. The engine's own
-  "reagent-N isobar unresolved" note says the same. Two routes could split it
-  once validated; today they are a tag (LR 1.28).
+  "reagent-N split open" note says the same (it no longer caps the tier). Two
+  routes could split it once validated; today they are a tag (LR 1.28).
 - **The lead / list circularity, half closed.** A reference list that rescued
   a dim reading (`reflist_dim`) no longer certifies it at 3c (§7); a
   `known:` registry commit still reaches 3c through its own registry family.
   A tentative lead has no level effect; the `lead` tag is printed on every
   level so the reader sees it.
-- **The run-level family union needs two files** (§5.2). A family one
-  file alone opened is recorded (`families_dropped`) and admits no competitor;
-  a batch of one file keeps every family it opened.
+- **The run-level family union needs two files with real evidence** (§5.2).
+  A family one file alone opened is recorded (`families_dropped`) and is
+  neither a competitor nor listed; one that two files opened but fewer than
+  two hold evidence for is recorded (`families_unevidenced`) and its ions are
+  listed as not counted. A batch of one file keeps every family it holds
+  evidence for. A declared family (the context's pass-3 list and the
+  reagent's own family) needs no evidence. No context's pass-3 list raises a
+  cap the built-in contexts set to zero; the reagent's own family can: on a
+  halide reagent (Br-, Cl-) over the uronium / EasyIC / 15N-ammonium
+  contexts, `bromo_organic` / `chloro_organic` raises Br / Cl from 0, and its
+  profile follows the mixture rule like any family's (Br + Si where siloxane
+  is open, no Br + S / P), so the level space there differs from the
+  degeneracy audit's even with no row-opened family; no batch the scale was
+  measured on used such a reagent. Otherwise only row-opened families
+  (fluorine everywhere; halogens on those contexts) widen the space. Mixtures inside
+  the context's own budget (P + S + Si on uronium, Cl + S on ambient air) are
+  the context's space and stay. A committed neutral the level space's caps or
+  filter drop is enumerated in the space widened to its own counts (§5.2, the
+  D5 widening), which can admit a mixture of its own heteroatoms again.
 - **NH4 tracking as a positive fact** has a measured LR of 1.25 (two-hour
   tracking is mostly family-wide co-variation). It fired on no pair in the runs
   the scale was built on, which committed no `[M+NH4]+` row.
@@ -963,11 +1095,16 @@ release in `evidence.py`).
   degeneracy calibration, which needs at least `tiers.CAL_MIN_N` (20) High/Good
   organic M0 rows with an isotope line. A table of a few hundred peaks may give
   no file that many (2-9 per file on the iodide and NO+ Orbitrap tables it was
-  measured on); then no pair is levelled (`NO_RUN_WINDOW_TEXT`) and every claim
-  reads tentative. A batch run says so once: the `batch_summary.json` key
-  `levels_not_assessed_reason`, a console WARNING and the PDF cover and
-  Evidence levels page (whose no-level rows name the same reason); a
-  single-sample workbook says it on its Summary sheet.
+  measured on). A batch then pools its files' cores (MERGE.md §3 step 1a: >= 15
+  distinct carbon-bearing ions isotope-backed in >= 2 files, spread over the
+  committed m/z range) and levels on that; on a 15N-nitrate 65-120 window it
+  reaches 15-20 ions, on the 40-600 window and an NO+ 40-160 window 0-10
+  (their 13C lines sit under the edge). Where the pool falls short too, no pair
+  is levelled (`NO_RUN_WINDOW_TEXT`) and every claim reads tentative. A batch
+  run says so once: the `batch_summary.json` key `levels_not_assessed_reason`
+  (which then also says why the pool was not used), a console WARNING and the
+  PDF cover and Evidence levels page (whose no-level rows name the same
+  reason); a single-sample workbook says it on its Summary sheet.
 - **One file alone** cannot be levelled without a calibration, and a
   single-sample run without a width model reads `NA` (§10.1).
 
@@ -990,6 +1127,14 @@ readings before the file count (`assign_batch._vote`, [MERGE.md](MERGE.md)
   `evidence outranks the count: kept X (formula confirmed in 2 of 11 files)
   over the 5-file Y (unconfirmed)`. `tables/jitter.csv` carries each file's
   reading's `vote_class` (0 / 1 / 2).
+- A series step the tier stage did not count is no `anchor` axis, for the
+  class or the level: on a 15N-nitrate ledger a row whose C8S or C2F3 count
+  has an untested 15N alias (C8S -> H^NO7, 0.27 mDa; C2F3 -> H2^NO4, 0.21 mDa)
+  takes the same series steps as that alias, and its tier_reason carries
+  `fluorine.SERIES_ALIAS_MARK` (`evidence.series_held`; `trim` carries it as
+  the `series_held` flag). Without it one file's gap-filled organosulfur alias
+  was "formula confirmed" and outvoted the truth's [M+^NO3]- reading in 3-5
+  files ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), the series hold).
 - `--corroborate` feeds the class's cross set as it always did: the neutrals a
   source pins on its own (`vote_cross_neutrals`; a source with per-file ledgers
   is re-levelled by the vote's decision with no cross set). A merged-only

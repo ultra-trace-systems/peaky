@@ -21,7 +21,14 @@ class ReagentProfile:
     adducts: list[str]  # analyte channels (peaky adduct labels)
     normaliser: str  # "reagent" | "tic"  (for the TS/correlation layer)
     reagent_ion_re: str | None  # regex on ion_formula picking the reagent ions
-    ranges: str  # grid element ranges for local enumeration
+    # The element box the reagent's analytes span, as a string ("C0-40 ... S0-2").
+    # DOCUMENTATION, not configuration: no search reads it (a composed profile
+    # merges the strings, `_merge_ranges`, and that is all). The per-peak grid
+    # box is directors.build_ranges, from the CONTEXT profile -- CHO(N) only --
+    # and S / P / Si / F / Cl / Br / I reach a neutral only through the context's
+    # pass-3 families and the curated pass-0 lists. Widening this string widens
+    # nothing (tests/test_heteroatom_routes.py pins that).
+    ranges: str
     detect_adduct: str | None  # presence of this adduct => this reagent (auto-detect)
     context: str = "ambient-air"  # default assign.run context (mode + VK priors + caps)
     # isotopic purity of a labelled reagent (0.98 = 98 % 15N). assign.run

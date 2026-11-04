@@ -315,20 +315,26 @@ columns** (no judgment calls at report time):
 - **Assigned** — the formula is unique in the calibrated mass window, *or* it's
   corroborated by independent evidence (confirmed isotopologues / attached
   satellites, the same neutral in a second ionization channel, or series-anchor
-  support), and nothing about the chemistry contradicts the validated sample
-  profile.
+  support -- on a 15N-nitrate run not for an F or S count whose sub-mDa 15N
+  alias takes the same series steps), and nothing about the chemistry
+  contradicts the validated sample profile.
 - **Candidate** — a plausible formula, honestly ambiguous: a low/suspect base
   confidence, an effective-score near-tie, undiscriminated close alternatives in
   the window, or a high cross-family mass-degeneracy density.
-- **Reagent-N isobar demotion (positive mode).** A CHO neutral seen through an
-  N-carrying reagent adduct (`[M+NH4]+` or urea `[M+(CH4N2O)H]+`) forms the *exact
-  same ion* as a protonated CHON neutral — same formula, so neither mass nor
-  isotopes can separate them. Such a commit is demoted to **Candidate** unless an
-  extra-spectral discriminator resolves it: the same neutral in an N-free channel
-  (`[M+H]+`/`[M+Na]+`/`[M+K]+`), the jointly-unfakeable NH4+urea pair, or a series
-  anchor. The tier_reason says so honestly rather than claiming the old false
-  "unique in the calibrated window." Validated: Ur moved −124 Assigned→Candidate
-  (all in the reagent-N family); Br is unaffected (halide, negative-only). See
+- **Reagent-N isobar: the split, not the tier (positive mode).** A CHO neutral
+  seen through an N-carrying reagent adduct (`[M+NH4]+` or urea `[M+(CH4N2O)H]+`)
+  forms the *exact same ion* as a protonated CHON neutral — same formula, so
+  neither mass nor isotopes can separate them. The tier answers "is the ion
+  right?", and here the ion is: the tier follows the ion's own evidence, and the
+  tier_reason says the neutral / adduct split is open (`reagent-N split open`)
+  unless an extra-spectral discriminator fixes the nitrogen count: the same
+  neutral in an N-free channel (`[M+H]+`/`[M+Na]+`/`[M+K]+`), the
+  jointly-unfakeable NH4+urea pair, or a series anchor. The evidence level
+  decides the split (most such pairs stay open: 4b, claim `ion`). Until 0.10
+  such a commit was demoted to Candidate; one ion-level bar stays: an ion that
+  carries three or more analyte nitrogens in every reading and has no isotope
+  line, second channel or series anchor is Candidate (`nitrogen-rich ion on
+  mass alone`). Br is unaffected (halide, negative-only). See
   [ASSIGNMENT_DETAIL](ASSIGNMENT_DETAIL.md) for the mechanics.
 - **Below assignability** — the **unexplained** residual, characterized
   peak-by-peak (isotope-partner / has-constraints / isolated). Presented as a
