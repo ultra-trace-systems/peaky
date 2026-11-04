@@ -63,10 +63,11 @@ instead -- competitor counts, files). Gzipped because the privacy scanner reads
 a 16-letter neutral formula as an id. **`expected_vectors_v1.json`** holds the
 golden vectors, pairs per level in the order 3c/4a/4b/5a/5b/reagent/NA:
 `v1_nitrate` 1,850 = 10/186/289/472/892/1/0, `v1_uronium` 1,161 =
-17/75/913/125/31/0/0 when cut; now 9/186/299/491/864/1/0 and
-17/75/913/140/16/0/0 (the release fixes' lowconf ceiling, then the level space
-opening a family only on real evidence and without cross-family mixtures,
-`tests/test_levels_fixtures.py` names each step). The level-space step (D4)
+17/75/913/125/31/0/0 when cut; now 9/186/299/879/476/1/0 and
+17/75/913/140/16/0/0 (the release fixes' lowconf ceiling, the fluorine 5a
+ceiling, then the level space opening a family only on real evidence and
+without cross-family mixtures, `tests/test_levels_fixtures.py` names each
+step). The level-space step (D4)
 changes 288 `v1_nitrate` rows and no `v1_uronium` row (its run opens no family
 without evidence and has no mixture to drop, so it has no shadow space). All
 288 are CHO(N) readings: a committed reading carrying a heteroatom no own
@@ -110,6 +111,19 @@ Two later steps move text columns only (no level, claim or vector):
 
 Against the table before these three steps 372 rows differ (371 `v1_nitrate`,
 1 `v1_uronium`); every moved column is one of the classes above.
+
+The fluorine 5a ceiling (unconfirmed fluorine alone is "not established, not
+refuted", docs/EVIDENCE_LEVELS.md §4) moves 388 `v1_nitrate` pairs 5b -> 5a
+(`evidence_level`, `inpass_level`, `inpass_why`, `would_lift`, `evidence`,
+the `fluorine 5a ceiling` tag). Two other steps move texts only: on 100
+`v1_uronium` rows the valence check before the adduct default and the
+absent-parent refutation on a side channel (`split_how`, `nh4_gate`,
+`would_lift`, `evidence`, `tags`), and on 2 `v1_nitrate` rows the per-file 13C
+count at S/N >= 10 (`would_lift`, `inpass_why`, `evidence`). On 37 of the fluorine pairs both that
+ceiling and the F25 level space above apply: the pair reads 5a at the ceiling
+with the F25 space's competitor count and list. A reading whose CF2 ladder a
+line refutes would stay 5b (a second setter, `refuted fluorine ladder`); the
+fixture ledgers predate the ladder's refusal note, so no pair here carries it.
 
 Both are pinned until the user signs off the vectors; a
 change that moves them is a change of the scale and must say so. Regenerate

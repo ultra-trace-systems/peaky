@@ -53,7 +53,7 @@ GOLDEN = {
     # nitrate pairs 5b -> 5a: before it 9/186/290/500/864/1/0; signed off by the user 2026-10-28. The level space
     # without cross-family mixtures (D4) moves 9 CHO nitrate pairs 5a -> 4b, each left only an F+Cl formula (no
     # chlorine family open); a Br and a Cl reading left only such a formula stay 5a (no own 81Br / 37Cl line)
-    "v1_nitrate": (1850, "9/186/290/888/476/1/0"),
+    "v1_nitrate": (1850, "9/186/299/879/476/1/0"),
     "v1_uronium": (1161, "17/75/913/140/16/0/0"),
 }
 
