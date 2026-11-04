@@ -2125,7 +2125,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
         corroborate=None, mass_axis: str = "auto", mass_axis_hold: str | None = None,
         axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
-        isotopologue_rows: bool = True,
+        isotopologue_rows: bool = True, lists=None,
         log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
@@ -2535,8 +2535,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # specific lists when the batch OR DATASET name -- the chemistry often lives
     # only in the latter -- matches) -> selection prior + rescue.
     from peaky.assignment import reflists as RL
+    # `lists` names lists to activate by id (--lists / $PEAKY_LISTS), beside the
+    # keyword-unlocked ones; an unknown id stops the batch here, before any work
     reflists_active, _tags, rl_record = RL.activate(batch or "", dataset or "", getattr(prof, "label", ""),
-                                                    record=True)
+                                                    record=True, include=lists)
     # how they were activated (which keyword in which name): the evidence
     # scale's context source, per file and pooled (batch_summary["reflists_context"])
     assign_kw.setdefault("reflists_context", rl_record)
@@ -3509,6 +3511,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # how the lists were activated: {tags, matched: {tag: [[field, keyword]]},
         # active: [[id, version, how]]} (the evidence level's context source)
         "reflists_context": rl_context,
+        # the pinned record of each list the run read (id, version, sha256, roles,
+        # pinned, how activated): what run_manifest.json carries as `lists`
+        "lists": RL.lists_record(reflists_active, rl_record),
         "amine_r_min": float(amine_r_min),
         "per_file": per_stats,
         # RUN-TIME metadata, not material data: how long the assignment actually

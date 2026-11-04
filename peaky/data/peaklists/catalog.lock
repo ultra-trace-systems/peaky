@@ -1,0 +1,40 @@
+{
+ "schema": 1,
+ "generated_utc": "2026-11-04T07:22:58Z",
+ "lists": {
+  "contaminants_keller2008": {
+   "version": "2008.2",
+   "sha256": "e24f927cded93e772af2935107ed40ddc7970cd8611af61aa07f6e328e8b959d",
+   "file": "contaminants_keller2008.json",
+   "source_doi": null,
+   "roles": [],
+   "schema_version": 1
+  },
+  "isoprene_ox_wennberg2018": {
+   "version": "2026.09.08",
+   "sha256": "0b327e88f2e1e82da4f57471eead5223cd7811575d1ea71cb505fede770a276b",
+   "file": "isoprene_ox_wennberg2018.json",
+   "source_doi": null,
+   "roles": [],
+   "schema_version": 1
+  },
+  "monoterpene_hom_kang2024": {
+   "version": "2024.2",
+   "sha256": "c7f4e96665a0c7261c811132099e03ba4a4d8541047b59eee3c9d0d83fc2427f",
+   "file": "monoterpene_hom_kang2024.json",
+   "source_doi": null,
+   "roles": [],
+   "schema_version": 1
+  },
+  "norman_sle_s22_epacons": {
+   "version": "NORMAN-SLE-S22.0.1.0",
+   "sha256": "96611740b3a945822d6203631d23047dd7cb085d9331b1b63ad537367badb995",
+   "file": "norman_sle_s22_epacons.json",
+   "source_doi": "10.5281/zenodo.2648759",
+   "roles": [
+    "name"
+   ],
+   "schema_version": 2
+  }
+ }
+}

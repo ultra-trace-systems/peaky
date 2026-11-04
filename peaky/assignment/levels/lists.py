@@ -48,6 +48,8 @@ def activation_how(L, activation) -> str:
         return "always active"
     if not activation:
         return "activation not recorded"
+    if L.id in set(activation.get("explicit") or ()):
+        return "explicit (--lists)"
     matched = activation.get("matched") or {}
     pairs = []
     for tag in L.applies_to_contexts:
@@ -84,22 +86,28 @@ class ContextLists:
         self._cat = cat
         self._meta: dict = {}
         self.how_of: dict = {}
+        explicit = set((activation or {}).get("explicit") or ())
         for lid, _ver in self.active:
             L = cat.get(lid)
             if L is None:
                 continue
             meta = L.meta_of or {}
             how = ("always active (universal list)" if L.always_active
+                   else "explicit (--lists)" if lid in explicit
                    else f"context source {KEYWORD_SOURCE} -> {','.join(L.applies_to_contexts)}")
             self.how_of[f"reflist:{lid}"] = self._source_text(lid, L)
             # a list WITH names gives a named entry for every entry; where an entry's `name` is empty its
-            # `origin` names the compound
+            # `origin` names the compound. A snapshot of `family_scope` class names a family, not the
+            # neutral: its entries are class entries whatever they are called.
             has_names = any((meta.get(f) or {}).get("name") for f in L.formulas)
+            class_only = str(getattr(L, "family_scope", "compound")) == "class"
             for f in L.formulas:
                 mf = meta.get(f) or {}
                 nm = mf.get("name") or ""
                 if not nm and has_names and mf.get("origin"):
                     nm = str(mf["origin"])
+                if class_only:
+                    nm = ""
                 k = fkey(fcounts(f))
                 if k:
                     self.by_key[k].append(dict(id=f"reflist:{lid}", named=bool(nm), name=nm or "", how=how,
@@ -122,6 +130,38 @@ class ContextLists:
     # ---- activation ----
     def _source_text(self, lid: str, L) -> str:
         return f"reflist:{lid}: " + activation_how(L, self.activation)
+
+    # ---- size-aware naming (schema-v2 snapshots) ----
+    #: the formula steps a list's neighbourhood is read over: a homologue (CH2),
+    #: a saturation step (H2), an oxidation step (O), both ways
+    NEIGHBOUR_DELTAS = (("CH2", {"C": 1, "H": 2}), ("H2", {"H": 2}), ("O", {"O": 1}))
+
+    def specificity(self, hit, neutral) -> dict | None:
+        """How specific a named reference-list hit is: the hit's list may also
+        name formula NEIGHBOURS of `neutral` (+-CH2, +-H2, +-O). A list that
+        names every neighbour names everything -- a big suspect list hits a
+        formula by size, not by knowledge -- so the count rides the level text as
+        a tag (no level effect yet; a floor is the obvious next step). Only for
+        a `reflist:` hit of a schema-v2 snapshot; None otherwise."""
+        from peaky.chem import chemistry as C
+        if not hit["id"].startswith("reflist:"):
+            return None
+        L = self._cat.get(hit["id"].split(":", 1)[1])
+        if L is None or int(getattr(L, "schema_version", 1) or 1) < 2 or not isinstance(neutral, str):
+            return None
+        base = C.parse_formula(neutral)
+        found = []
+        for lab, delta in self.NEIGHBOUR_DELTAS:
+            for sign in (1, -1):
+                cnt = dict(base)
+                for el, n in delta.items():
+                    cnt[el] = cnt.get(el, 0) + sign * n
+                if any(v < 0 for v in cnt.values()):
+                    continue
+                f = C.format_formula({k: v for k, v in cnt.items() if v > 0})
+                if f and f != neutral and f in L.formulas:
+                    found.append(f"{'+' if sign > 0 else '-'}{lab} {f}")
+        return {"n": len(found), "neighbours": found, "n_listed": len(L.formulas)}
 
     # ---- lookups ----
     def hits(self, neutral) -> list:
@@ -183,7 +223,9 @@ class ContextLists:
             out.append("ion form: the entry is an anion")
         if pol == "negative" and "cation" in text:
             out.append("ion form: the entry is a cation")
-        if not modes and m["polarity"] and m["polarity"] != pol:
+        # a list recorded for one polarity contradicts a run of the other; a list
+        # of both (a suspect list of neutrals, not of detected ions) contradicts nothing
+        if not modes and m["polarity"] and m["polarity"] not in (pol, "both"):
             out.append(f"MODE CONTRADICTS: list is {m['polarity']} ({m['native']}), this run is {pol}")
         if "anion" in text and pol == "negative" and adduct != "[M-H]-":
             out.append(f"ion form differs: entry = the anion [M-H]-, this pair = {adduct}")

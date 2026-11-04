@@ -428,7 +428,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               height_cutoff_cps: float | None = None,
               side_channels=None,
               tof_flag_mz: float | None = None,
-              mass_axis: str = "auto",
+              mass_axis: str = "auto", lists=None,
               axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
@@ -531,7 +531,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                      k_min=k_min, k_max=k_max, min_gain=min_gain,
                      residual=residual, residual_min_x_edge=residual_min_x_edge,
                      residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
-                     mass_axis=mass_axis, axis_fingerprints=axis_fingerprints,
+                     mass_axis=mass_axis, lists=lists, axis_fingerprints=axis_fingerprints,
                      axis_fingerprint_dir=axis_fingerprint_dir, n_jobs=n_jobs, log=log, **assign_kw)
     finally:
         # never outlive the run, a failed one included; this run's samples only
@@ -551,7 +551,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         batch_name=rb.name, batch_id=rb.id, dataset=dataset,
         sample_ids=(res.get("sample_ids") if isinstance(res, dict) else None),
         reagent=prof.name, cfg=cfg_snapshot,   # carries the resolved x_edge
-        ts_path=ctx.ts_path,
+        ts_path=ctx.ts_path, lists=summ.get("lists"),
         # the served axis-fingerprint documents the run read (sha1 / status / mode
         # per item), an input like the series; no key when none was read
         axis_fingerprints=_axis_fingerprint_inputs(summ),
@@ -855,6 +855,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=pool_label, dataset=dataset, sample_ids=union, reagent=prof.name,
         cfg=cfg_snapshot, ts_path=ctx.ts_path,       # carries the resolved x_edge
+        lists=summ.get("lists"),
         axis_fingerprints=_axis_fingerprint_inputs(summ),
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),

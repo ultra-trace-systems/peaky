@@ -315,7 +315,7 @@ def test_the_pooled_stage_stamps_merged_and_writes_the_table_and_the_summaries(t
     res = _run_batch(tmp_path, monkeypatch, seen=seen)
     # the per-file runs get the profile and the activation record, never the cross set
     assert seen and all(kw.get("reagent_profile") == "Br" and "corroborate" not in kw for kw in seen)
-    assert all(set(kw["reflists_context"]) == {"tags", "matched"} for kw in seen)
+    assert all(set(kw["reflists_context"]) == {"tags", "matched", "explicit"} for kw in seen)
     merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False)
     for c in EV.COLUMNS:
         assert c in merged.columns, c
@@ -344,7 +344,7 @@ def test_the_pooled_stage_stamps_merged_and_writes_the_table_and_the_summaries(t
     assert keys.index("claims") == keys.index("evidence_levels") + 1
     assert list(summ["claims"]["merged"]) == list(EV.CLAIM_KEYS)
     rc = summ["reflists_context"]
-    assert set(rc) == {"tags", "matched", "active"}
+    assert set(rc) == {"tags", "matched", "explicit", "active"}
     assert all(len(x) == 3 and x[2] for x in rc["active"])
     assert {"always active"} <= {x[2] for x in rc["active"]}
     assert all(p["degeneracy_cal"] == {"mu": CAL[0], "sigma": CAL[1]} for p in summ["per_file"])

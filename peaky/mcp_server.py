@@ -312,7 +312,8 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
                 "roles": {k: int(v) for k, v in roles.items()},
                 "top_species": top, "stats": res.get("stats", {}),
                 "claims": claims,
-                "reflists_active": res.get("reflists_active", [])}
+                "reflists_active": res.get("reflists_active", []),
+                "lists": res.get("lists", [])}
 
     jid = JOBS.submit("assign_sample", work,
                       {"sample_id": sample_id, "reagent": reagent, "output_dir": out_dir})

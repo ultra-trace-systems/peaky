@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Pinned reference-list snapshots** (`peaky.lists`, `docs/LISTS.md`). A list imported from an external source is
+  a schema-v2 snapshot with its provenance (DOI, record, file, the publisher's md5, retrieval time, licence) and a
+  content hash; `peaky/data/peaklists/catalog.lock` pins every list's hash and `reflists.load_catalog` refuses a
+  mismatch by name (`SnapshotIntegrityError`). A run never fetches a list: `peaky lists import <source>` does, offline,
+  verifying the publisher's checksum and the exact header; `peaky lists lock | verify | show` manage the catalog.
+  `--lists ID[,ID]` (`$PEAKY_LISTS`) on `peaky assign` / `peaky batch` activates a list by id; the run manifest,
+  `batch_summary.json` and the single-sample manifest carry a `lists` block (id, version, sha256, roles, pinned,
+  how activated). A user directory (`$PEAKY_LISTS_DIR`, default `~/.cache/peaky/lists`) holds non-bundled snapshots.
+  First snapshot: `norman_sle_s22_epacons` (NORMAN-SLE S22, US EPA consumer-product suspects, Phillips et al. 2018,
+  CC-BY-4.0; 1664 compounds). Each named context-list hit of a v2 list carries a *list specificity* tag (formula
+  neighbours the list also names). A `both`-polarity list no longer flags MODE CONTRADICTS. The activation record
+  gains `explicit` (the ids asked for by name).
+
 ### Changed
 
 - **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm

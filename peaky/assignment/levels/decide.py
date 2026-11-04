@@ -615,6 +615,15 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
         named_txt = [f"{hh['id']} = {hh['name']}" + (f" [{mfl}]" if mfl else "") for hh, mfl in zip(named, mflags)]
         # the level text needs EVERY named entry flagged, the tag ANY (as built; see BACKLOG)
         mode_block = L == "3c" and bool(named) and all("MODE CONTRADICTS" in x for x in mflags)
+        # size-aware naming (schema-v2 snapshots only): how many formula neighbours of
+        # the neutral the naming list also holds -- a tag, no level effect
+        for hh in named:
+            sp = S.lists.specificity(hh, nn)
+            if sp is not None:
+                tags.append(f"list specificity: {hh['id']} names {sp['n']} formula neighbour(s) of the neutral "
+                            f"(+-CH2 / +-H2 / +-O" + (": " + ", ".join(sp["neighbours"]) if sp["neighbours"] else "")
+                            + f") among its {sp['n_listed']} formulas -- tag")
+                tagk.append("list specificity")
         cls = [hh for hh in hits if not hh["named"]]
         if cls:
             ctx_txt = []

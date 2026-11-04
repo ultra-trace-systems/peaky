@@ -203,6 +203,9 @@ One entry per list, `"; "`-joined:
 - `reflist:<id>: always active`
 - `reflist:<id>: keyword '<kw>' in the <batch|dataset|reagent label> name` (a
   list activated by a context tag: which keyword in which name unlocked it)
+- `reflist:<id>: explicit (--lists)` (a list activated by id: `--lists` /
+  `$PEAKY_LISTS`; the pinned snapshot it was read from is in the manifest's
+  `lists` block, [LISTS.md](LISTS.md))
 - `registry:<family>: pass-0 registry (<polarity>)`
 - `reflist:<id>: activation not recorded` (a run made before the activation
   record existed)
