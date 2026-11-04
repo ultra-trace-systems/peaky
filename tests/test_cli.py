@@ -101,6 +101,19 @@ check("both --height-cutoff-x-edge help texts say the absolute cutoff wins",
       _INERT in " ".join((_cli_x_help or "").split()) and _INERT in _mod_help,
       {"cli": _cli_x_help, "assign.main says it": _INERT in _mod_help})
 
+# ---- top-level --version flag ------------------------------------------------
+import peaky as _pk  # noqa: E402
+
+_buf = _io.StringIO()
+try:
+    with _contextlib.redirect_stdout(_buf):
+        P.parse_args(["--version"])
+    _ver = None
+except SystemExit as _e:
+    _ver = (_e.code, _buf.getvalue().strip())
+check("peaky --version prints the package version and exits 0",
+      _ver is not None and _ver[0] == 0 and _pk.__version__ in _ver[1], _ver)
+
 # subcommand is required
 try:
     P.parse_args([])

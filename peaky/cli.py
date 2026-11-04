@@ -70,8 +70,11 @@ def _friendly_hint(s: str) -> str | None:
         return ("Mascope is rate-limiting you (Cloudflare WAF 403). Wait 15-30 min "
                 "with NO traffic, then retry — polling extends the block.")
     if "401" in s or "unauthorized" in s or "forbidden token" in s:
-        return ("Authorization failed (401). MASCOPE_ACCESS_TOKEN is likely expired "
-                "— refresh it in ~/.mascope/.env.")
+        return ("Authorization failed (401). Either MASCOPE_ACCESS_TOKEN expired "
+                "(refresh it in your .env), or the token was minted for a different "
+                "service — MASCOPE_SERVICE_NAME is bound per token: an `ai-agent` "
+                "token answers 401 when presented as `mascope_sdk`, and vice versa. "
+                "Check both the token and MASCOPE_SERVICE_NAME.")
     if "no peaks" in s or "no samples" in s or "no batches" in s or "404" in s \
             or "not found" in s:
         return ("Not found on the server. IDs can go stale when a server copy is "
@@ -2162,9 +2165,12 @@ def _add_admission_args(sp) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    import peaky                                # local: no package-cycle at import
     ap = argparse.ArgumentParser(
         prog="peaky",
         description="Peaky — reproducible multi-pass formula assignment for Mascope peaks.")
+    ap.add_argument("--version", action="version",
+                    version=f"%(prog)s {peaky.__version__}")
     ap.add_argument("--env", default=None,
                     help="path to a Mascope .env (else ~/.mascope/.env or $MASCOPE_ENV)")
     ap.add_argument("--workspace", default=None,
