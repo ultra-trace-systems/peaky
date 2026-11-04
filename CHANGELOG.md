@@ -217,8 +217,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O
   amines/amides as often or more. Now only a weak X (<= 1 O or <= 4 C, `cleanup.nh4_weak_neutral`)
   is re-read (and, on a side channel such as uronium's, an X whose parent channels are absent from
-  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading capped Candidate and no longer
-  earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
+  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading (with the
+  ion-level tiers below, its tier too, and a note that the split is open) and no longer earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
   all weak), and the evidence scale's `AmineGate` mirrors both (split open).
 - **The merge vote gives an aromatic-heteroatom neutral at the dimer mass no evidence class**
   (`plausibility.aromatic_heteroatom`: C >= 20, DBE/C >= 0.5, N/S/P). Its isotope "confirmation"
@@ -227,8 +227,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A reading the label twins refute is capped Candidate** (`label_twins.demote_vetoed`,
   `merge_gates.label_veto`), not only rejected at 5b: 5 of the 6 14N organonitrates MS2 read as
   `[X'-H]-` sat Assigned as `[X+NO3]-` clusters.
-- **Urea adducts of hydrocarbons and N-rich neutrals are capped Candidate**
-  (`cleanup.cap_implausible_urea_adducts`, `merge_gates.urea`): the same ion as protonated X+urea.
+- **Urea adducts of hydrocarbons and N-rich neutrals are noted** (`cleanup.note_implausible_urea_adducts`,
+  `merge_gates.urea.noted`): the same ion as protonated X+urea, so the split is open. (First built as a
+  Candidate cap; with the ion-level tiers below it is a note and the tier stands.)
 
 - **The tier answers "is the ion right?"; a doubt about the neutral / adduct split goes to
   the claim.** Three positive-mode rules capped the tier at Candidate although the ion was
@@ -274,10 +275,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unshifted file before the post-tier demotes, 12 -> 17 against 460 -> 616 after them
   (without the nitrogen bar 18 -> 44 and 12 -> 23).
   Merged with the amine gate by oxygen count (a multifunctional X keeps its `[M+NH4]+` reading
-  by default, so fewer readings are re-read at all), whose two caps are not re-reads and stay:
-  a tracking weak X kept as `[M+NH4]+` (`cleanup.nh4_weak_tracked`) and an Assigned urea adduct
-  of a hydrocarbon or an N-rich X (`cleanup.cap_implausible_urea_adducts`) are capped Candidate.
-  The numbers above were measured before that gate.
+  by default, so fewer readings are re-read at all). Its two same-ion caps follow the same rule
+  and became notes: a tracking weak X kept as `[M+NH4]+` (`cleanup.nh4_weak_tracked`) and a urea
+  adduct of a hydrocarbon or an N-rich X (`cleanup.note_implausible_urea_adducts`) keep their tier
+  and say the split is open. Kept as caps they would have taken 33 truth A/B lines of a uronium
+  field campaign off Assigned for one wrong-ion line. The numbers above were measured before that gate.
 
 - **Fluorine by evidence: a CF2 ladder lifts the fluorine refusals, its 15N alias's 14N twin
   and its own 13C line refute it, the fluorinated family reaches F25, and the family's sub-mDa

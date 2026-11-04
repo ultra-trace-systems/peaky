@@ -307,9 +307,11 @@ check("amine 3way: multifunctional X, FLAT parent -> adduct kept by default",
 check("amine 3way: weak X (C6H10O), shaped NON-tracking NH4 -> protonated amide C6H13NO, tier kept",
       _row("wrej_n")["adduct"] == "[M+H]+" and _row("wrej_n")["neutral_formula"] == "C6H13NO"
       and _row("wrej_n")["tier"] == "Assigned", _row("wrej_n").to_dict())
-check("amine 3way: weak X (C5H8O) that TRACKS -> NH4 reading kept but capped Candidate",
+check("amine 3way: weak X (C5H8O) that TRACKS -> NH4 reading kept with a note, the tier kept (same ion)",
       _row("wreal_n")["adduct"] == "[M+NH4]+" and _row("wreal_n")["neutral_formula"] == WREAL
-      and _row("wreal_n")["tier"] == "Candidate" and "tracks it too" in str(_row("wreal_n")["tier_reason"]),
+      and _row("wreal_n")["tier"] == "Assigned" and "tracks it too" in str(_row("wreal_n")["tier_reason"])
+      and CU.SPLIT_OPEN_NOTE in str(_row("wreal_n")["tier_reason"])
+      and "capped" not in str(_row("wreal_n")["tier_reason"]),
       _row("wreal_n").to_dict())
 check("amine 3way: parent ABSENT from TS -> protonated CHON, tier kept",
       _row("abs_n")["adduct"] == "[M+H]+" and _row("abs_n")["neutral_formula"] == "C4H7NO"
@@ -336,11 +338,14 @@ ledu = pd.DataFrame([
     dict(peak_id="cho", neutral_formula="C10H16O3", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
     dict(peak_id="si", neutral_formula="C8H24N2OSi2", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
 ])
-outu = CU.cap_implausible_urea_adducts(ledu, log=lambda *a: None)
+outu = CU.note_implausible_urea_adducts(ledu, log=lambda *a: None)
 _tu = dict(zip(ledu.peak_id, ledu.tier))
-check("urea cap: hydrocarbon and N2 neutrals capped Candidate; N1 amide, CHO and Si untouched",
-      _tu == {"hc": "Candidate", "n2": "Candidate", "n1": "Assigned", "cho": "Assigned", "si": "Assigned"}
-      and outu == {"capped": 2}, (_tu, outu))
+_nu = {p: CU.SPLIT_OPEN_NOTE in str(t) for p, t in zip(ledu.peak_id, ledu.tier_reason)}
+check("urea note: hydrocarbon and N2 neutrals noted (split open), every tier kept; N1 amide, CHO and Si untouched",
+      _tu == {"hc": "Assigned", "n2": "Assigned", "n1": "Assigned", "cho": "Assigned", "si": "Assigned"}
+      and _nu == {"hc": True, "n2": True, "n1": False, "cho": False, "si": False}
+      and "protonated C8H14+CH4N2O" in str(ledu.loc[0, "tier_reason"])
+      and outu == {"noted": 2}, (_tu, _nu, outu))
 
 # ---------- demote_unconfirmed_fluorine (F-monster curb) ----------
 ledf = pd.DataFrame([

@@ -698,7 +698,7 @@ every `[M+NH4]+` reading in the grid, in the engine's order:
    parent** is a positive fact -- for a multifunctional Y, and for a weak Y
    (≤ 1 O or ≤ 4 C) with ≥ 7 C and at least one O. A tracking weak Y with ≤ 6 C
    (`cleanup.AMINE_WEAK_TRACKED_MAX_C`), or a hydrocarbon, is kept but the split
-   stays open and the engine caps it Candidate (`cleanup.nh4_weak_tracked`): the
+   stays open, and the engine notes it with its tier kept (`cleanup.nh4_weak_tracked`): the
    source makes the amide / imine Y + NH3 from a small carbonyl, and that amide
    tracks the carbonyl by construction (MS2, 2026 chamber campaign: the tracked
    weak Y were NH4+ adducts 10:13 at ≤ 6 C and 9:1 at ≥ 7 C, the one wrong a

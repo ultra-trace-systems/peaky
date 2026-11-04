@@ -40,7 +40,7 @@ from peaky.assignment import solvent_clusters as SC
 
 __version__ = "0.7.0"   # + the reagent-N re-read and the amine gate keep the tier (the same ion); reread_source;
                         #   the amine gate by oxygen count (a multifunctional X keeps its adduct, a tracking weak X
-                        #   is capped) and the urea-adduct cap on hydrocarbon / N-rich neutrals;
+                        #   is noted) and the urea-adduct note on hydrocarbon / N-rich neutrals (tiers kept);
                         #   the reagent-N re-read is no tentative_lead any more (its doubt is the split's: the note);
                         #   the isotope-gated recovery reads the candidate's own M+2 offset, and reclaim_satellites
                         #   holds a heteroatom line to the sweep's own-line test, on an Orbitrap-class run
@@ -2077,6 +2077,11 @@ def nh4_weak_neutral(X) -> bool:
 AMINE_WEAK_TRACKED_MAX_C = 6
 
 
+#: what the amine gate's tracking-weak keep and the urea-adduct note end with: the doubt is the
+#: split's (which neutral the ion is), so the tier stands
+SPLIT_OPEN_NOTE = "the split stays open, the tier reads the ion"
+
+
 def nh4_weak_tracked(X) -> bool:
     """A weak X (`nh4_weak_neutral`) whose tracking [M+NH4]+ trace still pins nothing: <= AMINE_WEAK_TRACKED_MAX_C
     C, or no O at all (a hydrocarbon has nothing to hold NH4+)."""
@@ -2102,8 +2107,9 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
       * KEEP as [M+NH4]+ adduct when it TRACKS a shaped parent (r >= r_min,
         overlap >= min_overlap) -- confirmed same molecule. A WEAK X that
         tracking cannot settle (`nh4_weak_tracked`: a weak X with <= 6 C, or
-        no O) is kept but capped Candidate: its source-made amide tracks the
-        carbonyl too, so tracking cannot tell the two apart.
+        no O) is kept with a note, its tier untouched: its source-made amide
+        tracks the carbonyl too, so tracking cannot tell the two apart -- the
+        same ion either way, so the doubt is the split's.
       * a multifunctional X (>= 2 O on >= 5 C) that is not confirmed stays the
         [M+NH4]+ adduct (tier unchanged): NH4+ adducts of such oxygenates are the
         rule, in NH4+ CIMS and on the Ur+ side channel alike (see AMINE_WEAK_*).
@@ -2137,9 +2143,9 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     keeps open (docs/EVIDENCE_LEVELS.md §6.5). Until 0.10 every re-read and every
     unconfirmed amine-impossible keep was capped at Candidate, which decided the
     tier per batch from a 2-h trace test and flipped one ion's tier from batch to
-    batch. The one cap left here is not a re-read: a tracking weak X kept as
-    [M+NH4]+ (`nh4_weak_tracked`) is capped Candidate. Mutates in place; returns
-    a summary."""
+    batch. Nothing here caps a tier: a tracking weak X kept as [M+NH4]+
+    (`nh4_weak_tracked`) carries a note that its split is open. Mutates in place;
+    returns a summary."""
     keys = ["relabeled", "kept_covary", "kept_protected", "kept_si", "forced_nh4",
             "kept_covary_weak", "kept_default"]
     if not {"neutral_formula", "adduct"} <= set(ledger.columns):
@@ -2150,10 +2156,6 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
 
     verdict = _covariation_verdict(ledger, ts_peaks, r_min, r_reject, min_overlap)
     counts = {k: 0 for k in keys}
-
-    def _cap_tier(i):
-        if "tier" in ledger.columns and str(ledger.at[i, "tier"]) == "Assigned":
-            ledger.at[i, "tier"] = "Candidate"
 
     def _reread(i, X, *, why):
         """DEFAULT reading for an unconfirmed [M+NH4]+ mass: read it as [M+H]+ of the
@@ -2196,9 +2198,8 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         v, r, ov = verdict(X)
         weak = nh4_weak_neutral(X)
         if v == "keep" and nh4_weak_tracked(X):           # tracks, but so would its source-made amide
-            _cap_tier(i)
             _note(ledger, i, f"[M+NH4]+ tracks parent (r={r:.2f}), but {X} is small or "
-                  f"mono-oxygenated: its amide {X}+NH3 [M+H]+ tracks it too; capped Candidate")
+                  f"mono-oxygenated: its amide {X}+NH3 [M+H]+ tracks it too; {SPLIT_OPEN_NOTE}")
             counts["kept_covary_weak"] += 1
             continue
         if v == "keep":                                   # tracks a shaped parent -> real adduct
@@ -2218,14 +2219,14 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     mode = "co-variation" if ts_peaks is not None else "presence"
     log(f"[uronium-amine] ({mode}) default->CHON: {counts['relabeled']} read as "
         f"protonated CHON (tier kept); {counts['kept_covary']} kept as [M+NH4]+ adduct "
-        f"(tracks parent) + {counts['kept_covary_weak']} tracking but weak (capped Candidate); "
+        f"(tracks parent) + {counts['kept_covary_weak']} tracking but weak (noted, tier kept); "
         f"{counts['kept_default']} multifunctional oxygenates kept as [M+NH4]+ by default; "
         f"{counts['kept_protected']} protected + {counts['kept_si']} Si "
         f"kept; {counts['forced_nh4']} amine-impossible kept-NH4")
     return counts
 
 
-def cap_implausible_urea_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
+def note_implausible_urea_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     """Positive urea-CIMS: an [M+(CH4N2O)H]+ reading of X is the same ion as
     [M+H]+ of X+urea, so the isotopes cannot separate them. Two kinds of X make
     the adduct the weaker reading -- a pure hydrocarbon (no heteroatom to hold
@@ -2234,27 +2235,30 @@ def cap_implausible_urea_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     neutral, whose X+urea is a protonated N4 compound as often). MS2 on a 2026 chamber
     campaign's Ur+ composite: [C8H14+UrH]+ was C9H18N2O [M+H]+, [C2H6N2O+UrH]+ was
     C3H10N4O2 [M+H]+; the N1 amide adducts (C3H7NO, C5H9NO ...) were right.
-    Such rows keep the reading and are capped Candidate. Mutates in place."""
-    out = {"capped": 0}
+    The doubt is which neutral the ion is -- the split -- not whether the ion is
+    right (the tier answers that), so such rows keep their reading and their
+    tier and carry a note (SPLIT_OPEN_NOTE); the evidence level keeps the split
+    open. Until the merge of the ion-level tiers this capped them Candidate.
+    Mutates in place."""
+    out = {"noted": 0}
     if not {"neutral_formula", "adduct", "tier"} <= set(ledger.columns):
         return out
     is_m0 = (ledger["role"] == L.ROLE_M0) if "role" in ledger.columns \
         else pd.Series(True, index=ledger.index)
     for i in ledger.index[is_m0 & (ledger["adduct"] == "[M+(CH4N2O)H]+")]:
         X = str(ledger.at[i, "neutral_formula"] or "")
-        if not X or X == "nan" or str(ledger.at[i, "tier"]) != "Assigned":
+        if not X or X == "nan":
             continue
         cnt = C.parse_formula(X)
         hydrocarbon = set(cnt) <= {"C", "H"}
         n_rich = cnt.get("N", 0) >= 2
         if not (hydrocarbon or n_rich) or cnt.get("Si"):
             continue
-        ledger.at[i, "tier"] = "Candidate"
         _note(ledger, i, f"urea adduct of {'a hydrocarbon' if hydrocarbon else 'an N-rich neutral'} "
-              f"{X}: the same ion as protonated {X}+CH4N2O; capped Candidate")
-        out["capped"] += 1
-    if out["capped"]:
-        log(f"[urea-adduct] {out['capped']} urea adducts of hydrocarbon / N-rich neutrals capped Candidate")
+              f"{X}: the same ion as protonated {X}+CH4N2O; {SPLIT_OPEN_NOTE}")
+        out["noted"] += 1
+    if out["noted"]:
+        log(f"[urea-adduct] {out['noted']} urea adducts of hydrocarbon / N-rich neutrals noted (split open, tier kept)")
     return out
 
 

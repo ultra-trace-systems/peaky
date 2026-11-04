@@ -589,16 +589,17 @@ selected sample_ids (SAMPLING.md)
      (0.6))` re-reads an uncorroborated `[M+NH4]⁺` of a **weak** X (≤ 1 O or
      ≤ 4 C: a small or mono-oxygenated carbonyl, whose source-made amide is the
      same ion) as `[M+H]⁺` of the `+NH3` amine unless the adduct's trace tracks
-     its parent; a weak X that tracks keeps the reading capped Candidate (the
-     amide tracks too) when it has ≤ 6 C or no O (`nh4_weak_tracked`; a tracking
-     mono-oxygenate of ≥ 7 C is confirmed), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
+     its parent; a weak X that tracks keeps the reading and its tier with a note
+     that the split is open (the amide tracks too) when it has ≤ 6 C or no O
+     (`nh4_weak_tracked`; a tracking mono-oxygenate of ≥ 7 C is confirmed), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
      adduct reading by default -- except on a side channel (uronium), where X's
      parent channels absent from the time series still refute the adduct
      (`nh4_main`: `[M+NH4]⁺` is the profile's own adduct) — done at the
      **merged** level where cross-channel corroboration is complete.
-   - `cleanup.cap_implausible_urea_adducts(merged)` caps Candidate an Assigned
+   - `cleanup.note_implausible_urea_adducts(merged)` notes an
      `[M+(CH4N2O)H]⁺` of a pure hydrocarbon or of an X with ≥ 2 N (the same ion
-     as protonated X + urea).
+     as protonated X + urea): the split is open, the reading and its tier stand
+     (`merge_gates.urea.noted`).
    Both re-reads (the reagent-N re-read and the amine gate's) are the **same ion**
    as the reading they replace, so they move the label only: the row keeps the
    tier the vote gave the ion (until 0.10 both set it to Candidate, so one ion's
@@ -606,8 +607,10 @@ selected sample_ids (SAMPLING.md)
    Which neutral the ion is stays open, and the evidence level says so: the
    re-read row takes the level of the pooled pair it replaced (4b, the split
    open; 5a where that pair left a competitor),
-   [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2. The two caps above are not
-   re-reads: they keep the reading and cap its tier.
+   [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2. The tracking-weak keep and
+   the urea-adduct note are not re-reads: they keep the reading and its tier and
+   say that the split is open (the evidence level decides it). None of the
+   three positive-mode gates caps a tier.
    `batch_summary.json["merge_gates"]` records the gates' counts beside the
    known-species decision's.
    After the label twins are measured (15N-labelled nitrate),
