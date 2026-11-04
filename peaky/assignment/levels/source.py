@@ -39,7 +39,7 @@ MODES = ("run", "adapted", "strict")
 # the pair-fact columns of the pooled facts table read as booleans / texts (NaN-safe)
 BOOL_COLS = ["iso", "multiline", "carbon_ev", "chan2", "anchor", "branch", "reagent_only_iso", "ion_only", "tied",
              "below", "lead", "lead_lift", "lowconf", "saturated", "res_ok", "corroborated", "upair", "label_untie",
-             "label_veto", "iso_veto", "cross", "neutral_backed"]
+             "label_veto", "iso_veto", "cross", "neutral_backed", "f_ladder_lift"]
 STR_COLS = ["known_fam", "multiline_elements", "resolvability", "reagent_halogen", "label_note", "iso_note",
             "lock_note", "iso_labels", "neutral_formula", "adduct", "ion"]
 # the B-series LEVEL columns of the facts table: never part of the scale's output

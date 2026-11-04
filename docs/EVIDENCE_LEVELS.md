@@ -402,7 +402,12 @@ whole run.
   ASSIGNMENT_DETAIL §4.2 / §5.6). A ladder its own 13C line or the 14N twin of
   its 15N alias refutes keeps the flag, and its refusal note (`does not lift the
   refusal: ...`) is a second setter, `refuted fluorine ladder`: the reading is
-  refuted, not only unconfirmed, so it is 5b.
+  refuted, not only unconfirmed, so it is 5b. A ladder that lifts the refusal
+  but is not full (fewer than three committed members, or an untested 15N
+  alias: the reading stays Candidate, `... not refused, but Candidate ...`)
+  leaves the F count unconfirmed too: the pair fact `f_ladder_lift` (any file)
+  adds the ceiling reason `fluorine ladder incomplete`, so such a pair reads at
+  most 5a with the fluorine ceiling's text, and anchors nothing.
 
 ## 5. Step 1 — the ion formula → else 5a
 

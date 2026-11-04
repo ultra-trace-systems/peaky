@@ -190,6 +190,8 @@ def rejections(row: dict, below: dict) -> tuple[list[str], bool]:
         else:
             # a below flag no setter explains is rejected too (as built)
             out.append("below: " + (" & ".join(setters) if setters else "setter not found"))
+    if on(row.get("f_ladder_lift")):
+        out.append(DC.FLUORINE_LADDER_REASON)      # a lifted, not full, CF2 ladder: the fluorine 5a ceiling
     if on(row.get("committed_contradicted")):
         out.append("own isotopes: " + txt(row.get("committed_reasons"))[:OWN_REASONS_MAX])
     return out, o11
@@ -520,7 +522,7 @@ def lowconf_alone(rejected) -> bool:
 
 def ceiling_why(rejected) -> str:
     """The 5a ceiling's text: the fluorine one when unconfirmed fluorine is among the reasons."""
-    return DC.FLUORINE_CEILING_WHY if DC.FLUORINE_REASON in (rejected or []) else DC.LOWCONF_CEILING_WHY
+    return DC.FLUORINE_CEILING_WHY if DC.FLUORINE_CEILINGS & set(rejected or []) else DC.LOWCONF_CEILING_WHY
 
 
 def level_of(f: dict) -> str:

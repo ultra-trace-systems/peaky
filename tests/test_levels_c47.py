@@ -160,3 +160,40 @@ class TestFluorineCeiling:
         assert TD._one(dict(TD.ACID, below=True), below={K: dict(setters=setters)}).evidence_level == "5b"
         assert TD._one(dict(TD.ACID, below=True),
                        below={K: dict(setters=["unconfirmed fluorine"])}).evidence_level == "5a"
+
+    def test_a_lifted_but_incomplete_cf2_ladder_takes_the_fluorine_ceiling(self):
+        """A CF2 ladder that lifts the fluorine refusal but has fewer than 3 committed members
+        keeps the reading at Candidate with the lift note: its F count is not confirmed, so the
+        evidence scale reads it at main's fluorine 5a ceiling (the stricter outcome where the
+        ladder admits the reading). A full ladder's note does not; nor does the bare fact off."""
+        import sys
+        from pathlib import Path
+        import test_fluorine as TF
+        from peaky.assignment import cleanup as CL
+        from peaky.assignment import evidence as EV
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import level_ledger as LLG
+        led = TF._ledger(TF.SERIES, {"C6H5F7O2"})                    # one committed member: lifted, not full
+        TF.T.apply_tiers(led, cfg=TF._cfg())
+        led.loc[led["peak_id"] == "C6H5F7O2", "tier"] = "Assigned"
+        CL.demote_unconfirmed_fluorine(led, cfg=TF._cfg(), log=lambda *a: None)
+        assert not bool(TF._row(led, "C6H5F7O2")["below_assignability"])          # not refused
+        held = EV.trim(led).set_index("peak_id")[EV.LADDER_HELD]
+        assert bool(held["C6H5F7O2"])
+        facts = EV._measure(EV.trim(led).assign(__file="s01"), halogen=None).set_index("neutral_formula")
+        assert bool(facts.loc["C6H5F7O2", "f_ladder_lift"])                      # the pair fact the scale reads
+        full = TF._ledger(TF.SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"})       # a full ladder
+        TF.T.apply_tiers(full, cfg=TF._cfg())
+        CL.demote_unconfirmed_fluorine(full, cfg=TF._cfg(), log=lambda *a: None)
+        assert not EV.ladder_held(full).any()
+        base = TD._one(dict(TD.ACID))
+        assert base.evidence_level != "5a"
+        r = TD._one(dict(TD.ACID, f_ladder_lift=True))
+        assert r.evidence_level == "5a" and r.would_lift == DC.FLUORINE_CEILING_WHY
+        assert "fluorine 5a ceiling" in r.tag_kinds.split("|")
+        # beside another rejection it is still refuted
+        assert TD._one(dict(TD.ACID, f_ladder_lift=True, iso_veto=True)).evidence_level == "5b"
+        # the executable reference reads the same fact the same way
+        rej, _o11 = LLG.rejections({"f_ladder_lift": True}, {})
+        assert rej == [DC.FLUORINE_LADDER_REASON] and LLG.lowconf_alone(rej)
+        assert LLG.ceiling_why(rej) == DC.FLUORINE_CEILING_WHY

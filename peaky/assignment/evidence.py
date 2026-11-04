@@ -153,6 +153,26 @@ PREDICATE_COLUMNS = (
 SERIES_HELD = "series_held"
 
 
+#: the row's fluorine is read off a CF2 ladder that is lifted but not full (fluorine.LIFT_HELD_MARK in
+#: its tier_reason or commentary): the reading is not refused, but its F count is not confirmed --
+#: the evidence scale's fluorine 5a ceiling applies (levels.decide.FLUORINE_LADDER_REASON). `trim`
+#: carries it as this flag
+LADDER_HELD = "fl_ladder_held"
+
+
+def ladder_held(frame: pd.DataFrame) -> pd.Series:
+    """Per row: its fluorine rests on a CF2 ladder that lifted the refusal but is not full.
+    Read off the LADDER_HELD flag a `trim` frame carries, else off the tier_reason /
+    commentary text (fluorine.LIFT_HELD_MARK); False where none is present."""
+    if LADDER_HELD in frame.columns:
+        return frame[LADDER_HELD].map(truthy).astype(bool)
+    out = pd.Series(False, index=frame.index, dtype=bool)
+    for c in ("tier_reason", "commentary"):
+        if c in frame.columns:
+            out |= frame[c].astype(str).str.contains(FL.LIFT_HELD_MARK, regex=False)
+    return out
+
+
 def series_held(frame: pd.DataFrame) -> pd.Series:
     """Per row: the tier stage withheld its series credit (the `anchor` axis
     does not count it). Read off the SERIES_HELD flag a `trim` frame carries,
@@ -612,6 +632,7 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
     m0["__flagged"] = m0["__below"] | m0["__lead"]
     m0["__lead_by"] = m0["lead_by"].map(lead_setters)
     m0["__lowconf"] = m0["confidence"].map(first_word).isin(LOW_CONFIDENCE)
+    m0["__fl_held"] = ladder_held(m0)
     m0["__deg"] = pd.to_numeric(m0["degeneracy_density"], errors="coerce")
     m0["__sat"] = m0["degeneracy_note"].astype(str).str.contains("MASS-SATURATED", regex=False)
     # a series step or ladder anchor, unless the tier stage withheld its credit
@@ -691,6 +712,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
             lead_lift=lifted,
             lock_note=str(spec.get("note", "") or "") if lifted else "",
             lowconf=bool(g["__lowconf"].all()),
+            # its fluorine rests on a lifted, not full, CF2 ladder in some file (the 5a ceiling)
+            f_ladder_lift=bool(g["__fl_held"].any()),
             degeneracy=float(g["__deg"].median()) if g["__deg"].notna().any() else np.nan,
             saturated=bool(g["__sat"].any()),
             # resolvability is measured on the trace-first path only; a source
@@ -1006,6 +1029,9 @@ def trim(ledger: pd.DataFrame) -> pd.DataFrame:
     held = series_held(keep)
     if held.any():
         out[SERIES_HELD] = held.to_numpy()
+    lad = ladder_held(keep)
+    if lad.any():
+        out[LADDER_HELD] = lad.to_numpy()
     return out
 
 

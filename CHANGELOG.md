@@ -327,7 +327,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   evidence scale reads alone as the fluorine 5a ceiling, not a rejection (see "Unconfirmed
   fluorine is a 5a ceiling" above); a reading whose ladder a line refutes is refuted, not only
   unconfirmed: its refusal note is a second below-assignability setter (`refuted fluorine
-  ladder`), so it stays 5b.
+  ladder`), so it stays 5b; a reading whose ladder lifts the refusal but is not full (fewer than 3
+  committed members, or an untested 15N alias; Candidate) takes the same 5a ceiling (`fluorine ladder
+  incomplete`, the pair fact `f_ladder_lift`).
 
 ### Added
 

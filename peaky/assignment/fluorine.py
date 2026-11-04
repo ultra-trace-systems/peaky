@@ -435,6 +435,13 @@ def verdicts(ledger: pd.DataFrame, *, cfg=None) -> dict:
     return out
 
 
+#: what every lift_note of a ladder that is NOT full says: the reading is not refused, but held at
+#: Candidate (fewer than LADDER_MIN_COMMITTED committed members, or an untested 15N alias). The
+#: evidence scale reads such a reading's fluorine as unconfirmed: main's 5a ceiling applies
+#: (levels.decide.FLUORINE_LADDER_REASON, evidence.LADDER_HELD)
+LIFT_HELD_MARK = "a fluorinated homologous series, not refused, but Candidate"
+
+
 def lift_note(v: Ladder) -> str:
     """The commentary / reason a lifted reading carries."""
     if v.full:

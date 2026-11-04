@@ -216,7 +216,12 @@ LOWCONF_CEILING_WHY = ("engine confidence Low/Suspect in every file: not establi
 FLUORINE_REASON = "below: unconfirmed fluorine"
 FLUORINE_CEILING_WHY = ("fluorine count unconfirmable in MS1 (19F has no isotope line): not established "
                         "(5a ceiling), not refuted")
-CEILING_REASONS = frozenset({LOWCONF_REASON, FLUORINE_REASON})
+#  * so is fluorine read off a CF2 ladder that lifted the refusal but is not full (fewer than 3 committed
+#    members, or an untested 15N alias: the reading stays Candidate, its F count unconfirmed) -- the
+#    stricter outcome where the ladder admits the reading and the ceiling governs its level
+FLUORINE_LADDER_REASON = "fluorine ladder incomplete"
+CEILING_REASONS = frozenset({LOWCONF_REASON, FLUORINE_REASON, FLUORINE_LADDER_REASON})
+FLUORINE_CEILINGS = frozenset({FLUORINE_REASON, FLUORINE_LADDER_REASON})
 LEAD_RESCUE_SETTER = "reflist_dim"
 LIFT_3C_WITHHELD = ("3c withheld: the named entry is on the list that rescued this reading -- an independent named "
                     "list, or MS2 / standards")
@@ -254,6 +259,8 @@ def inpass(S: Prepared, partners=None) -> dict:
             else:
                 # a below flag no setter text explains is rejected too (as built; see BACKLOG)
                 b.append("below: " + (" & ".join(sets) if sets else "setter not found"))
+        if _b(getattr(r, "f_ladder_lift", False)):
+            b.append(FLUORINE_LADDER_REASON)
         if _b(r.committed_contradicted):
             b.append("own isotopes: " + _txt(r.committed_reasons)[:160])
         rej.append(b)
@@ -284,7 +291,8 @@ def inpass(S: Prepared, partners=None) -> dict:
     # fluorine alone, with or without lowconf
     ceiling_only = np.array([bool(x) and all(y in CEILING_REASONS for y in x) for x in rej], dtype=bool)
     lowconf_only = np.array([bool(x) and all(y == LOWCONF_REASON for y in x) for x in rej], dtype=bool)
-    fluorine_ceiling = np.array([bool(c) and FLUORINE_REASON in x for c, x in zip(ceiling_only, rej)], dtype=bool)
+    fluorine_ceiling = np.array([bool(c) and bool(FLUORINE_CEILINGS & set(x)) for c, x in zip(ceiling_only, rej)],
+                                dtype=bool)
     # ---- routes (in-pass anchors; tags in the record) ----
     rejected_mask = np.array([bool(x) for x in rej], dtype=bool)
     nonrej = ~rejected_mask & ~no_info & np.array([not x for x in reag], dtype=bool)
