@@ -267,3 +267,14 @@ def test_a_large_table_is_written_gzip(tmp_path, monkeypatch):
     assert len(pd.read_csv(p)) == 200
     monkeypatch.setattr(UN, "GZIP_OVER_BYTES", 10 ** 9)
     assert UN.write(t, str(tmp_path)).endswith("unidentified.csv")
+
+
+def test_a_dropped_row_the_per_file_rewrite_released_is_still_vote_dropped():
+    xmz = 245.0301
+    leds = {"f1": _ledger("f1", extra_m0=("f1x", xmz, "C9H10O7", "[M-H]-", "Assigned"))}
+    drops = pd.DataFrame([dict(file="f1", peak_id="f1x", mz=xmz, neutral_formula="C9H10O7", adduct="[M-H]-",
+                               tier_in="Assigned", reason="element-signature removal (C9H10O7 [M-H]-)")])
+    L.clear_assignment(leds["f1"], "f1x", reason="batch element-signature removal")
+    assert leds["f1"].loc[leds["f1"]["peak_id"] == "f1x", "role"].iloc[0] == L.ROLE_UNEXPLAINED
+    t = UN.build(leds, STATS, _merged((PMZ, *PAR, "Assigned")), drops=drops, tol_ppm=6.0)
+    assert len(t) == 1 and t.iloc[0]["why"] == "vote_dropped"

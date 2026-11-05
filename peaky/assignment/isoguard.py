@@ -192,6 +192,42 @@ def guard_ledger(ledger: pd.DataFrame, pairs: pd.DataFrame | None, *, log=print)
             "rows": [{k: v for k, v in h.items() if k != "index"} for h in hits]}
 
 
+def merged_notes(merged: pd.DataFrame, ledgers: dict, *, log=print) -> int:
+    """Say the per-file guard on the merged row: a merged reading whose per-file
+    M0 rows (the files in its ``srcs``, the same neutral and adduct) carry the
+    guard's note in k of its n files gets ``isotope contradiction in k of n
+    file(s): <the first file's fact>`` -- the vote reads the guarded tiers but
+    carries no per-file note, so a reading every file's guard held would sit at
+    Candidate with no reason. A note only; returns the rows noted."""
+    from peaky.assignment import cleanup as CU
+    if merged is None or not len(merged) or not ledgers or "srcs" not in merged.columns:
+        return 0
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    idx = {}
+    for sid, led in ledgers.items():
+        if led is None or not len(led) or "tier_reason" not in led.columns:
+            continue
+        m = led[(led["role"].astype(str) == "M0")
+                & led["tier_reason"].astype(str).str.contains(NOTE_MARK + ":", regex=False)]
+        for n, a, tr in zip(m["neutral_formula"].astype(str), m["adduct"].astype(str), m["tier_reason"].astype(str)):
+            fact = tr[tr.index(NOTE_MARK + ":") + len(NOTE_MARK) + 2:].split(" | ")[0]
+            idx.setdefault((str(sid), n, a), fact)
+    if not idx:
+        return 0
+    noted = 0
+    for i in merged.index:
+        srcs = [x for x in _txt(merged.at[i, "srcs"]).split(",") if x]
+        n, a = str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"])
+        facts = [idx[(s, n, a)] for s in srcs if (s, n, a) in idx]
+        if facts:
+            CU._note(merged, i, f"{NOTE_MARK} in {len(facts)} of {len(srcs)} file(s): {facts[0]}")
+            noted += 1
+    if noted:
+        log(f"[isotope_guard] merged: {noted} row(s) carry the per-file guard's note")
+    return noted
+
+
 def guard_merged(merged: pd.DataFrame, levels: pd.DataFrame | None, *, log=print) -> dict:
     """The merge-side guard: every Assigned merged row whose POOLED pair
     (`evidence.level_batch`) carries a guard fact is Candidate with the note.

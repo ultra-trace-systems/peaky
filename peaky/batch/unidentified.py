@@ -412,7 +412,9 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
                         explained = False
                 if not explained:
                     kind = "orphan_iso_child" if r == "iso_child" else "orphan_artifact"
-            elif r == "M0" and (str(sid), str(pids[j])) in dropped:
+            if (str(sid), str(pids[j])) in dropped and (r == "M0" or kind == "unexplained"):
+                # an M0 row the merge dropped -- still M0, or released to unexplained by the
+                # batch's per-file rewrite (an isotope child of an Assigned parent stays explained)
                 kind = "vote_dropped"
             if kind is None or not np.isfinite(f.mz[j]):
                 continue

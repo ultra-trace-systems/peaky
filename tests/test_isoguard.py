@@ -189,3 +189,18 @@ def test_no_facts_change_nothing(frame):
     s = IG.guard_ledger(led, frame, log=lambda *a: None)
     assert s["demoted"] == 0
     pd.testing.assert_frame_equal(led, before)
+
+
+def test_the_merged_row_says_what_the_per_file_guard_held():
+    led1 = _ledger(c13_count=6.0, snr13=40.0)
+    _guarded(led1)
+    led2 = _ledger(c13_count=10.0, snr13=40.0)
+    _guarded(led2)
+    merged = pd.DataFrame([dict(mz=199.0976, neutral_formula="C10H16O4", adduct="[M-H]-", tier="Assigned",
+                                tier_reason=pd.NA, srcs="f1,f2"),
+                           dict(mz=213.0768, neutral_formula="C10H14O5", adduct="[M-H]-", tier="Assigned",
+                                tier_reason=pd.NA, srcs="f1")])
+    assert IG.merged_notes(merged, {"f1": led1, "f2": led2}, log=lambda *a: None) == 1
+    t = str(merged.at[0, "tier_reason"])
+    assert t.startswith("isotope contradiction in 1 of 2 file(s): 13C reads ") and merged.at[0, "tier"] == "Assigned"
+    assert pd.isna(merged.at[1, "tier_reason"])

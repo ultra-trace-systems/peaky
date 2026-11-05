@@ -3647,8 +3647,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) is Candidate with
     # the note. The per-file guard (stage isotope_guard) already held the files' tiers
     # before the vote; this reads the facts of every file together
+    _ig_noted = _IG.merged_notes(merged, full_ledgers, log=log)
     merge_gates["isotope_guard"] = _IG.guard_merged(merged, levels, log=log)
     merge_gates["isotope_guard"]["rows"] = merge_gates["isotope_guard"]["rows"][:50]
+    merge_gates["isotope_guard"]["per_file_noted"] = int(_ig_noted)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",
