@@ -278,3 +278,27 @@ def test_a_dropped_row_the_per_file_rewrite_released_is_still_vote_dropped():
     assert leds["f1"].loc[leds["f1"]["peak_id"] == "f1x", "role"].iloc[0] == L.ROLE_UNEXPLAINED
     t = UN.build(leds, STATS, _merged((PMZ, *PAR, "Assigned")), drops=drops, tol_ppm=6.0)
     assert len(t) == 1 and t.iloc[0]["why"] == "vote_dropped"
+
+
+def test_with_the_votes_long_form_a_row_is_dropped_only_when_its_own_cluster_left():
+    """A cluster's mean can sit more than the window from a member at the end of a chain: the
+    long form (align's jitter) decides by the row's own cluster, not by distance."""
+    x1, x2, x3 = 300.0000, 300.0017, 300.0034          # a 5.7 ppm chain: one cluster at 6 ppm
+    leds = {"f1": _ledger("f1", extra_m0=("f1x", x1, "C14H28O5", "[M-H]-", "Assigned")),
+            "f2": _ledger("f2", extra_m0=("f2x", x2, "C14H28O5", "[M-H]-", "Assigned")),
+            "f3": _ledger("f3", extra_m0=("f3x", x3, "C14H28O5", "[M-H]-", "Assigned"))}
+    for s, x in zip(("f1", "f2", "f3"), (x1, x2, x3)):
+        leds[s].loc[leds[s]["peak_id"] == f"{s}x", "mz"] = x
+    merged, jitter = AB.align({s: AB._m0(led) for s, led in leds.items()}, tol_ppm=6.0)
+    row = merged[merged["neutral_formula"] == "C14H28O5"]
+    assert len(row) == 1
+    far = merged.copy()
+    far.loc[row.index, "mz"] = x1 - 0.003           # the survivor's m/z > 6 ppm from every member
+    d = UN.vote_drops(leds, None, far, UN.DropLog(), tol_ppm=6.0, jitter=jitter)
+    assert len(d) == 0                              # its cluster's row survived
+    assert len(UN.vote_drops(leds, None, far, UN.DropLog(), tol_ppm=6.0)) == 3   # the window rule alone
+    log = UN.DropLog()
+    after = merged.drop(index=row.index)
+    log.note(merged, after, "reagent-cluster strip")
+    d = UN.vote_drops(leds, None, after, log, tol_ppm=6.0, jitter=jitter)
+    assert sorted(d["peak_id"]) == ["f1x", "f2x", "f3x"] and set(d["reason"]) == {"reagent-cluster strip (C14H28O5 [M-H]-)"}

@@ -3481,7 +3481,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # below turns the stripped readings' rows into iso_child / unexplained rows
     try:
         vote_drop_table = _UN.vote_drops(full_ledgers, per_file, merged, drop_log,
-                                         tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets)
+                                         tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
+                                         jitter=jitter)
     except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
         log(f"[assign_batch] WARNING the vote-drop list was not built: {type(e).__name__}: {e}")
         vote_drop_table = _UN.empty_drops()

@@ -153,18 +153,50 @@ def _near(sorted_mz: np.ndarray, x: float, tol_ppm: float) -> int:
     return best if bd <= x * tol_ppm * 1e-6 else -1
 
 
+#: a removed merged row is its cluster's when their m/z agree to this many Da (the row's m/z IS the cluster mean)
+CLUSTER_MZ_DA = 1e-5
+
+
+def _cluster_index(jitter: pd.DataFrame | None, rem: list) -> tuple[dict, dict]:
+    """From the vote's long form (`align`'s jitter: cluster, src, mz -- every per-file row of every
+    cluster): {(src, m/z): cluster} and {cluster: the removal (``rem``) whose merged row it was}."""
+    if jitter is None or not len(jitter) or not {"cluster", "src", "mz"} <= set(jitter.columns):
+        return {}, {}
+    j = jitter[["cluster", "src", "mz"]].copy()
+    j["mz"] = pd.to_numeric(j["mz"], errors="coerce")
+    where = {(str(s), round(float(m), 7)): int(c) for c, s, m in zip(j["cluster"], j["src"], j["mz"]) if np.isfinite(m)}
+    means = j.groupby("cluster")["mz"].mean()
+    rmz = np.array([r["mz"] for r in rem], dtype=float)
+    o = np.argsort(rmz)
+    rs = rmz[o]
+    gone = {}
+    for c, m in means.items():
+        if not np.isfinite(m) or not len(rs):
+            continue
+        k = int(np.searchsorted(rs, m))
+        for q in (k - 1, k):
+            if 0 <= q < len(rs) and abs(rs[q] - m) <= CLUSTER_MZ_DA:
+                gone[int(c)] = rem[int(o[q])]
+                break
+    return where, gone
+
+
 def vote_drops(full_ledgers: dict, align_input: dict, merged: pd.DataFrame, log: DropLog | None, *,
-               tol_ppm: float, offsets: dict | None = None) -> pd.DataFrame:
-    """The per-file M0 rows (``full_ledgers``) with no row of ``merged`` within
-    ``tol_ppm`` of their offset-corrected m/z: reason = the gate whose removal
-    (``log``) sits nearest within the window, ``REASON_SCOPE`` for a row the
+               tol_ppm: float, offsets: dict | None = None, jitter: pd.DataFrame | None = None) -> pd.DataFrame:
+    """The per-file M0 rows (``full_ledgers``) the merge dropped. With the vote's
+    long form (``jitter``: align's cluster of every per-file row) a row is dropped
+    when the merged row of ITS cluster is one a gate removed (``log``), reason =
+    that gate and the removed reading; without it (or for a row the long form does
+    not hold), when no row of ``merged`` lies within ``tol_ppm`` of its m/z, reason
+    = the removal nearest within the window, else ``REASON_UNRECORDED``. A row the
     trace-first scope kept out of the vote (``align_input`` = the vote's input
-    frames, indexed as the ledgers), else ``REASON_UNRECORDED``."""
+    frames, indexed as the ledgers) is ``REASON_SCOPE``."""
     offsets = offsets or {}
     mm = np.sort(pd.to_numeric(merged["mz"], errors="coerce").dropna().to_numpy(float)) \
         if merged is not None and len(merged) else np.array([])
     rem = sorted((log.removed if log is not None else []), key=lambda r: r["mz"])
     rmz = np.array([r["mz"] for r in rem], dtype=float)
+    where, gone = _cluster_index(jitter, rem)
     rows = []
     for sid in sorted(full_ledgers, key=str):
         led = full_ledgers[sid]
@@ -178,9 +210,16 @@ def vote_drops(full_ledgers: dict, align_input: dict, merged: pd.DataFrame, log:
         mz = pd.to_numeric(m0["mz"], errors="coerce").to_numpy(float)
         adj = _adj(mz, offsets.get(sid))
         for i, x_raw, x in zip(m0.index, mz, adj):
-            if not np.isfinite(x) or _near(mm, x_raw, tol_ppm) >= 0 or _near(mm, x, tol_ppm) >= 0:
+            if not np.isfinite(x):
                 continue
-            if i not in voted:
+            c = where.get((str(sid), round(float(x_raw), 7))) if i in voted else None
+            if c is not None:
+                if c not in gone:
+                    continue          # its cluster's merged row survived (wherever its mean sits)
+                why = f"{gone[c]['gate']} ({gone[c]['neutral_formula']} {gone[c]['adduct']})"
+            elif _near(mm, x_raw, tol_ppm) >= 0 or _near(mm, x, tol_ppm) >= 0:
+                continue
+            elif i not in voted:
                 why = REASON_SCOPE
             else:
                 k = _near(rmz, x, tol_ppm)
