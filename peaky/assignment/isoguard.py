@@ -52,12 +52,25 @@ import re
 
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # + the reliability gate (a file / batch whose own 13C counts fail its reference rows
+#                        demotes nothing: `reliability`, GATE_MIN_AGREE / GATE_MIN_REF)
 
 #: a stats record keeps at most this many of the demoted rows (the counts are complete)
 ROWS_KEPT = 50
 #: the note's lead words (tier_reason; `cleanup._note` joins notes with ' | ')
 NOTE_MARK = "isotope contradiction"
+#: THE RELIABILITY GATE. A file's (a batch's) isotope facts may touch a tier only when the file proves its own
+#: 13C count trustworthy: on its REFERENCE rows -- M0 rows Assigned before the guard, engine confidence High /
+#: Good (per file; the merged rows carry none), carbon in the ion, a 13C count the levels tested (they count it
+#: only where the line's predicted S/N >= 10) -- at least GATE_MIN_AGREE of the counts agree with the formula
+#: within the levels' band, over at least GATE_MIN_REF such rows. Otherwise the guard records
+#: `facts_unreliable` with the agreement and demotes nothing there (the levels keep the facts as before).
+#: Measured (M1 report §12): 1-microscan Orbitrap files whose isotope lines under-respond at low ion counts
+#: agree on 0.22-0.27 of their reference rows, a 100-microscan replicate of the same air on 0.98-1.00, field
+#: uronium / nitrate files on >= 0.96 (every levelled file of a 12-batch field arm); three nitrate sentinels of
+#: other chamber studies 0.52-0.79
+GATE_MIN_AGREE = 0.9
+GATE_MIN_REF = 10
 #: the isotope lines whose absence / unexplained presence binds the tier
 GUARD_LABELS = {"34S": "S", "37Cl": "Cl"}
 
@@ -181,6 +194,40 @@ def _kinds(hits: list[dict]) -> dict:
     return out
 
 
+def _tested_c13(text) -> str | None:
+    """'agree' / 'contradict' for a pair's `committed_c13` (the levels' carbon_test text), None when the
+    count was not tested (empty) or the reading has no carbon ('C for 0')."""
+    t = _txt(text)
+    if not t.startswith("13C reads") or " C for 0" in t:
+        return None
+    return "contradict" if "(tol" in t else "agree"
+
+
+def reliability(rows: pd.DataFrame, pairs: pd.DataFrame | None, *, confidence: bool = True) -> dict:
+    """The gate's measurement on the reference rows (module note) of ``rows`` (a per-file ledger, or the merged
+    ledger with ``confidence=False``) against the levels' pair frame ``pairs``: {n_ref, n_agree, agreement,
+    reliable}."""
+    out = {"n_ref": 0, "n_agree": 0, "agreement": None, "reliable": False}
+    if rows is None or not len(rows) or pairs is None or not len(pairs) or "committed_c13" not in pairs.columns:
+        return out
+    c13 = dict(zip(zip(pairs["neutral_formula"].astype(str), pairs["adduct"].astype(str)), pairs["committed_c13"]))
+    m = rows["tier"].astype(str) == "Assigned"
+    if "role" in rows.columns:
+        m &= rows["role"].astype(str) == "M0"
+    if confidence and "confidence" in rows.columns:
+        m &= rows["confidence"].astype(str).str.startswith(("High", "Good"))
+    n = a = 0
+    for nf, ad in zip(rows.loc[m, "neutral_formula"].astype(str), rows.loc[m, "adduct"].astype(str)):
+        v = _tested_c13(c13.get((nf, ad)))
+        if v is None:
+            continue
+        n += 1
+        a += v == "agree"
+    out.update(n_ref=n, n_agree=a, agreement=round(a / n, 4) if n else None,
+               reliable=bool(n >= GATE_MIN_REF and a / n >= GATE_MIN_AGREE))
+    return out
+
+
 def guard_ledger(ledger: pd.DataFrame, pairs: pd.DataFrame | None, *, log=print) -> dict:
     """The per-file guard (stage `isotope_guard`): every Assigned M0 row whose
     pair carries a guard fact in ``pairs`` (the file's own levels, the frame
@@ -190,12 +237,22 @@ def guard_ledger(ledger: pd.DataFrame, pairs: pd.DataFrame | None, *, log=print)
         return {"tested": 0, "demoted": 0, "by_fact": _kinds([]), "rows": []}
     facts = pair_facts(pairs)
     m = (ledger["role"].astype(str) == "M0") & (ledger["tier"].astype(str) == "Assigned")
+    gate = reliability(ledger, pairs) if facts else None
+    if gate is not None and not gate["reliable"]:
+        # the file's own 13C counts fail its reference rows: its facts touch no tier
+        log(f"[isotope_guard] facts unreliable: the 13C count agrees on {gate['n_agree']} of {gate['n_ref']} "
+            f"reference rows (needs >= {GATE_MIN_AGREE:.0%} of >= {GATE_MIN_REF}): nothing demoted")
+        return {"tested": int(m.sum()), "demoted": 0, "by_fact": _kinds([]), "rows": [], "facts_unreliable": True,
+                **{k: gate[k] for k in ("agreement", "n_ref", "n_agree")}}
     hits = _apply(ledger, ledger.index[m], facts) if facts else []
     if hits:
         log(f"[isotope_guard] {len(hits)} Assigned row(s) contradicted by their own isotope lines -> Candidate "
             f"({_kinds(hits)})")
-    return {"tested": int(m.sum()), "demoted": len(hits), "by_fact": _kinds(hits),
-            "rows": [{k: v for k, v in h.items() if k != "index"} for h in hits]}
+    rec = {"tested": int(m.sum()), "demoted": len(hits), "by_fact": _kinds(hits),
+           "rows": [{k: v for k, v in h.items() if k != "index"} for h in hits]}
+    if gate is not None:
+        rec.update(facts_unreliable=False, **{k: gate[k] for k in ("agreement", "n_ref", "n_agree")})
+    return rec
 
 
 def merged_notes(merged: pd.DataFrame, ledgers: dict, *, log=print) -> int:
@@ -246,9 +303,18 @@ def guard_merged(merged: pd.DataFrame, levels: pd.DataFrame | None, *, log=print
         merged["tier_reason"] = pd.NA
     facts = pair_facts(levels)
     m = merged["tier"].astype(str) == "Assigned"
+    gate = reliability(merged, levels, confidence=False) if facts else None
+    if gate is not None and not gate["reliable"]:
+        log(f"[isotope_guard] merged: pooled facts unreliable: the 13C count agrees on {gate['n_agree']} of "
+            f"{gate['n_ref']} Assigned rows (needs >= {GATE_MIN_AGREE:.0%} of >= {GATE_MIN_REF}): nothing demoted")
+        return {"tested": int(m.sum()), "demoted": 0, "by_fact": _kinds([]), "rows": [], "facts_unreliable": True,
+                **{k: gate[k] for k in ("agreement", "n_ref", "n_agree")}}
     hits = _apply(merged, merged.index[m], facts) if facts else []
     if hits:
         log(f"[isotope_guard] merged: {len(hits)} Assigned row(s) contradicted by the pooled isotope facts -> "
             f"Candidate ({_kinds(hits)})")
-    return {"tested": int(m.sum()), "demoted": len(hits), "by_fact": _kinds(hits),
-            "rows": [{k: v for k, v in h.items() if k != "index"} for h in hits]}
+    rec = {"tested": int(m.sum()), "demoted": len(hits), "by_fact": _kinds(hits),
+           "rows": [{k: v for k, v in h.items() if k != "index"} for h in hits]}
+    if gate is not None:
+        rec.update(facts_unreliable=False, **{k: gate[k] for k in ("agreement", "n_ref", "n_agree")})
+    return rec

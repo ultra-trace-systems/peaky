@@ -886,10 +886,10 @@ def test_the_pooled_guard_has_the_last_tier_word_after_the_re_tier():
     at["tier"] = pd.NA
     for c in ("degeneracy_density", "degeneracy_note"):
         at[c] = pd.Series([pd.NA] * len(at), dtype=object)
-    at.loc[at["role"] == "M0", "degeneracy_density"] = 5
-    base = T.compute_tiers(at, cal=None)
-    assert base["tier"].iloc[0] == "Candidate"
-    led.loc[led["role"] == "M0", ["tier", "tier_reason"]] = [base["tier"].iloc[0], base["tier_reason"].iloc[0]]
+    at.loc[at["peak_id"] == "A", "degeneracy_density"] = 5
+    base = T.compute_tiers(at, cal=None).set_index("peak_id")
+    assert base.at["A", "tier"] == "Candidate"
+    led.loc[led["peak_id"] == "A", ["tier", "tier_reason"]] = [base.at["A", "tier"], base.at["A", "tier_reason"]]
     out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
     row = led[led["role"] == "M0"].iloc[0]
     assert out["tiers"]["promoted"] == 1 and out["isotope_guard"]["demoted"] == 1

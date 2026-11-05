@@ -35,7 +35,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file the
   batch's pooled calibration re-levels is guarded on that level's facts (`calpool.apply_pool`). A line a merged row
   of another ion absorbed is a row of its own (`why = absorbed_by_merge`) where some file holds it as a separate pick
-  at least 1 HWHM (the batch's width model) from the merged row's own pick.
+  at least 1 HWHM (the batch's width model) from the merged row's own pick. The guard binds only in a file (a
+  batch) whose own 13C counts agree with their formulas on >= 90 % of >= 10 reference rows (High / Good Assigned
+  rows with a tested count); elsewhere it records `facts_unreliable` and demotes nothing (`isoguard.reliability`).
 
 - **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
   `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**

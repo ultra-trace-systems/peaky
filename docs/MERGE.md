@@ -793,8 +793,10 @@ selected sample_ids (SAMPLING.md)
    [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 -- is Candidate with the note
    `isotope contradiction: <fact>`. The per-file guard (stage `isotope_guard`)
    already held the files' tiers before the vote; this one reads every file's facts
-   together. Demote-only; `batch_summary.json["merge_gates"]["isotope_guard"]`
-   records `tested`, `demoted`, `by_fact` (`13C` / `absent` / `unexplained`) and
+   together. Demote-only, and only when the batch's pooled 13C counts pass the
+   reliability gate (ASSIGNMENT_DETAIL.md 5.9: >= 0.9 of >= 10 Assigned merged rows'
+   tested counts agree; else `facts_unreliable` with the agreement, nothing demoted);
+   `batch_summary.json["merge_gates"]["isotope_guard"]` records `tested`, `demoted`, `by_fact` (`13C` / `absent` / `unexplained`) and
    the first 50 `rows`.
 
 6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before

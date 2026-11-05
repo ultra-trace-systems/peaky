@@ -24,11 +24,19 @@ CAL = (0.0, 0.3)
 GATE = 100.0
 
 
-def _ledger(n="C10H16O4", a="[M-H]-", *, c13_count=10.0, snr13=40.0, s34=None, h0=2.0e5):
+#: the reference acids every test file carries (High confidence, Assigned, their own 13C line at their own
+#: count, predicted 13C S/N 40): the reliability gate's proof that the file's 13C count is trustworthy
+REF_ACIDS = [f"C{k}H{2 * k - 2}O4" for k in range(12, 24)]
+
+
+def _ledger(n="C10H16O4", a="[M-H]-", *, c13_count=10.0, snr13=40.0, s34=None, h0=2.0e5, refs=None,
+            ref_c13_x=1.0):
     """One committed M0 (Assigned) with its 13C line at the height of ``c13_count``
     carbons and, optionally, a 34S line at ``s34`` x the M0; the M0's server S/N
     makes the PREDICTED 13C line S/N (nC x R13C x S/N) equal ``snr13``. A floor of
-    faint unexplained peaks sets the file's edge."""
+    faint unexplained peaks sets the file's edge. ``refs``: the reference acids (default REF_ACIDS), each
+    with its 13C line at ``ref_c13_x`` x its own count (1.0: the file's 13C count is trustworthy)."""
+    refs = REF_ACIDS if refs is None else refs
     mz0 = C.ion_mz(n, a)
     nc = EV.count_element(n, "C")
     sn0 = snr13 / (nc * IC.R13C)
@@ -40,7 +48,20 @@ def _ledger(n="C10H16O4", a="[M-H]-", *, c13_count=10.0, snr13=40.0, s34=None, h
                          signal_to_noise=sn0 * s34))
     rows += [dict(peak_id=f"n{k}", mz=150.0 + 7.1 * k, height=60.0, area=60.0, signal_to_noise=1.0)
              for k in range(12)]
+    for k, rn in enumerate(refs):
+        rm = C.ion_mz(rn, "[M-H]-")
+        rc = EV.count_element(rn, "C")
+        rs = 40.0 / (rc * IC.R13C)
+        r1 = 1.0e5 * rc * ref_c13_x * IC.R13C * ((rm + 1.0) / rm) ** 1.5
+        rows += [dict(peak_id=f"R{k}", mz=rm, height=1.0e5, area=1.0e5, signal_to_noise=rs),
+                 dict(peak_id=f"R{k}c", mz=rm + ISO.D_13C_EXACT, height=r1, area=r1, signal_to_noise=rs * r1 / 1.0e5)]
     led = L.new_ledger(pd.DataFrame(rows))
+    for k, rn in enumerate(refs):
+        L.commit_assignment(led, f"R{k}", neutral_formula=rn, adduct="[M-H]-",
+                            ion_formula=C.format_formula(EV.ion_composition(rn, "[M-H]-", None)) + "-",
+                            ion_score=0.97, compound_score=0.96, ppm_error=0.0, pass_no=1, method="cheminfo",
+                            confidence="High", commentary="Pass 1")
+        L.attach_isotopologue(led, f"R{k}c", f"R{k}", iso_label="13C", iso_match_score=0.9)
     L.commit_assignment(led, "A", neutral_formula=n, adduct=a,
                         ion_formula=C.format_formula(EV.ion_composition(n, a, None)) + "-",
                         ion_score=0.97, compound_score=0.96, ppm_error=0.0, pass_no=1, method="cheminfo",
@@ -54,6 +75,11 @@ def _ledger(n="C10H16O4", a="[M-H]-", *, c13_count=10.0, snr13=40.0, s34=None, h
 def _inputs():
     return EV.file_run_inputs(sample_id="s1", reagent="NO3", context="ambient-air", resolution=ORBI,
                               height_gate_cps=GATE, degeneracy_cal=CAL)
+
+
+def _pair(pairs, row):
+    """The levels' pair record of a ledger row's reading."""
+    return pairs[(pairs["neutral_formula"] == row["neutral_formula"]) & (pairs["adduct"] == row["adduct"])].iloc[0]
 
 
 def _guarded(led):
@@ -71,7 +97,7 @@ def test_a_c10_reading_whose_own_13c_line_reads_c6_at_snr_40_is_candidate_with_t
     note = [x for x in str(row["tier_reason"]).split(" | ") if x.startswith(IG.NOTE_MARK)]
     assert len(note) == 1 and note[0].startswith("isotope contradiction: 13C reads ") and "C for 10" in note[0]
     # the fact is the levels' own (committed_reasons), not a second computation
-    assert note[0] == IG.note_text([pairs["committed_reasons"].iloc[0]])
+    assert note[0] == IG.note_text([_pair(pairs, row)["committed_reasons"]])
     # the reading and its level are untouched: only the tier moves
     assert row["neutral_formula"] == "C10H16O4" and row["evidence_level"] == "5b"
 
@@ -79,7 +105,7 @@ def test_a_c10_reading_whose_own_13c_line_reads_c6_at_snr_40_is_candidate_with_t
 def test_the_same_reading_at_a_predicted_13c_snr_of_5_is_untestable_and_untouched():
     row, s, pairs = _guarded(_ledger(c13_count=6.0, snr13=5.0))
     assert row["tier"] == "Assigned" and s["demoted"] == 0
-    assert IG.NOTE_MARK not in str(row["tier_reason"]) and not pairs["committed_reasons"].iloc[0]
+    assert IG.NOTE_MARK not in str(row["tier_reason"]) and not _pair(pairs, row)["committed_reasons"]
 
 
 def test_a_13c_count_inside_the_levels_band_stays_assigned():
@@ -175,8 +201,17 @@ def test_the_merged_guard_reads_the_pooled_facts_and_only_demotes():
                                 committed_reasons="18O (0.0103x) absent in 4/4 files"),
                            dict(neutral_formula="C10H14O6", adduct="[M-H]-",
                                 committed_reasons="13C reads 2.0 C for 10 (tol 2.5, rule C, 40 spectra)")])
+    # the batch's proof that its pooled 13C counts are trustworthy: 12 Assigned rows whose pooled count agrees
+    refs = [f"C{k}H{2 * k - 2}O4" for k in range(12, 24)]
+    merged = pd.concat([merged, pd.DataFrame([dict(mz=200.0 + k, neutral_formula=r, adduct="[M-H]-", tier="Assigned",
+                                                   tier_reason=pd.NA) for k, r in enumerate(refs)])], ignore_index=True)
+    levels = pd.concat([levels.assign(committed_c13=levels["committed_reasons"]),
+                        pd.DataFrame([dict(neutral_formula=r, adduct="[M-H]-", committed_reasons="",
+                                           committed_c13=f"13C reads {k:.1f} C for {k}")
+                                      for k, r in zip(range(12, 24), refs)])], ignore_index=True)
     s = IG.guard_merged(merged, levels, log=lambda *a: None)
-    assert s["demoted"] == 1 and s["tested"] == 2
+    assert s["demoted"] == 1 and s["tested"] == 14 and s["facts_unreliable"] is False and s["n_ref"] == 13
+    merged = merged.iloc[:3]
     assert merged["tier"].tolist() == ["Candidate", "Assigned", "Candidate"]
     assert str(merged.at[0, "tier_reason"]) == "isotope contradiction: 13C reads 5.1 C for 10 (tol 2.5, rule C, 40 spectra)"
     assert merged.at[1, "tier_reason"] == "vote note" and pd.isna(merged.at[2, "tier_reason"])
@@ -260,7 +295,7 @@ def test_two_facts_of_one_reading_both_bind():
     nc = EV.count_element(n, "C")
     snr13 = 15.0 / 0.0447 * nc * IC.R13C
     row, s, pairs = _guarded(_ledger(n, c13_count=5.0, snr13=snr13))
-    reasons = pairs["committed_reasons"].iloc[0]
+    reasons = _pair(pairs, row)["committed_reasons"]
     assert " | " in reasons
     t = str(row["tier_reason"])
     assert row["tier"] == "Candidate" and "34S (" in t and "13C reads " in t, t
@@ -296,3 +331,68 @@ def test_an_offline_run_records_the_guard_in_its_stats():
     g = res["stats"]["isotope_guard"]
     assert isinstance(g, dict) and set(g) >= {"tested", "demoted", "by_fact", "rows"}
     assert g == res["summaries"]["isotope_guard"] and g["tested"] >= 1
+
+
+# =========================================================================== the reliability gate (M1 §12)
+def test_a_file_whose_13c_counts_fail_its_own_reference_rows_demotes_nothing():
+    """Every reference acid's 13C line reads 0.3x its count (a file whose isotope lines under-respond): the
+    file's 13C facts are not trusted -- the C6-read C10 reading stays Assigned and the record says why."""
+    row, s, _p = _guarded(_ledger(c13_count=6.0, snr13=40.0, ref_c13_x=0.3))
+    assert row["tier"] == "Assigned" and s["demoted"] == 0
+    assert s["facts_unreliable"] is True and s["n_ref"] == 13 and s["agreement"] == 0.0
+    assert IG.NOTE_MARK not in str(row["tier_reason"])
+    # the same file with trustworthy reference lines: the guard binds, and says how much it trusted
+    row, s, _p = _guarded(_ledger(c13_count=6.0, snr13=40.0))
+    assert row["tier"] == "Candidate" and s["facts_unreliable"] is False
+    assert s["n_ref"] == 13 and s["n_agree"] == 12 and s["agreement"] == pytest.approx(12 / 13, abs=1e-4)
+
+
+def test_the_gate_needs_the_agreement_fraction_over_enough_reference_rows():
+    def frame(n_agree, n_contra, conf="High"):
+        names = [f"C{k}H{2 * k - 2}O4" for k in range(5, 5 + n_agree + n_contra)]
+        rows = pd.DataFrame(dict(role="M0", tier="Assigned", confidence=conf, neutral_formula=names, adduct="[M-H]-"))
+        c = [f"13C reads {k}.0 C for {k}" for k in range(5, 5 + n_agree)] + \
+            [f"13C reads 1.0 C for {k} (tol 2.0, per-file 13C, 1 files)" for k in range(5 + n_agree, 5 + n_agree + n_contra)]
+        return rows, pd.DataFrame(dict(neutral_formula=names, adduct="[M-H]-", committed_c13=c))
+    assert IG.GATE_MIN_AGREE == 0.9 and IG.GATE_MIN_REF == 10
+    assert IG.reliability(*frame(9, 1))["reliable"] is True                 # 0.90 of 10
+    assert IG.reliability(*frame(17, 2))["reliable"] is False               # 0.895: just under 0.9
+    assert IG.reliability(*frame(8, 1))["reliable"] is False                # 9 rows: too few to prove anything
+    assert IG.reliability(*frame(18, 3))["reliable"] is False               # 0.857
+    # only the file's High / Good rows prove it (per file); the merged rows carry no confidence
+    rows, pairs = frame(9, 1, conf="Low")
+    assert IG.reliability(rows, pairs)["n_ref"] == 0 and IG.reliability(rows, pairs, confidence=False)["reliable"]
+    # a Candidate row or a carbon-free count is no reference
+    rows, pairs = frame(10, 0)
+    rows.loc[0, "tier"] = "Candidate"
+    pairs.loc[1, "committed_c13"] = "13C reads 0.1 C for 0"
+    assert IG.reliability(rows, pairs)["n_ref"] == 8
+
+
+def test_the_merged_guard_needs_trustworthy_pooled_counts():
+    refs = [f"C{k}H{2 * k - 2}O4" for k in range(12, 24)]
+    merged = pd.DataFrame([dict(mz=199.0976, neutral_formula="C10H16O4", adduct="[M-H]-", tier="Assigned",
+                                tier_reason=pd.NA)] +
+                          [dict(mz=200.0 + k, neutral_formula=r, adduct="[M-H]-", tier="Assigned", tier_reason=pd.NA)
+                           for k, r in enumerate(refs)])
+    bad = [f"13C reads {0.3 * k:.1f} C for {k} (tol {max(1.5, 0.25 * k):.1f}, rule C, 40 spectra)" for k in range(12, 24)]
+    levels = pd.DataFrame([dict(neutral_formula="C10H16O4", adduct="[M-H]-",
+                                committed_reasons="13C reads 5.1 C for 10 (tol 2.5, rule C, 40 spectra)",
+                                committed_c13="13C reads 5.1 C for 10 (tol 2.5, rule C, 40 spectra)")] +
+                          [dict(neutral_formula=r, adduct="[M-H]-", committed_reasons=b, committed_c13=b)
+                           for r, b in zip(refs, bad)])
+    s = IG.guard_merged(merged, levels, log=lambda *a: None)
+    assert s["demoted"] == 0 and s["facts_unreliable"] is True and s["agreement"] == 0.0
+    assert (merged["tier"] == "Assigned").all()
+
+
+def test_the_pooled_re_level_obeys_the_gate():
+    from peaky.assignment import calpool as CP
+    from tests.test_calpool import _batch, _inputs_for
+    pool = CP.pool_calibration(_batch())
+    led = _ledger(c13_count=6.0, snr13=40.0, ref_c13_x=0.3)
+    at = led.copy(deep=True)
+    at["tier"] = pd.NA
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    g = out["isotope_guard"]
+    assert g["facts_unreliable"] is True and g["demoted"] == 0 and g["source"] == "pooled"
