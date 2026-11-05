@@ -782,3 +782,24 @@ def test_the_batch_measures_the_receiving_scatter_on_the_carried_scale(tmp_path,
     _run(tmp_path, monkeypatch, record=rec, iso_rows=14)
     assert seen == [carry]
 
+
+
+def test_the_offline_receiving_scatter_drops_the_runs_shadow_lines(tmp_path):
+    """A line the run's label-twin table calls a 13C shadow is no receiving core row (the lender side drops it
+    too): one ion of 16 on a shadow line takes one row out of each file."""
+    def f(sid):
+        return _file(sid, [(nf, AD, 0.05 * ((k % 5) - 2), 1e5 * (1 + k), True, "Good")
+                           for k, nf in enumerate(MORE_NEUTRALS[:16])])
+    per_file = {"u1": f("u1"), "u2": f("u2")}
+    summary = {"per_file": [{"sample_id": "u1", "degeneracy_cal": None}, {"sample_id": "u2", "degeneracy_cal": None}]}
+    rec = dict(_record(scan_range=(100.0, 139.0), raw=0.07), _sha256="s" * 64)
+    base = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
+    plain = dict(base)
+    CF.lend_to_summary(summary, per_file, rec, lent_ok=False, facts=plain)
+    os.makedirs(tmp_path / "tables")
+    pd.DataFrame([{"mz": C.ion_mz(MORE_NEUTRALS[3], AD), "adduct": "[M+NO3]-", "line_verdict": "shadow"}]).to_csv(
+        tmp_path / "tables" / "label_twins.csv", index=False)
+    shadowed = dict(base, path=str(tmp_path))
+    CF.lend_to_summary(summary, per_file, rec, lent_ok=False, facts=shadowed)
+    assert plain["transfer"]["n_rows"] == 32 and shadowed["transfer"]["n_rows"] == 30
+    assert shadowed["transfer"]["n_ions"] == plain["transfer"]["n_ions"] - 1
