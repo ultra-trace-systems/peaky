@@ -17,9 +17,18 @@ like such a reading:
     TRACK_MIN_N such spectra the files' own ratios must agree within TRACK_X,
     and a single file with no series is judged on the geometry alone. Noted
     when every file shows such a satellite partner or an isotopologue parent
-    (and the reading is not held). Whether the +3.9 mDa partners of uronium
-    batches are artefacts is open (their offset is constant over m/z and equals
-    a formula spacing), so the clause says so and decides nothing.
+    (and the reading is not held). A reading is HELD instead (SATELLITE_HOLD_MARK)
+    only when the per-spectrum satellite test (`satellites.satellite_verdict`)
+    calls the line an artefact: across the batch's spectra holding both lines
+    its height is the partner's times one number (a fit through the origin,
+    centred R^2 >= satellites.SAT_FIT_R2 on >= SAT_FIT_MIN_N spectra) and it
+    has no 13C line of its own there. That test reads any partner within
+    +-SAT_DMDA mDa at >= SAT_HOLD_MIN_X x the row in every file (the side
+    band's amplitude is no fixed fraction of its parent), not only the >= 10x
+    ones the note reads. A tracking line the partner does not explain that well
+    stays a note: the +3.9 mDa partners of uronium batches have a constant
+    offset over m/z that equals a formula spacing, so tracking alone decides
+    nothing.
 
 A reading with its own 13C line in each of its files -- a line at +1.00336 Da
 at OWN_13C_BAND times the share its own carbon count predicts -- is an M0 of its
@@ -36,10 +45,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import satellites as SAT
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.2.0"   # the satellite clause is a note only; the hold is the isotopologue clause
+__version__ = "0.3.0"   # + the per-spectrum satellite test: a note becomes a hold when the line is an artefact
+#                        0.2.0 the satellite clause is a note only; the hold is the isotopologue clause
 
 #: the most files a reading may reach Assigned from and still be tested
 MAX_FILES = 2
@@ -66,11 +77,23 @@ ISO_LINES = {
     "34S": (ISO.D_34S, "S", ISO.R_34S_PER_S),
     "37Cl": (ISO.D_37CL, "Cl", ISO.R_37CL_PER_CL),
 }
+#: the per-spectrum satellite test (the hold) reads any partner within +-SAT_DMDA mDa at least this
+#: many times the row's height -- not only the >= SAT_BRIGHT_X partners the note reads: the side
+#: band's amplitude is no fixed fraction of its parent (0.07-0.4 on the uronium Orbitrap modes), and
+#: at < 2x the two lines are comparable ions, neither the other's shoulder
+SAT_HOLD_MIN_X = 2.0
+#: the per-spectrum satellite test reads a spectrum's own 13C line of the row only where it is
+#: predicted at this multiple of that spectrum's noise edge (its 1st-percentile height)
+SAT_13C_TESTABLE_X = 3.0
+#: the noise edge of a spectrum: this quantile of its picked heights (sampling.EDGE_Q)
+EDGE_Q = 0.01
 HOLD_MARK = "isotopologue risk"
 SATELLITE_MARK = "satellite risk"
+SATELLITE_HOLD_MARK = "satellite artefact"
 TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "n_files_assigned", "action", "sample_item_id", "peak_id",
                  "row_mz", "row_height", "rule", "partner_peak_id", "partner_mz", "partner_height",
-                 "partner_reading", "d_mDa", "ratio", "track_n", "track_share"]
+                 "partner_reading", "d_mDa", "ratio", "track_n", "track_share",
+                 "fit_n", "fit_slope", "fit_r2", "fit_r2_uncentred", "own_13c_series", "satellite_test"]
 
 
 def empty_table() -> pd.DataFrame:
@@ -150,6 +173,51 @@ def track_verdict(ts: pd.DataFrame | None, mz_row: float, mz_partner: float, *,
     return int(len(j)), float(ok.mean())
 
 
+def _series_line(ts: pd.DataFrame, mz_sorted: np.ndarray, m: float, ppm: float = TRACK_PPM) -> pd.Series:
+    """{sample id: the tallest height within `ppm` of m/z `m`} over a series sorted by m/z."""
+    w = m * ppm * 1e-6
+    lo, hi = np.searchsorted(mz_sorted, m - w, "left"), np.searchsorted(mz_sorted, m + w, "right")
+    sub = ts.iloc[lo:hi][["sample_item_id", "height"]]
+    if not len(sub):
+        return pd.Series(dtype=float)
+    return pd.to_numeric(sub["height"], errors="coerce").groupby(sub["sample_item_id"]).max()
+
+
+def spectrum_edges(ts: pd.DataFrame | None) -> pd.Series:
+    """{sample id: noise edge} of a batch series: the EDGE_Q quantile of each spectrum's heights."""
+    if ts is None or not len(ts):
+        return pd.Series(dtype=float)
+    return pd.to_numeric(ts["height"], errors="coerce").groupby(ts["sample_item_id"]).quantile(EDGE_Q)
+
+
+def series_satellite_test(ts: pd.DataFrame | None, mz_row: float, mz_partner: float, n_c, *,
+                          edges: pd.Series | None = None, ppm: float = TRACK_PPM) -> dict | None:
+    """The per-spectrum satellite test (`satellites.satellite_verdict`) of the
+    line at `mz_row` against its partner at `mz_partner` over the batch series:
+    the two lines' heights in the spectra holding both, and the row's own 13C
+    line (+D_13C) where its carbon count `n_c` predicts it at >=
+    SAT_13C_TESTABLE_X x the spectrum's edge. None without a series."""
+    if ts is None or not len(ts) or not {"sample_item_id", "mz", "height"} <= set(ts.columns):
+        return None
+    if not ts["mz"].is_monotonic_increasing:
+        ts = ts.sort_values("mz", kind="mergesort")
+    mz = ts["mz"].to_numpy(dtype=float)
+    a, b = _series_line(ts, mz, mz_row, ppm), _series_line(ts, mz, mz_partner, ppm)
+    j = pd.concat([a.rename("r"), b.rename("p")], axis=1, join="inner").dropna()
+    j = j[(j["r"] > 0) & (j["p"] > 0)]
+    c13 = _series_line(ts, mz, mz_row + ISO.D_13C, ppm).reindex(j.index).fillna(0.0)
+    try:
+        nc = int(n_c or 0)
+    except (TypeError, ValueError):
+        nc = 0
+    own = None
+    if nc >= 1 and len(j):
+        e = (edges if edges is not None else spectrum_edges(ts)).reindex(j.index)
+        testable = (j["r"].to_numpy() * ISO.R_13C_PER_C * nc >= SAT_13C_TESTABLE_X * e.to_numpy())
+        own = SAT.own_13c_series(j["r"].to_numpy(), c13.to_numpy(), nc, testable=testable)
+    return SAT.satellite_verdict(j["p"].to_numpy(), j["r"].to_numpy(), own_13c=own)
+
+
 def _own_13c(led: pd.DataFrame, row, ion: dict | None, tol_ppm: float) -> bool:
     """The row has its own 13C line: a line at +D_13C within tol_ppm whose height
     over the row's is OWN_13C_BAND x the share its carbon count predicts."""
@@ -178,6 +246,25 @@ def _bright_near(led, row) -> pd.DataFrame:
     hh = pd.to_numeric(led["height"], errors="coerce")
     return led[((mz - m).abs() <= SAT_DMDA * 1e-3) & (hh >= SAT_BRIGHT_X * h)
                & (led["peak_id"].astype(str) != _s(row.get("peak_id")))]
+
+
+def _shoulder(led, row) -> dict | None:
+    """The brightest line within +-SAT_DMDA mDa of the row at >= SAT_HOLD_MIN_X x its height
+    (the partner the per-spectrum satellite test reads), as a partner record; None."""
+    m, h = _num(row.get("mz")), _num(row.get("height"))
+    if not (np.isfinite(m) and h > 0):
+        return None
+    mz = pd.to_numeric(led["mz"], errors="coerce")
+    hh = pd.to_numeric(led["height"], errors="coerce")
+    near = led[((mz - m).abs() <= SAT_DMDA * 1e-3) & (hh >= SAT_HOLD_MIN_X * h)
+               & (led["peak_id"].astype(str) != _s(row.get("peak_id")))]
+    if not len(near):
+        return None
+    p = near.loc[pd.to_numeric(near["height"], errors="coerce").idxmax()]
+    pm, ph = _num(p["mz"]), _num(p["height"])
+    return dict(rule="shoulder", partner_peak_id=_s(p.get("peak_id")), partner_mz=pm, partner_height=ph,
+                partner_reading=_reading(p), d_mDa=round((m - pm) * 1e3, 3), ratio=round(ph / h, 2),
+                track_n=0, track_share=np.nan)
 
 
 def _satellite(led, row, ts, files_rows) -> dict | None:
@@ -250,10 +337,15 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
     every peak}. ts: the batch time series (sample_item_id, mz, height) or None.
     tol_ppm: the merge window a file's row is matched to the merged row in.
     sigma_ppm: {sample id: the file's calibrated sigma, ppm} (added to ISO_PPM).
+    A reading beside a partner in every file (a satellite, or any line >=
+    SAT_HOLD_MIN_X x it within +-SAT_DMDA) that the partner explains across the
+    series and that has no 13C line of its own there (`series_satellite_test`)
+    is held instead (`satellite_held`, SATELLITE_HOLD_MARK).
     Returns (table, summary): one row per held or noted file (TABLE_COLUMNS) and
-    {tested, held, satellite_noted, own_13c_kept}."""
-    out = {"tested": 0, "held": 0, "satellite_noted": 0, "own_13c_kept": 0}
+    {tested, held, satellite_held, satellite_noted, own_13c_kept}."""
+    out = {"tested": 0, "held": 0, "satellite_held": 0, "satellite_noted": 0, "own_13c_kept": 0}
     rows = []
+    edges = None                               # the series' per-spectrum noise edges, read once when needed
     need = {"mz", "neutral_formula", "adduct", "tier"}
     if merged is None or not len(merged) or not need <= set(merged.columns):
         return empty_table(), out
@@ -304,19 +396,44 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
             files_rows.append(dict(height=r["height"],
                                    _partner_h=(float(pd.to_numeric(c["height"], errors="coerce").max())
                                                if len(c) else float("nan"))))
-        per = []                               # (sid, row, isotopologue record, satellite record) per file
+        per = []          # (sid, row, isotopologue record, satellite record, shoulder partner) per file
         for sid, r in hits:
             f = frames[sid]
             per.append((sid, r, _isotopologue(f, r, tols[sid]),
-                        _satellite(f, r, ts, files_rows) if orbitrap else None))
-        if all(iso is not None for _sid, _r, iso, _sat in per):
-            action, recs = "held", [(sid, r, iso) for sid, r, iso, _sat in per]
-        elif all(iso is not None or sat is not None for _sid, _r, iso, sat in per):
-            action, recs = "noted", [(sid, r, iso if iso is not None else sat) for sid, r, iso, sat in per]
+                        _satellite(f, r, ts, files_rows) if orbitrap else None,
+                        _shoulder(f, r) if orbitrap else None))
+        test = None
+        if all(iso is not None for _sid, _r, iso, _sat, _sh in per):
+            action, recs = "held", [(sid, r, iso) for sid, r, iso, _sat, _sh in per]
+        elif all(iso is not None or sat is not None or sh is not None for _sid, _r, iso, sat, sh in per):
+            # every file shows a partner: the per-spectrum satellite test on the brightest one --
+            # a hold when the partner explains the line across the series and it has no own 13C
+            # line; else the note where every file's partner is a tracking >= 10x satellite
+            parts = [sat if sat is not None else sh for _sid, _r, _iso, sat, sh in per
+                     if sat is not None or sh is not None]
+            if parts:
+                top = max(parts, key=lambda x: _num(x["partner_height"]))
+                if edges is None:
+                    edges = spectrum_edges(ts)
+                test = series_satellite_test(ts, m, top["partner_mz"], (ion or {}).get("C", 0), edges=edges)
+            if test is not None and test["artefact"]:
+                action = "satellite_held"
+                recs = [(sid, r, iso if iso is not None else sat if sat is not None else sh)
+                        for sid, r, iso, sat, sh in per]
+            elif all(iso is not None or sat is not None for _sid, _r, iso, sat, _sh in per):
+                action, recs = "noted", [(sid, r, iso if iso is not None else sat) for sid, r, iso, sat, _sh in per]
+            else:
+                continue                       # a shoulder the test does not call an artefact: the reading stands
         else:
             continue                           # one file without such a partner: the reading stands
+        fit = ({} if test is None else
+               dict(fit_n=test["n"], fit_slope=round(test["slope"], 4) if np.isfinite(test["slope"]) else np.nan,
+                    fit_r2=round(test["r2"], 4) if np.isfinite(test["r2"]) else np.nan,
+                    fit_r2_uncentred=(round(test["r2_uncentred"], 4) if np.isfinite(test["r2_uncentred"])
+                                      else np.nan),
+                    own_13c_series=test["own_13c"], satellite_test=test["why"]))
         recs = [dict(sample_item_id=sid, peak_id=_s(r["peak_id"]), row_mz=_num(r["mz"]),
-                     row_height=_num(r["height"]), **rec) for sid, r, rec in recs]
+                     row_height=_num(r["height"]), **rec, **fit) for sid, r, rec in recs]
         why = "; ".join(f"{x['sample_item_id']}: {x['rule']} of {x['partner_mz']:.4f} {x['partner_reading']} "
                         f"({x['d_mDa']:+.2f} mDa, x{x['ratio']:g})" for x in recs)
         if action == "held":
@@ -324,6 +441,11 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
             msg = (f"{HOLD_MARK}: Assigned in {len(hits)} file(s) only, each on the isotopologue line of a "
                    f"brighter row ({why}); held at Candidate")
             out["held"] += 1
+        elif action == "satellite_held":
+            merged.at[i, "tier"] = "Candidate"
+            msg = (f"{SATELLITE_HOLD_MARK}: Assigned in {len(hits)} file(s) only, each beside a brighter line "
+                   f"({why}); the per-spectrum satellite test: {test['why']}; held at Candidate")
+            out["satellite_held"] += 1
         else:
             msg = (f"{SATELLITE_MARK}: Assigned in {len(hits)} file(s) only, each beside a brighter line it "
                    f"tracks or an isotopologue parent ({why}); a note, the tier is untouched")
@@ -332,8 +454,9 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
         merged.at[i, "tier_reason"] = f"{prev} | {msg}" if prev else msg
         for x in recs:
             rows.append(dict(mz=m, neutral_formula=nf, adduct=ad, n_files_assigned=len(hits), action=action, **x))
-    if out["held"] or out["satellite_noted"]:
+    if out["held"] or out["satellite_noted"] or out["satellite_held"]:
         log(f"[sideband] of {out['tested']} readings Assigned in <= {max_files} files: {out['held']} held at "
-            f"Candidate on a brighter row's isotopologue line, {out['satellite_noted']} noted beside a satellite "
-            f"partner (tier kept); {out['own_13c_kept']} skipped on their own 13C line")
+            f"Candidate on a brighter row's isotopologue line, {out['satellite_held']} held as a satellite "
+            f"artefact, {out['satellite_noted']} noted beside a satellite partner (tier kept); "
+            f"{out['own_13c_kept']} skipped on their own 13C line")
     return pd.DataFrame(rows, columns=TABLE_COLUMNS), out

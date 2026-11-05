@@ -53,18 +53,27 @@ def _merged(ledgers):
     return merged
 
 
-def _series(ratio_noise=0.05, n=12, seed=1, smz=SMZ, ratio=20.0):
-    """A batch series of n spectra: the parent ramps over two decades, the satellite
-    follows it at 1/`ratio` (log-normal scatter `ratio_noise`), or on its own when
-    ratio_noise is None."""
+def _series(ratio_noise=0.08, n=12, seed=1, smz=SMZ, ratio=20.0, ramp=False, own13c=None):
+    """A batch series of n spectra (plus 10 noise picks each at 50 cps: the spectra's
+    noise edge): the parent nearly flat (+-10 %) -- or, `ramp`, ramping over two
+    decades -- and the satellite following it at 1/`ratio` (log-normal scatter
+    `ratio_noise`), or on its own when ratio_noise is None; `own13c` = the
+    satellite's own 13C line at that multiple of its carbon count's share. A flat
+    parent is tracked (within TRACK_X) but cannot EXPLAIN the satellite (centred R^2
+    of the fit through the origin < SAT_FIT_R2): the satellite clause notes it. A
+    ramping one explains it: with no own 13C line it is held as an artefact."""
     rng = np.random.default_rng(seed)
-    hp = 10 ** np.linspace(4.5, 6.5, n)
+    hp = (10 ** np.linspace(4.5, 6.5, n)) if ramp else 1e6 * (1 + 0.1 * np.sin(np.arange(n)))
     hs = hp / ratio * np.exp(rng.normal(0, ratio_noise, n)) if ratio_noise is not None \
         else 10 ** rng.uniform(3, 5.5, n)
     rows = []
     for k in range(n):
         rows += [dict(sample_item_id=f"t{k:02d}", mz=PMZ, height=hp[k]),
                  dict(sample_item_id=f"t{k:02d}", mz=smz, height=hs[k])]
+        if own13c:
+            rows.append(dict(sample_item_id=f"t{k:02d}", mz=smz + ISO.D_13C,
+                             height=hs[k] * ISO.R_13C_PER_C * 15 * own13c))
+        rows += [dict(sample_item_id=f"t{k:02d}", mz=150.0 + 7.1 * j, height=50.0) for j in range(10)]
     return pd.DataFrame(rows)
 
 
@@ -96,6 +105,78 @@ def test_a_tracking_satellite_of_a_20x_brighter_line_is_noted_and_its_tier_kept(
     assert set(tab["rule"]) == {"satellite"} and set(tab["partner_peak_id"]) == {"s01p", "s02p"}
     assert (tab["d_mDa"].between(3.8, 3.9)).all() and (tab["ratio"] >= 19).all()
     assert _get(merged, *PARENT)["tier"] == "Assigned"
+
+
+def test_a_satellite_the_parent_explains_across_the_spectra_is_held():    # the per-spectrum test (Part D)
+    # the parent ramps over two decades and the satellite follows it at 1/20 (5 % scatter): the fit
+    # through the origin explains it (R2 >= SAT_FIT_R2) and it has no 13C line: an artefact -> held
+    led = _sat_ledgers()
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05), **NOLOG)
+    r = _get(merged, *SAT)
+    assert r["tier"] == "Candidate" and SB.SATELLITE_HOLD_MARK in r["tier_reason"]
+    assert summ["satellite_held"] == 1 and summ["satellite_noted"] == 0 and summ["held"] == 0
+    assert set(tab["action"]) == {"satellite_held"} and (tab["fit_r2"] >= 0.9).all()
+    assert (tab["fit_n"] == 12).all() and np.allclose(tab["fit_slope"], 1 / 20, rtol=0.1)
+    assert set(tab["own_13c_series"]) == {False}
+    assert _get(merged, *PARENT)["tier"] == "Assigned"
+
+
+def test_an_explained_line_with_its_own_13c_line_in_the_series_is_only_noted():   # "no own 13C line"
+    # the same explained satellite, but its 13C line sits at its own carbon count's share in every
+    # spectrum of the series (the files' ledgers do not list it): an ion -> the note only
+    led = _sat_ledgers()
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05, own13c=1.0),
+                                            **NOLOG)
+    r = _get(merged, *SAT)
+    assert r["tier"] == "Assigned" and SB.SATELLITE_MARK in r["tier_reason"]
+    assert SB.SATELLITE_HOLD_MARK not in r["tier_reason"]
+    assert summ["satellite_held"] == 0 and summ["satellite_noted"] == 1
+    assert set(tab["own_13c_series"]) == {True} and (tab["fit_r2"] >= 0.9).all()
+    # ... at 3x its share the line is not its own 13C line: held again (SAT_OWN_13C_BAND)
+    led2 = _sat_ledgers()
+    merged2 = _merged(led2)
+    _t2, summ2 = SB.hold_low_file_promotions(merged2, led2, _series(ramp=True, ratio_noise=0.05, own13c=3.0),
+                                             **NOLOG)
+    assert summ2["satellite_held"] == 1
+
+
+def test_a_tracking_line_the_flat_parent_cannot_explain_is_only_noted():   # SAT_FIT_R2 in the merge
+    led = _sat_ledgers()
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(), **NOLOG)
+    assert summ["satellite_noted"] == 1 and summ["satellite_held"] == 0
+    assert (tab["fit_r2"] < 0.9).all() and (tab["track_share"] >= 0.8).all()
+
+
+def test_too_few_spectra_for_the_fit_leave_the_note():                         # SAT_FIT_MIN_N in the merge
+    led = _sat_ledgers()
+    merged = _merged(led)
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05, n=4), **NOLOG)
+    assert summ["satellite_noted"] == 1 and summ["satellite_held"] == 0
+
+
+def test_the_artefact_test_reads_a_partner_at_least_twice_the_row():           # SAT_HOLD_MIN_X
+    # a 2.5x partner (no note: under SAT_BRIGHT_X) that explains the row across the series: held
+    assert SB.SAT_HOLD_MIN_X == 2.0
+    led = _sat_ledgers(parent_h=(2.5e5, 2.5e5))
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05, ratio=2.5), **NOLOG)
+    assert summ["satellite_held"] == 1 and set(tab["rule"]) == {"shoulder"}
+    assert _get(merged, *SAT)["tier"] == "Candidate"
+    # a 1.5x partner is a comparable ion, no shoulder: nothing is read
+    led2 = _sat_ledgers(parent_h=(1.5e5, 1.5e5))
+    merged2 = _merged(led2)
+    tab2, summ2 = SB.hold_low_file_promotions(merged2, led2, _series(ramp=True, ratio_noise=0.05, ratio=1.5),
+                                              **NOLOG)
+    assert summ2["satellite_held"] == 0 and summ2["satellite_noted"] == 0 and not len(tab2)
+    # ... and a 2.5x partner the flat series cannot explain leaves the reading alone (no note either)
+    led3 = _sat_ledgers(parent_h=(2.5e5, 2.5e5))
+    merged3 = _merged(led3)
+    tab3, summ3 = SB.hold_low_file_promotions(merged3, led3, _series(ratio=2.5), **NOLOG)
+    assert summ3["satellite_held"] == 0 and summ3["satellite_noted"] == 0
+    assert _get(merged3, *SAT)["tier"] == "Assigned"
 
 
 def test_a_partner_under_ten_times_brighter_is_no_satellite():               # SAT_BRIGHT_X

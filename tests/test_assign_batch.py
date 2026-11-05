@@ -927,8 +927,8 @@ try:
               set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue", "sideband",
                                                     "label_shadow", "element_signature", "label_veto", "tof_m2",
                                                     "ringing_lines", "isotope_guard"}
-              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_noted": 0,
-                                                      "own_13c_kept": 0}
+              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_held": 0,
+                                                      "satellite_noted": 0, "own_13c_kept": 0}
               and summ["merge_gates"]["isotope_guard"]["demoted"] == 0
               and summ["merge_gates"]["label_veto"] == {"capped": 0, "noted": 0}
               and summ["merge_gates"]["ringing_lines"]["released"] == 0
