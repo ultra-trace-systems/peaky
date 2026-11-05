@@ -198,7 +198,8 @@ selected sample_ids (SAMPLING.md)
    `merged_tiers`, `merged_claims`) re-counted, `output.merged_ledger_sha1` refreshed (the merged
    ledger's level columns are re-stamped, every other byte is the run's) and a
    `relevel` record (the source dir, the sha1 of its manifest and merged ledger,
-   whether the ledger changed, the json's sha256, the re-levelling code).
+   whether the ledger changed, the json's sha256, `tier_stage: "not re-run"`, the
+   re-levelling code).
 
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the

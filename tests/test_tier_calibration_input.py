@@ -474,6 +474,8 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     assert rl["source_merged_ledger_sha1"] == PV.sha1_file(str(run / "merged_ledger.csv"))
     assert rl["merged_ledger_changed"] is True and rl["cal_sha256"] == rec["_sha256"] and rl["read_as"] == "campaign"
     assert rl["source_manifest_sha1"] == PV.sha1_file(str(run / "run_manifest.json"))
+    # levels only: the record says the tier stage (z-tail, degeneracy cap, isotope guard) was not re-run
+    assert rl["tier_stage"] == "not re-run" and out["tier_stage"] == "not re-run"
     assert man["input"]["batch_name"] == "b" and man["code"]["git"]["commit"] == "c0ffee"
     assert out["read_as"] == "campaign" and set(out["centres"].values()) == {"file"}
     s = json.load(open(tmp_path / "rl" / "batch_summary.json"))

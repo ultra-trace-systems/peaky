@@ -74,7 +74,8 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 
-__version__ = "0.2.0"  # the mass-accuracy transfer check replaces the width-spread gate; mixed scan ranges refused
+__version__ = "0.2.1"  # the relevel record states tier_stage "not re-run"
+#                        0.2.0 the mass-accuracy transfer check replaces the width-spread gate; mixed scan ranges refused
 
 #: the json schema this module writes and reads
 SCHEMA = 1
@@ -736,6 +737,11 @@ def lend_to_summary(summary: dict, per_file: dict, record: dict | None, *, lent_
     return out, src, why, centres
 
 
+#: what a re-level does to the tier stage (`relevel.tier_stage`): nothing -- the tiers,
+#: and the per-file isotope-guard records, of a re-levelled dir are the source run's
+TIER_STAGE_NOT_RERUN = "not re-run"
+
+
 def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: bool = False, log=print) -> dict:
     """Re-level a finished batch run dir with a calibration json (or none: the
     run's own windows) WITHOUT re-assigning (module note). Writes `out_dir`
@@ -788,6 +794,9 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
     rec = {"run_dir": run_dir, "calibration": descriptor(record), "lent_flag": bool(lent_ok), "read_as": used,
            "reason": why, "transfer": facts.get("transfer"), "centres": centres, "n_pairs": int(len(levels)),
            "merged_counts": merged_counts,
+           # a finished run keeps no tier-time ledger: no z-tail, no degeneracy cap and no
+           # isotope-contradiction guard is re-run, so the tiers are the source run's
+           "tier_stage": TIER_STAGE_NOT_RERUN,
            "peaky_version": __import__("peaky").__version__}
     summ = dict(summ)
     summ["levels_calibration"] = levels_record(summ.get("per_file") or [], record, used_as=used, reason=why,
@@ -816,7 +825,8 @@ def _relevel_manifest(run_dir: str, out_dir: str, record: dict | None, rec: dict
     a json was given, `output.merged_ledger_sha1` refreshed to the re-stamped merged
     ledger (its level columns are new; every other byte is the run's), and `relevel`:
     the source run dir, the sha1 of its manifest and merged ledger, whether the ledger's
-    bytes changed, the json's sha256, how it was read and the code that re-levelled."""
+    bytes changed, the json's sha256, how it was read, `tier_stage` ("not re-run") and the
+    code that re-levelled."""
     from peaky.reporting import provenance as PV
     src_m = os.path.join(run_dir, "run_manifest.json")
     try:
@@ -839,7 +849,7 @@ def _relevel_manifest(run_dir: str, out_dir: str, record: dict | None, rec: dict
                       "merged_ledger_changed": src_led != new_led,
                       "cal_sha256": record.get("_sha256") if record is not None else None,
                       "read_as": rec.get("read_as"), "reason": rec.get("reason"), "lent_flag": rec.get("lent_flag"),
-                      "peaky_version": rec.get("peaky_version"),
+                      "tier_stage": rec.get("tier_stage"), "peaky_version": rec.get("peaky_version"),
                       "git": PV.git_info(os.path.dirname(os.path.dirname(__file__)))}
     with open(os.path.join(out_dir, "run_manifest.json"), "w") as fh:
         json.dump(man, fh, indent=2, default=str)
