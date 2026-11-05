@@ -805,3 +805,42 @@ def test_the_batch_word_is_the_weakest_files_source():
     assert AB._tier_cal_source([{"tier_calibration": "per_file"}, {"tier_calibration": "pooled"}]) == "pooled"
     assert AB._tier_cal_source([{"tier_calibration": "pooled"}, {"tier_calibration": "none"}]) == "none"
     assert AB._tier_cal_source([{}, {"stage": "cover"}]) is None
+
+
+# --------------------------------------------------------------------------- the isotope guard on the pooled re-level
+def test_the_pooled_re_level_runs_the_per_file_isotope_guard():
+    """A file its own core could not calibrate is not levelled by its run's evidence stage, so its
+    per-file isotope guard had no facts there; the pooled re-level (apply_pool step 4) computes them
+    and step 5 guards the file: a C10 reading whose own 13C line reads ~C6 (predicted S/N 40) is
+    Candidate with the guard's note, a C10 reading whose line reads C10 stays Assigned."""
+    from tests.test_isoguard import _ledger as _guard_ledger
+    from peaky.assignment import isoguard as IG
+    pool = CP.pool_calibration(_batch())
+    assert pool.cal is not None
+    for c13, tier in ((6.0, "Candidate"), (10.0, "Assigned")):
+        led = _guard_ledger(c13_count=c13, snr13=40.0)
+        at = led.copy(deep=True)
+        at["tier"] = pd.NA
+        out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+        row = led[led["role"] == "M0"].iloc[0]
+        assert row["tier"] == tier, (c13, row["tier"], row["tier_reason"])
+        g = out["isotope_guard"]
+        assert g["source"] == T.CAL_SOURCE_POOLED and g["tested"] >= 1
+        if tier == "Candidate":
+            assert g["demoted"] == 1 and g["by_fact"]["13C"] == 1
+            assert f"{IG.NOTE_MARK}: 13C reads " in str(row["tier_reason"])
+        else:
+            assert g["demoted"] == 0 and IG.NOTE_MARK not in str(row["tier_reason"])
+    # no level inputs: nothing levelled, no guard record
+    led = _guard_ledger(c13_count=6.0, snr13=40.0)
+    at = led.copy(deep=True)
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1", levels=False), audit=[], log=lambda *a: None)
+    assert "isotope_guard" not in out
+
+
+def test_the_batch_records_the_pooled_files_guard(tmp_path, monkeypatch):
+    _run_batch(tmp_path, monkeypatch)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    for p in summ["per_file"]:
+        assert p["tier_calibration"] == "pooled"
+        assert p["isotope_guard"]["source"] == "pooled" and p["isotope_guard"]["tested"] >= 1

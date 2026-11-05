@@ -515,12 +515,8 @@ def _stage_isotope_guard(st):
     the stage could not level has no facts and nothing is demoted."""
     pairs = (getattr(st, "level_pairs", None) or [None])[-1]
     s = isoguard.guard_ledger(st.led, pairs, log=st.log)
-    s["rows"] = s["rows"][:ISOGUARD_ROWS_KEPT]
+    s["rows"] = s["rows"][:isoguard.ROWS_KEPT]
     return s
-
-
-#: the per-file stats keep at most this many of the guard's demoted rows (the counts are complete)
-ISOGUARD_ROWS_KEPT = 50
 
 
 def _stage_resolvability(st):

@@ -50,6 +50,8 @@ import pandas as pd
 
 __version__ = "0.1.0"
 
+#: a stats record keeps at most this many of the demoted rows (the counts are complete)
+ROWS_KEPT = 50
 #: the note's lead words (tier_reason; `cleanup._note` joins notes with ' | ')
 NOTE_MARK = "isotope contradiction"
 #: the isotope lines whose absence / unexplained presence binds the tier

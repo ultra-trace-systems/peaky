@@ -2981,6 +2981,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # run takes it: before later stages rewrote rows)
                 st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
             pool_state["files"][r["sid"]] = st_["tier_pool"]
+            if res_p.get("isotope_guard") is not None:
+                # the per-file isotope guard ran on the pooled re-level (calpool.apply_pool step 5)
+                st_["isotope_guard"] = res_p["isotope_guard"]
 
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
         """Assign `ids` -- the TAIL of `sample_ids`, which already holds them, so

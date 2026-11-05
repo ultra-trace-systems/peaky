@@ -107,7 +107,8 @@ from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 from peaky.chem import chemistry as C
 
-__version__ = "0.1.0"  # the batch-pooled tier calibration (REPORT #1 / B7)
+__version__ = "0.1.1"  # + the per-file isotope-contradiction guard on the pooled re-level (isoguard.guard_ledger)
+#                        0.1.0 the batch-pooled tier calibration (REPORT #1 / B7)
 
 #: distinct ions the pooled core needs (the per-file core needs tiers.CAL_MIN_N rows)
 POOL_MIN_IONS = 15
@@ -344,6 +345,11 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     appends to it). The calibration is the one the pool lends this file
     (`lent_calibration`: the lent width about the file's own centre). Returns
     {cal, degeneracy, tiers, nox_skeleton_gate, below, o_monster, levels}
+    (+ ``isotope_guard`` when the file was levelled: the per-file
+    isotope-contradiction guard, isoguard.guard_ledger, on the facts of THIS
+    re-level -- the file the per-file stage could not level is guarded here, at
+    the same point relative to the vote; any calibration lent through this
+    function, pooled or a supplied one, takes it)
     (`cal`: {mu, sigma, centre, width}; `nox_skeleton_gate`: the NOx-skeleton
     cap's record as the re-run tier stage leaves it, tiers.nox_skeleton_summary
     on the tier-time ledger, None when the profile reads no skeletons); {} when
@@ -420,8 +426,15 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     # 4. the file's own evidence level, in the pooled window
     out["levels"] = None
     if inputs.level_inputs is not None:
-        s = EV.apply_levels(ledger, cfg=cfg, run_inputs=_level_inputs_with(inputs.level_inputs, cal))
+        pairs: list = []
+        s = EV.apply_levels(ledger, cfg=cfg, run_inputs=_level_inputs_with(inputs.level_inputs, cal), pairs_out=pairs)
         out["levels"] = {"n_levelled": int(s.get("n_levelled", 0)), "levels": s.get("levels")}
+        # 5. the per-file isotope-contradiction guard on those facts (the stage the file's own run
+        # ran without facts: it was not levelled there), before the batch folds the file into its vote
+        from peaky.assignment import isoguard as IG
+        g = IG.guard_ledger(ledger, pairs[-1] if pairs else None, log=log)
+        g["rows"] = g["rows"][:IG.ROWS_KEPT]
+        out["isotope_guard"] = {**g, "source": T.CAL_SOURCE_POOLED}
     t = out["tiers"]
     log(f"[calpool]   window {cal[0]:+.3f} ± {cal[1]:.3f} ppm (centre: the {centre}'s; "
         f"width: the {out['cal']['width']}'s); "
