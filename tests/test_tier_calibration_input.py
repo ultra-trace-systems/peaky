@@ -432,3 +432,18 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     assert before == {f: os.path.getmtime(run / f) for f in before}
     with pytest.raises(CF.CalibrationError, match="never the run dir"):
         CF.relevel_run(str(run), rec, out_dir=str(run))
+
+
+def test_without_the_reagent_library_the_identity_and_the_neutral_element_rules_still_hold(tmp_path,
+                                                                                           monkeypatch):
+    """The library mass test also removes HBr [M+Br]- and H2O [M+Br]-; with no library each of the other
+    two rules must stand on its own: the reagent identity keeps HBr out, the element-in-the-neutral rule
+    keeps SO2 [M+Br]- (no reagent identity; its 81Br line is the adduct's, not its sulfur's) out, H2SO4 on
+    its 34S line stays in."""
+    from peaky.assignment.levels.decide import reagent_identity
+    assert reagent_identity("HBr", "[M+Br]-", "negative") and not reagent_identity("SO2", "[M+Br]-", "negative")
+    monkeypatch.setattr(CF, "_reagent_masses", lambda reagent: [])
+    extra = [("H2SO4", "[M-H]-", "34S"), ("HBr", "[M+Br]-", "81Br"), ("SO2", "[M+Br]-", "81Br")]
+    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"], extra=extra)
+    ions = {i["neutral_formula"] for i in CF.pool_runs([r1], log=lambda *a: None)["core"]["ions"]}
+    assert "H2SO4" in ions and "HBr" not in ions and "SO2" not in ions
