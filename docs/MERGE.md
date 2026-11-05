@@ -366,13 +366,17 @@ selected sample_ids (SAMPLING.md)
    the solvent's own ion (its reagent-profile forms and its proton-bound dimer) is
    >= 5x the spectrum's noise edge -- an episode: bright in <= 50 % of the batch's
    spectra (`SOLVENT_MAX_FRAC`) -- and that is in <= 50 % of the batch's spectra,
-   is read as that ion's cluster: the parent's neutral, the adduct naming the
-   solvent (`[M+(C5H9NO)H]+`, `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift`
-   resolves such a label in any process), `solvent_cluster_of` = `<parent> +
-   <solvent>`, the covalent reading first in `alternatives`, the note `solvent
-   cluster: ...`. Its tier is the parent's when it tracks parent x solvent across
-   the spectra (Pearson r >= 0.7 on >= 4 spectra holding all three lines), else
-   the parent's capped at Candidate. The reagent-cluster strip below spares such a
+   and that tracks parent x solvent across the spectra (Pearson r >= 0.7 on >= 4
+   spectra holding all three lines; co-occurrence alone reads nothing), is read as
+   that ion's cluster: the parent's neutral, the adduct naming the solvent
+   (`[M+(C5H9NO)H]+`, `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift` resolves
+   such a label in any process), `solvent_cluster_of` = `<parent> + <solvent>`, the
+   covalent reading first in `alternatives`, the note `solvent cluster: ...`. The
+   solvent's ion forms are read one by one and only the forms bright in an episode
+   count (a form bright everywhere is another ion's mass). Its tier is the parent's
+   when the pair test passes -- the same solvent cluster of the parent's neutral
+   under another reagent ion form sits in the cluster's spectra (>= 3x the edge) --
+   else the parent's capped at Candidate. The reagent-cluster strip below spares such a
    row (a 12-ppm match to a urea cluster is no reason to drop a line the pair test
    reads as the parent's cluster). `tables/solvent_clusters.csv`,
    `merge_gates["solvent_clusters"]`.

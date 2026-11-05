@@ -101,8 +101,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no context lists them as source solvents, so no per-file ladder changes). In a batch with episode files, a
   merged row at a persistent Assigned ion + the solvent's neutral mass, confined to the spectra where the
   solvent's own ion is bright (in at most half the batch's spectra: an episode), takes the parent's neutral and a solvent-naming adduct (`[M+(C5H9NO)H]+`;
-  `solvent_cluster_of`), the covalent reading moving to `alternatives`; its tier is the parent's when it tracks
-  parent x solvent (r >= 0.7 on >= 4 spectra), else capped at Candidate, and the reagent-cluster strip spares it.
+  `solvent_cluster_of`), the covalent reading moving to `alternatives`, when it tracks parent x solvent (r >= 0.7
+  on >= 4 spectra; co-occurrence alone reads nothing); its tier is the parent's when the same cluster of the
+  parent's neutral under another reagent ion form is in its spectra (the pair test), else capped at Candidate, and
+  the reagent-cluster strip spares it.
   `chemistry.ion_mz` resolves such cluster labels (and the solvent-ladder labels) in a process that never
   registered them (`chemistry.cluster_shift`). `tables/solvent_clusters.csv`.
 

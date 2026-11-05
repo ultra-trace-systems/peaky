@@ -71,10 +71,13 @@ PERSIST_FRAC of the batch's spectra), is read as that ion's cluster -- the
 solvent's bright spectra being an episode (at most SOLVENT_MAX_FRAC of the
 batch's): the
 parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
-neutral. Its tier is the parent's when the cluster tracks the product parent x
-solvent across the spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N spectra),
-else the parent's capped at Candidate. The reagent-cluster strip of the merge
-spares a row read so.
+neutral -- when, and only when, the cluster tracks the product parent x
+solvent across the spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N spectra):
+co-occurrence alone reads nothing. Its tier is the parent's when the pair test
+passes (the same solvent cluster of the parent's neutral under another reagent
+ion form in the cluster's spectra, >= PAIR_X x the edge), else the parent's
+capped at Candidate. The reagent-cluster strip of the merge spares a row read
+so.
 
 Pure: reads the merged ledger, the per-file ledgers and the batch series;
 mutates only the merged rows it judges or relabels; returns a table and a
@@ -166,7 +169,7 @@ TRACK_MIN_N = 4
 CLUSTER_MARK = "solvent cluster"
 CLUSTER_COLUMNS = ["mz", "was_neutral", "was_adduct", "neutral_formula", "adduct", "solvent", "parent_mz",
                    "parent_reading", "parent_tier", "tier_in", "tier_out", "n_spectra", "n_in_episode",
-                   "n_track", "track_r", "pair_test"]
+                   "n_track", "track_r", "pair_test", "pair"]
 
 
 def empty_table() -> pd.DataFrame:
@@ -770,14 +773,19 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 continue
         if sign == "+":
             ions.append(2 * ms + C.M["H"] - C.M_E)          # the proton-bound dimer
-        hs = None
+        # the solvent's own ion: each of its forms that is EPISODIC here (bright, >= SOLVENT_X x the edge,
+        # in at most SOLVENT_MAX_FRAC of the spectra; a form bright everywhere is another ion's mass)
+        hs, bright = None, set()
         for m_ in ions:
             s_ = line(m_)
+            if not len(s_):
+                continue
+            b_ = set(s_.index[s_ >= SOLVENT_X * edge.reindex(s_.index).to_numpy()])
+            if not b_ or len(b_) > SOLVENT_MAX_FRAC * n_spec:
+                continue
+            bright |= b_
             hs = s_ if hs is None else pd.concat([hs, s_], axis=1).max(axis=1)
-        if hs is None or not len(hs):
-            continue
-        bright = set(hs.index[hs >= SOLVENT_X * edge.reindex(hs.index).to_numpy()])
-        if not bright or len(bright) > SOLVENT_MAX_FRAC * n_spec:
+        if hs is None or not bright:
             continue
         out["solvents_bright"].append({"solvent": solv.formula, "name": solv.name, "n_bright": len(bright)})
         # persistent Assigned parents
@@ -813,7 +821,27 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 j3 = j3[(j3 > 0).all(axis=1)]
                 r = (float(np.corrcoef(j3["k"], j3["p"] * j3["s"])[0, 1]) if len(j3) >= 2
                      and j3["k"].std() > 0 and (j3["p"] * j3["s"]).std() > 0 else float("nan"))
-                passed = bool(len(j3) >= TRACK_MIN_N and np.isfinite(r) and r >= TRACK_R)
+                tracks = bool(len(j3) >= TRACK_MIN_N and np.isfinite(r) and r >= TRACK_R)
+                if not tracks:
+                    continue                   # co-occurrence alone reads nothing
+                # the pair test: the same solvent cluster of the parent's neutral under another
+                # reagent ion form, in the cluster's spectra
+                passed, pair_txt = False, ""
+                for a2 in adducts:
+                    if a2 == p["adduct"] or not str(a2).endswith(sign):
+                        continue
+                    lab2 = cluster_label(a2, solv.formula)
+                    try:
+                        m2 = C.ion_mz(p["neutral_formula"], lab2) if lab2 else None
+                    except Exception:  # noqa: BLE001
+                        m2 = None
+                    if m2 is None:
+                        continue
+                    l2 = line(m2).reindex(ks.index).fillna(0.0)
+                    ok2 = l2 >= PAIR_X * edge.reindex(l2.index)
+                    if ok2.any():
+                        passed, pair_txt = True, f"{p['neutral_formula']} {lab2} in {int(ok2.sum())} of its spectra"
+                        break
                 ptier = _s(p["tier"])
                 tier_out = ptier if passed else ("Candidate" if ptier == "Assigned" else ptier)
                 was = (_s(merged.at[k, "neutral_formula"]), _s(merged.at[k, "adduct"]))
@@ -829,10 +857,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 _note(merged, k, (f"{CLUSTER_MARK}: the {solv.formula} ({solv.name}) cluster of the persistent "
                                   f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): present in "
                                   f"{len(ks)} spectra, {n_in} with the solvent ion bright; "
-                                  + (f"tracks parent x solvent (r {r:.2f} on {len(j3)} spectra): the parent's tier"
-                                     if passed else
-                                     f"the pair test not passed (r {r:.2f} on {len(j3)} spectra; needs "
-                                     f">= {TRACK_R:g} on >= {TRACK_MIN_N}): capped at Candidate")
+                                  + f"tracks parent x solvent (r {r:.2f} on {len(j3)} spectra); "
+                                  + (f"the pair test passed ({pair_txt}): the parent's tier" if passed else
+                                     "no cluster of the parent's other ion forms in its spectra (the pair "
+                                     "test): capped at Candidate")
                                   + (f"; was {was[0]} {was[1]}" if all(was) else "")))
                 out["relabelled"] += 1
                 out["pair_passed"] += int(passed)
@@ -842,10 +870,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                                  parent_mz=pm, parent_reading=f"{p['neutral_formula']} {p['adduct']}",
                                  parent_tier=ptier, tier_in=tier_in, tier_out=tier_out, n_spectra=len(ks),
                                  n_in_episode=n_in, n_track=len(j3), track_r=round(r, 4) if np.isfinite(r) else np.nan,
-                                 pair_test=passed))
+                                 pair_test=passed, pair=pair_txt))
     if out["relabelled"]:
         log(f"[episode] {out['relabelled']} merged row(s) read as a persistent ion's plume-solvent cluster "
-            f"({out['pair_passed']} track parent x solvent, {out['capped']} capped at Candidate)")
+            f"({out['pair_passed']} with the pair test, {out['capped']} capped at Candidate)")
     return pd.DataFrame(rows, columns=CLUSTER_COLUMNS), out
 
 

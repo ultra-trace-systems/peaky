@@ -52,7 +52,9 @@ draws from the random generator, so every default line keeps its jitter and heig
   is recorded, not committed: a test commits it in the files it chooses);
 * `cluster_track=False`: the solvent cluster's heights do not follow parent x solvent;
 * `cluster_outside`: the solvent cluster is also in 10 spectra outside the plume (not
-  confined to the episode).
+  confined to the episode);
+* `cluster_pair`: the same NMP cluster of the persistent C16H22O4 under the urea ion form
+  ([M+(C5H9NO)(CH4N2O)H]+, 0.3x the cluster) in the plume spectra -- the cluster's pair.
 """
 from __future__ import annotations
 
@@ -109,7 +111,7 @@ CLUSTER_NOTRACK = (1.0, 0.2, 0.9, 0.5)                           # the cluster's
 def build(*, plume: bool = True, c13_child: bool = True, cluster: bool = True,
           satellite: bool = True, pairs: bool = True, envelope: bool = False, rival_lines: bool = False,
           dim: bool = False, pair_adduct: bool = False, true_ion: bool = False, cluster_track: bool = True,
-          cluster_outside: bool = False) -> tuple[pd.DataFrame, dict]:
+          cluster_outside: bool = False, cluster_pair: bool = False) -> tuple[pd.DataFrame, dict]:
     """(per-peak batch table, component record). Deterministic."""
     rng = np.random.default_rng(SEED)
     jit = rng.normal(0.0, 0.25, size=(N_SPECTRA, 64)).clip(-0.5, 0.5)   # ppm, per spectrum and line slot
@@ -171,6 +173,10 @@ def build(*, plume: bool = True, c13_child: bool = True, cluster: bool = True,
                 hs = [hv.get(i, 0.3 * max(hs)) for i in at]
             add(key, C.ion_mz(nf, ad), at, hs, "solvent_cluster", slot, neutral_formula=nf,
                 adduct=ad, parent="P1", solvent="S1", solvent_neutral="C5H9NO")
+            if cluster_pair:      # the same NMP cluster of P1's neutral under the urea ion form
+                add("K2", C.ion_mz("C16H22O4", "[M+(C5H9NO)(CH4N2O)H]+"), PLUME_AT,
+                    [0.3 * h for h in hs[:len(PLUME_AT)]], "solvent_cluster_pair", 49,
+                    reading=["C16H22O4", "[M+(C5H9NO)(CH4N2O)H]+"], parent="P1", solvent="S1")
         slot += 1
         e_h = [PLUME_ION[4] * f for f in PLUME_SHAPE]
         e_mz = C.ion_mz(PLUME_ION[1], PLUME_ION[2])

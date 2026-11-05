@@ -300,22 +300,30 @@ K1 = ("C16H22O4", "[M+(C5H9NO)H]+")
 def test_the_solvent_cluster_reads_as_the_persistent_ions_cluster(tmp_path, monkeypatch):
     summ, m = _run(tmp_path, monkeypatch, k_episode_max=8)
     r = _get(m, *K1)
-    assert r["tier"] == "Assigned" and r["solvent_cluster_of"] == "C16H22O4 [M+H]+ + C5H9NO"
+    # it tracks parent x solvent, so it is read as the cluster; no pair: capped at Candidate
+    assert r["tier"] == "Candidate" and r["solvent_cluster_of"] == "C16H22O4 [M+H]+ + C5H9NO"
     assert "C21H31NO5 [M+H]+ (the covalent reading)" in r["alternatives"]
-    assert EE.CLUSTER_MARK in r["tier_reason"] and abs(r["mz"] - C.ion_mz(*K1)) < 0.001
+    assert EE.CLUSTER_MARK in r["tier_reason"] and "capped at Candidate" in r["tier_reason"]
+    assert abs(r["mz"] - C.ion_mz(*K1)) < 0.001
     assert not len(m[m["neutral_formula"] == "C21H31NO5"])
     t = _table(tmp_path, "solvent_clusters.csv")
-    assert len(t) == 1 and bool(t["pair_test"].iloc[0]) and t["track_r"].iloc[0] >= 0.99
+    assert len(t) == 1 and not bool(t["pair_test"].iloc[0]) and t["track_r"].iloc[0] >= 0.99
     # the reagent-cluster strip spared it (the urea hexamer.NH4+ sits 1.4 ppm away)
     drops = _table(tmp_path, "vote_drops.csv")
     assert not drops["reason"].astype(str).str.contains("reagent-cluster strip").any()
     assert summ["merge_gates"]["solvent_clusters"]["relabelled"] == 1
 
 
-def test_a_cluster_that_does_not_track_parent_x_solvent_is_capped_at_candidate(tmp_path, monkeypatch):  # TRACK_R
-    _s, m = _run(tmp_path, monkeypatch, build=dict(cluster_track=False), k_episode_max=8)
+def test_the_cluster_with_its_pair_takes_the_parents_tier(tmp_path, monkeypatch):                # the pair test
+    _s, m = _run(tmp_path, monkeypatch, build=dict(cluster_pair=True), k_episode_max=8)
     r = _get(m, *K1)
-    assert r["tier"] == "Candidate" and "the pair test not passed" in r["tier_reason"]
+    assert r["tier"] == "Assigned" and "the pair test passed (C16H22O4 [M+(C5H9NO)(CH4N2O)H]+" in r["tier_reason"]
+
+
+def test_a_cluster_that_does_not_track_parent_x_solvent_is_not_read(tmp_path, monkeypatch):    # TRACK_R
+    summ, m = _run(tmp_path, monkeypatch, build=dict(cluster_track=False), k_episode_max=8)
+    assert not len(m[m["adduct"] == K1[1]])
+    assert summ["merge_gates"]["solvent_clusters"]["relabelled"] == 0
 
 
 def test_a_line_outside_the_episode_is_no_cluster(tmp_path, monkeypatch):                         # CONFINED_FRAC
@@ -344,11 +352,13 @@ def test_the_cluster_label_names_the_solvent_and_resolves_in_a_fresh_lookup(addu
 
 
 def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6, 7, 8, 9), track=True,
-                    parent_tier="Assigned"):
-    """A batch series: a persistent parent, the NMP.urea ion bright in `bright`, the cluster in `cluster_at`."""
+                    parent_tier="Assigned", pair=False):
+    """A batch series: a persistent parent, the NMP.urea ion bright in `bright`, the cluster in
+    `cluster_at` (tracking parent x solvent, or not), and with `pair` the cluster's urea form."""
     pm = C.ion_mz("C16H22O4", "[M+H]+")
     sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
     km = pm + C.neutral_mass("C5H9NO")
+    k2 = C.ion_mz("C16H22O4", "[M+(C5H9NO)(CH4N2O)H]+")
     rows = []
     for k in range(n):
         sid = f"s{k:02d}"
@@ -361,6 +371,8 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
         if k in cluster_at:
             hk = 0.02 * hp * (hs or 1e5) / 1e6 if track else 1e3 * (1 + (k % 3))
             rows.append(dict(sample_item_id=sid, mz=km, height=hk))
+            if pair:
+                rows.append(dict(sample_item_id=sid, mz=k2, height=0.3 * hk))
         rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
     ts = pd.DataFrame(rows)
     merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
@@ -371,15 +383,17 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
 
 
 @pytest.mark.parametrize("kw,relabelled,tier", [
-    ({}, True, "Assigned"),
+    ({}, True, "Candidate"),                                             # tracks, no pair: capped
+    (dict(pair=True), True, "Assigned"),                                # the pair test: the parent's tier
     (dict(parent_in=9), False, None),                                   # PERSIST_FRAC: the parent in 9 of 20
     (dict(cluster_at=(4, 5, 6, 7, 8, 9)), False, None),                 # CONFINED_FRAC: 5 of 6 in the episode
-    (dict(cluster_at=(5, 6, 7)), True, "Candidate"),                    # TRACK_MIN_N: 3 spectra
-    (dict(track=False), True, "Candidate"),                             # TRACK_R
-    (dict(bright=tuple(range(20)), cluster_at=tuple(range(11))), False, None),   # CLUSTER_MAX_FRAC: 11 of 20
+    (dict(cluster_at=(5, 6, 7)), False, None),                          # TRACK_MIN_N: 3 spectra
+    (dict(track=False), False, None),                                   # TRACK_R: co-occurrence alone
+    (dict(bright=tuple(range(20)), cluster_at=tuple(range(11))), False, None),   # the solvent bright everywhere
     (dict(parent_tier="Candidate"), False, None),                       # a KNOWN (Assigned) persistent ion only
     (dict(bright=tuple(range(11))), False, None),                       # SOLVENT_MAX_FRAC: bright in 11 of 20
-    (dict(bright=tuple(range(10))), True, "Assigned"),                  # ... in 10 of 20: an episode
+    (dict(bright=tuple(range(10))), True, "Candidate"),                 # ... in 10 of 20: an episode
+    (dict(bright=tuple(range(10)), cluster_at=tuple(range(10)), pair=True), True, "Assigned"),
 ])
 def test_the_cluster_rules(kw, relabelled, tier):
     merged, ts = _cluster_series(**kw)
@@ -392,6 +406,16 @@ def test_the_cluster_rules(kw, relabelled, tier):
         assert merged.iloc[1]["neutral_formula"] == "C21H31NO5"
     assert (EE.SOLVENT_X, EE.SOLVENT_MAX_FRAC, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R,
             EE.TRACK_MIN_N) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4)
+
+
+def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
+    # the solvent bright in 10 of 20 spectra and the cluster in those 10 plus one more (11 of 20, > 50 %)
+    merged, ts = _cluster_series(bright=tuple(range(10)), cluster_at=tuple(range(10)))
+    _t, s = EE.read_solvent_clusters(merged.copy(), ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+    assert s["relabelled"] == 1
+    merged2, ts2 = _cluster_series(bright=tuple(range(10)), cluster_at=tuple(range(11)))
+    _t, s2 = EE.read_solvent_clusters(merged2, ts2, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+    assert s2["relabelled"] == 0
 
 
 def test_a_dim_solvent_is_no_episode():                                                           # SOLVENT_X
