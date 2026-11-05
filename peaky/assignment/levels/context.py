@@ -656,8 +656,9 @@ def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
     """The window record of every file: PRIMARY the persisted degeneracy-stage
     calibration (``per_file[i].degeneracy_cal`` = {mu, sigma} | null), else
     the D10 fallback (`fit_windows`) for the files that lack it. A file the
-    batch calibrated on its pooled core (``per_file[i].tier_calibration`` =
-    'pooled', assignment/calpool.py) is marked ``pooled``: `window_table`
+    batch calibrated on a borrowed window (``per_file[i].tier_calibration`` =
+    'pooled', the batch's pooled core, assignment/calpool.py; 'campaign' /
+    'lent', a calibration file, assignment/calfile.py) is marked ``pooled``: `window_table`
     reads its window as its own, and the run window off it only when no file
     calibrated alone. Each record carries the file's opened families
     (``fams``) and the families it opens in the level space (``fams_ev``,
@@ -673,7 +674,7 @@ def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
                        n_m0=int((led["role"] == "M0").sum()))
             if cal:
                 rec.update(cal=(float(cal["mu"]), float(cal["sigma"])), fit=(float(cal["mu"]), float(cal["sigma"])))
-                if st.get("tier_calibration") == T.CAL_SOURCE_POOLED:
+                if st.get("tier_calibration") in T.BORROWED_SOURCES:
                     rec["pooled"] = True
             else:
                 rec.update(cal=None, mu_stamp=mu_stamp(led))

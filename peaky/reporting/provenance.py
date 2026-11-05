@@ -19,7 +19,7 @@ import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
 
-__version__ = "0.1.2"  # the `lists` block: the reference-list snapshots a run read (id, version, sha256)
+__version__ = "0.1.3"  # input.tier_calibration: the calibration json a run read (path, sha256)
 
 
 def _rel_or_abs(path: str | None, base: str) -> str | None:
@@ -114,6 +114,14 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     # fingerprint differently on two batches. A number the caller set stays.
     if cfg_d.get("height_cutoff_x_edge") is None and "height_cutoff_x_edge" in cfg_d:
         cfg_d["height_cutoff_x_edge"] = AUTO_HEIGHT_CUTOFF_X_EDGE
+    # the calibration file (--tier-calibration, assignment/calfile.py) is an input:
+    # the fingerprint keeps its descriptor (sha256 of the file, source, reagent,
+    # scan range, width, source runs), never the core ion list or its local path
+    tier_cal = cfg_d.get("tier_calibration")
+    if isinstance(tier_cal, dict):
+        from peaky.assignment import calfile as _CF
+        desc = _CF.descriptor(tier_cal)
+        cfg_d["tier_calibration"] = {k: v for k, v in desc.items() if k != "path"}
     merged = os.path.join(run_dir, "merged_ledger.csv")
     inputs = {
         "dataset": dataset,
@@ -126,6 +134,10 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     }
     if axis_fingerprints is not None:
         inputs["axis_fingerprints"] = dict(axis_fingerprints)
+    if isinstance(tier_cal, dict):
+        # the calibration json read (--tier-calibration): where it was and its sha256
+        inputs["tier_calibration"] = {"path": tier_cal.get("_path"), "sha256": tier_cal.get("_sha256"),
+                                      "lent_flag": bool(cfg_d.get("tier_calibration_lent", False))}
     return {
         "run_id": os.path.basename(run_dir.rstrip("/")),
         "run_dir": run_dir,

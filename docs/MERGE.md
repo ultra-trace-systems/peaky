@@ -144,6 +144,35 @@ selected sample_ids (SAMPLING.md)
    decided once, from the ledgers of the first stage that returns an
    uncalibrated file (and the stages before it).
 
+   **1b. The calibration file** (`--tier-calibration CAL.JSON`,
+   `assignment/calfile.py`). Only when the batch's pool lends nothing (it fell
+   short, or the batch is TOF-class), a file still uncalibrated is lent the
+   window of a calibration json -- a core pooled over finished runs by `peaky
+   calibration pool` -- exactly as step 1a lends the pool's (`calpool.apply_pool`
+   about the file's own centre; the json's width is the run sigma of its runs'
+   files that calibrated alone, else its pooled sigma). A file that calibrates
+   alone, and every file of a batch whose pool calibrates, is untouched: its
+   tables are byte-identical to a run without the flag. The batch reads the json
+   once (`calfile.choose`) against its own reagent profile, polarity, instrument
+   class, scan range and days (read off the batch series: the median lowest peak
+   m/z, the highest peak m/z, the UTC dates): `campaign` when reagent, polarity
+   and scan range match; `lent` when the reagent and polarity match and the scan
+   range does not, or -- only with `--tier-calibration-lent` -- when the reagent
+   differs on the same polarity and instrument class over overlapping days (within
+   one day). A lent width must lie within 1.5x of the lending runs' per-file sigma
+   spread (`width.per_file_sigma`, stored in the json); a polarity, class, reagent
+   or width the gate refuses leaves the files `none`, the log says why as a
+   WARNING, and `levels_not_assessed_reason` adds it. The files' stats read
+   `tier_calibration: campaign | lent` and their lent window as `degeneracy_cal`;
+   `batch_summary['levels_calibration']` records the batch's weakest file source
+   in one word (`per_file` / `pooled` / `campaign` / `lent` / `none`), the files
+   per source and the json (sha256, path, its source runs and width, how it was
+   read and why not, the files lent to); `run_manifest.json` records the json's
+   sha256 under `input.tier_calibration` and its descriptor in the fingerprinted
+   `config`. `peaky relevel <run dir> --tier-calibration CAL.JSON --out DIR` makes
+   the same choice offline on a finished run and re-levels it (levels only: a
+   finished run keeps no tier-time ledger, so nothing is re-tiered).
+
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the
    reported masses stay raw.

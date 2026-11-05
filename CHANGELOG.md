@@ -158,6 +158,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (C5 vs N2O2), so whether they are side bands is left open. A row with its own 13C line at its own
   carbon count's share in every such file is neither held nor noted.
 
+- **The tier calibration as a file input: `peaky calibration pool | show | compare`, `--tier-calibration
+  CAL.JSON` on `peaky batch` / `peaky pool`, and `peaky relevel`** (`assignment/calfile.py`, MERGE.md §3
+  step 1b, EVIDENCE_LEVELS §5.1). A small scan window whose files neither calibrate alone nor on the batch's
+  pooled core (a 15N-nitrate 40-600 window, an NO+ 40-160 window) levelled nothing; pooling across batches
+  inside a run would make a batch depend on other batches. Now `peaky calibration pool <run dirs> --out
+  cal.json` pools the per-file ledgers of finished runs of one reagent and polarity (refused across reagents
+  unless `--allow-mixed`) with the batch pool's rules -- distinct ions isotope-backed in >= 2 files, >= 15 of
+  them over >= 0.25 of the committed range -- plus inorganic ions with their own 34S / 37Cl / 81Br line, and
+  never a reagent identity, a reagent-library line, an alias-series-held row or a 13C-shadow line; the json
+  (schema 1) records the reagent, polarity, scan range and days read off the runs' series, the source runs
+  (dir, commit, files), the core and the width (the run sigma of the files that calibrated alone, else the
+  pooled sigma; the per-file sigma spread). `--tier-calibration` lends it ONLY to a file neither calibration
+  reached, as `campaign` (reagent, polarity and scan range match) or `lent` (another scan range; another
+  reagent of the same polarity and class over the same days only with `--tier-calibration-lent`); a lent
+  width outside 1.5x of the lending spread is refused and the file stays `none`, the reason logged and in
+  `levels_not_assessed_reason`. Files that calibrate per file or on the batch pool are byte-identical with
+  the flag. New: per-file `tier_calibration` values `campaign` / `lent` (stats, M0 rows, merged rows; the
+  reasons name the "campaign-pooled" / "lent" window), `batch_summary['levels_calibration']`, the json's
+  sha256 in `run_manifest.json` (`input.tier_calibration`; its descriptor in the fingerprinted config;
+  PassConfig `tier_calibration`, `tier_calibration_lent`). `peaky relevel <run dir> --tier-calibration
+  cal.json --out DIR` re-levels a finished run offline with the same choice (levels only, no re-tier).
+
 ### Changed
 
 - **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm

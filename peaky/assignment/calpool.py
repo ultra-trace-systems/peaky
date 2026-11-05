@@ -107,7 +107,7 @@ from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 from peaky.chem import chemistry as C
 
-__version__ = "0.1.0"  # the batch-pooled tier calibration (REPORT #1 / B7)
+__version__ = "0.2.0"  # + the campaign core's inorganic ions, the core-row pool on its own, the lent source
 
 #: distinct ions the pooled core needs (the per-file core needs tiers.CAL_MIN_N rows)
 POOL_MIN_IONS = 15
@@ -124,8 +124,18 @@ REAGENT_PPM = 12.0
 #: a file lent the pooled calibration is centred on its own Assigned M0 rows when
 #: it has at least this many (`lent_calibration`), else on the batch's centre
 CENTRE_MIN_ROWS = 15
+#: a campaign core row within this many ppm of a line the run's label-twin table
+#: calls a 13C shadow (label_twins: no reading's own ion) is not taken
+SHADOW_PPM = 3.0
 
 CORE_COLUMNS = ["sid", "ion", "neutral_formula", "adduct", "mz", "ppm", "height"]
+
+#: the inorganic ions a campaign core takes (`core_rows(inorganic=True)`): a
+#: carbon-free neutral carrying one of these elements, seen with its own line of
+#: that element (an iso_child row whose label names the isotope) -- HSO4- / SO2- /
+#: SO4- on 34S, a chlorine species on 37Cl, a bromine species on 81Br. The element
+#: must sit in the NEUTRAL: a halide adduct's own 81Br / 37Cl line is the reagent's
+INORGANIC_ISOTOPES = {"S": "34S", "Cl": "37Cl", "Br": "81Br"}
 
 
 def _ion_key(r) -> str:
@@ -138,26 +148,64 @@ def _ion_key(r) -> str:
         f"{T._txt(r.get('neutral_formula'))} {T._txt(r.get('adduct'))}")
 
 
-def core_rows(ledger: pd.DataFrame, *, polarity: str = "negative", reagent_masses=(), sid: str = "") -> pd.DataFrame:
+def _inorganic_point(r, labels_of) -> tuple[float, float] | None:
+    """(ppm_error, mz) of a carbon-free M0 row the campaign core takes
+    (INORGANIC_ISOTOPES): High/Good, |ppm| <= 15 (`tiers.core_point`'s guards),
+    its neutral carrying S / Cl / Br and an iso_child row of the ledger, pointing
+    at it, whose label names that element's isotope (`labels_of`: the labels by
+    parent_peak_id). None otherwise."""
+    counts = C.parse_formula(T._txt(r.get("neutral_formula")))
+    if counts.get("C", 0) or T.base_confidence(r.get("confidence")) not in ("High", "Good"):
+        return None
+    labels = labels_of.get(r["peak_id"], ())
+    if not any(counts.get(el, 0) and any(iso in str(lb) for lb in labels)
+               for el, iso in INORGANIC_ISOTOPES.items()):
+        return None
+    p = r.get("ppm_error")
+    if p is None or pd.isna(p) or abs(float(p)) > 15:
+        return None
+    mz = r.get("mz")
+    return float(p), (float(mz) if mz is not None and not pd.isna(mz) else np.nan)
+
+
+def core_rows(ledger: pd.DataFrame, *, polarity: str = "negative", reagent_masses=(), sid: str = "",
+              inorganic: bool = False, exclude_peaks=frozenset(), exclude_mz=()) -> pd.DataFrame:
     """The rows of one file's ledger the pooled core may take (CORE_COLUMNS):
     `tiers.core_point`'s rows whose neutral carries carbon, whose reading is no
     reagent identity on the run's `polarity` ('negative' / 'positive') and whose
-    line sits off every `reagent_masses` ion (REAGENT_PPM)."""
+    line sits off every `reagent_masses` ion (REAGENT_PPM). `inorganic` (the
+    campaign core, assignment/calfile.py): also the carbon-free ions with their
+    own isotope line (`_inorganic_point`, INORGANIC_ISOTOPES), under the same
+    reagent tests. `exclude_peaks`: peak ids never taken (a row the alias-series
+    hold flagged); `exclude_mz`: lines never taken within SHADOW_PPM of them (the
+    13C-shadow lines of the run's label-twin table)."""
     from peaky.assignment.levels.decide import reagent_identity
     if ledger is None or not len(ledger) or "role" not in ledger.columns:
         return pd.DataFrame(columns=CORE_COLUMNS)
     m0 = ledger[ledger["role"] == L.ROLE_M0]
-    kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
+    iso = ledger[ledger["role"] == L.ROLE_ISO]
+    kids_of = iso["parent_peak_id"].value_counts()
+    labels_of = (iso.groupby("parent_peak_id")["iso_label"].agg(lambda x: tuple(x.dropna().astype(str))).to_dict()
+                 if inorganic and "iso_label" in iso.columns and len(iso) else {})
     masses = np.sort(np.asarray([float(m) for m in reagent_masses], dtype=float))
+    shadows = np.asarray([float(m) for m in exclude_mz], dtype=float)
     recs = []
     for _, r in m0.iterrows():
-        pt = T.core_point(r, kids_of)
-        if pt is None or not np.isfinite(pt[1]):
+        if r["peak_id"] in exclude_peaks:
             continue
         nf, ad = T._txt(r.get("neutral_formula")), T._txt(r.get("adduct"))
-        if C.parse_formula(nf).get("C", 0) < 1:
+        carbon = C.parse_formula(nf).get("C", 0) >= 1
+        if carbon:
+            pt = T.core_point(r, kids_of)
+        elif inorganic:
+            pt = _inorganic_point(r, labels_of)
+        else:
+            continue
+        if pt is None or not np.isfinite(pt[1]):
             continue
         if reagent_identity(nf, ad, polarity):
+            continue
+        if len(shadows) and np.any(np.abs(shadows - pt[1]) <= shadows * SHADOW_PPM * 1e-6):
             continue
         if len(masses) and np.any(np.abs(masses - pt[1]) <= masses * REAGENT_PPM * 1e-6):
             continue
@@ -185,13 +233,20 @@ class Pool:
     #: calibrated alone (n of them), set by the batch; None when none did. A
     #: file is then lent the run sigma, not the pooled one (`lent_calibration`)
     run_window: tuple | None = None
+    #: the CAL_SOURCE_* a file lent this pool's window records: the batch's own
+    #: pool (CAL_SOURCE_POOLED), or a calibration file's (CAL_SOURCE_CAMPAIGN /
+    #: CAL_SOURCE_LENT, assignment/calfile.py: its width is the file's, `cal`)
+    source: str = T.CAL_SOURCE_POOLED
 
     def lent_width(self) -> tuple[float, float, str] | None:
-        """(centre, sigma, 'run' | 'pool') a file is lent about its own centre
-        (the centre: a file with too few Assigned rows of its own); None
-        without a calibration."""
+        """(centre, sigma, 'run' | 'pool' | 'file') a file is lent about its own
+        centre (the centre: a file with too few Assigned rows of its own); None
+        without a calibration. 'file': a calibration file's width (`cal`, as the
+        file states it)."""
         if self.cal is None:
             return None
+        if self.source != T.CAL_SOURCE_POOLED:
+            return float(self.cal[0]), float(self.cal[1]), "file"
         if self.run_window is not None:
             return float(self.run_window[0]), float(self.run_window[1]), "run"
         return float(self.cal[0]), float(self.cal[1]), "pool"
@@ -248,15 +303,34 @@ def pool_calibration(ledgers: dict, *, polarity: str = "negative", reagent_masse
     rows = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=CORE_COLUMNS)
     if carry and len(rows):
         rows["ppm"] = rows["ppm"].astype(float) - MC.edge_carry_at(carry, rows["mz"].to_numpy(dtype=float))
+    return pool_core(rows, committed_mz_range(ledgers.values()), n_files_read=len(sids),
+                     abs_floor_mda=abs_floor_mda, min_ions=min_ions, min_files=min_files,
+                     min_span_frac=min_span_frac, klass=klass)
+
+
+def committed_mz_range(ledgers) -> tuple[float, float]:
+    """(min, max) m/z of the M0 rows of `ledgers` (NaN, NaN when none)."""
     mzs = []
-    for s in sids:
-        led = ledgers[s]
+    for led in ledgers:
         if led is not None and len(led) and {"role", "mz"} <= set(led.columns):
             mzs.append(pd.to_numeric(led.loc[led["role"] == L.ROLE_M0, "mz"], errors="coerce").to_numpy(dtype=float))
     allm = np.concatenate(mzs) if mzs else np.empty(0)
     allm = allm[np.isfinite(allm)]
-    pool = Pool(n_files_read=len(sids),
-                mz_range=(float(allm.min()), float(allm.max())) if len(allm) else (float("nan"), float("nan")))
+    return (float(allm.min()), float(allm.max())) if len(allm) else (float("nan"), float("nan"))
+
+
+def pool_core(rows: pd.DataFrame, mz_range: tuple, *, n_files_read: int, abs_floor_mda: float = MC.ABS_FLOOR_MDA,
+              min_ions: int = POOL_MIN_IONS, min_files: int = POOL_MIN_FILES,
+              min_span_frac: float = POOL_MIN_SPAN_FRAC, klass: str | None = None,
+              source: str = T.CAL_SOURCE_POOLED) -> Pool:
+    """The pool of core rows already taken (`core_rows`, CORE_COLUMNS; `sid` the
+    file each came from, its ppm on the scale the fit reads) over the committed
+    `mz_range` of the `n_files_read` files read: the file-count minimum, one row
+    per ion (the tallest), the ion and span minima and the robust fit, as
+    `pool_calibration` (module note). `source`: the CAL_SOURCE_* the calibration
+    carries. The campaign pool of assignment/calfile.py reads the same rules."""
+    rows = rows if rows is not None and len(rows) else pd.DataFrame(columns=CORE_COLUMNS)
+    pool = Pool(n_files_read=int(n_files_read), mz_range=tuple(mz_range))
     if not len(rows):
         pool.reason = ("no file holds a carbon-bearing, isotope-backed High/Good core row off the reagent "
                        "(too few 13C lines above the noise edge)")
@@ -287,7 +361,7 @@ def pool_calibration(ledgers: dict, *, polarity: str = "negative", reagent_masse
                        f"{min_span_frac:g} of the committed range {pool.mz_range[0]:.1f}-{pool.mz_range[1]:.1f}")
         return pool
     mu, sigma, _keep = T.robust_centre(best["ppm"].to_numpy(dtype=float), min_ions)
-    pool.cal = T._Cal(mu, sigma, abs_floor_mda=abs_floor_mda, source=T.CAL_SOURCE_POOLED)
+    pool.cal = T._Cal(mu, sigma, abs_floor_mda=abs_floor_mda, source=source)
     return pool
 
 
@@ -323,15 +397,15 @@ def lent_calibration(pool: Pool, assigned_ppm=(), *, min_rows: int = CENTRE_MIN_
     p = pd.to_numeric(pd.Series(list(assigned_ppm), dtype=object), errors="coerce").dropna()
     mu, centre = (float(p.median()), "file") if len(p) >= min_rows else (lw[0], lw[2])
     return T._Cal(mu, lw[1], abs_floor_mda=getattr(pool.cal, "abs_floor_mda", MC.ABS_FLOOR_MDA),
-                  source=T.CAL_SOURCE_POOLED), centre
+                  source=pool.source), centre
 
 
-def _level_inputs_with(ri, cal):
-    """The file's evidence-stage run inputs with the pooled window as its degeneracy calibration."""
+def _level_inputs_with(ri, cal, source: str = T.CAL_SOURCE_POOLED):
+    """The file's evidence-stage run inputs with the lent window as its degeneracy calibration."""
     summ = copy.deepcopy(ri.summary)
     pf = summ.get("per_file") or [{}]
     pf[0] = dict(pf[0], degeneracy_cal={"mu": float(cal[0]), "sigma": float(cal[1])},
-                 tier_calibration=T.CAL_SOURCE_POOLED)
+                 tier_calibration=source)
     summ["per_file"] = pf
     return dataclasses.replace(ri, summary=summ)
 
@@ -395,7 +469,7 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     out = {"cal": {"mu": float(cal[0]), "sigma": float(cal[1]), "centre": centre, "width": pool.lent_width()[2]},
            "degeneracy": {"measured": int(d.notna().sum()),
                           "degenerate": int(sum(T._degeneracy(r)[1] for _, r in am.iterrows()))}}
-    out["tiers"] = T.retier_calibrated(ledger, base, new, source=T.CAL_SOURCE_POOLED)
+    out["tiers"] = T.retier_calibrated(ledger, base, new, source=pool.source)
     # the skeleton cap's record where the run takes it (assign._stage_tiers):
     # the tier stage's verdicts, before later stages rewrite rows
     rec = at[["peak_id", "role"]].copy()
@@ -420,7 +494,7 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     # 4. the file's own evidence level, in the pooled window
     out["levels"] = None
     if inputs.level_inputs is not None:
-        s = EV.apply_levels(ledger, cfg=cfg, run_inputs=_level_inputs_with(inputs.level_inputs, cal))
+        s = EV.apply_levels(ledger, cfg=cfg, run_inputs=_level_inputs_with(inputs.level_inputs, cal, pool.source))
         out["levels"] = {"n_levelled": int(s.get("n_levelled", 0)), "levels": s.get("levels")}
     t = out["tiers"]
     log(f"[calpool]   window {cal[0]:+.3f} ± {cal[1]:.3f} ppm (centre: the {centre}'s; "

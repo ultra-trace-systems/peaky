@@ -439,6 +439,8 @@ def cmd_batch(args) -> None:
                            axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
                            axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
                            lists=getattr(args, "lists", None),
+                           tier_calibration=getattr(args, "tier_calibration", None),
+                           tier_calibration_lent=getattr(args, "tier_calibration_lent", False),
                            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
                            **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
@@ -483,6 +485,8 @@ def cmd_pool(args) -> None:
             mass_axis=getattr(args, "mass_axis", "auto"),
             axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
             axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
+            tier_calibration=getattr(args, "tier_calibration", None),
+            tier_calibration_lent=getattr(args, "tier_calibration_lent", False),
             isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
             **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -499,6 +503,53 @@ def cmd_pool(args) -> None:
             for gr in res["group_runs"]:
                 print(f"    {gr}")
         _progress_hold_note(prog)
+
+
+def cmd_calibration(args) -> None:
+    """`peaky calibration pool|show|compare`: the tier calibration as a file
+    (assignment/calfile.py). Offline: reads finished run dirs and json files only."""
+    from peaky.assignment import calfile as CF
+    verb = args.cal_verb
+    try:
+        if verb == "pool":
+            sr = None
+            if args.scan_range:
+                lo, hi = (float(x) for x in args.scan_range.replace(",", "-").split("-", 1))
+                sr = [lo, hi]
+            rec = CF.pool_runs(args.runs, allow_mixed=args.allow_mixed, scan_range=sr, log=print)
+            sha = CF.write(rec, args.out)
+            rec["_sha256"] = sha
+            print(CF.show_text(rec) if args.verbose else "\n".join(CF.show_text(rec).splitlines()[:8]))
+            print(f"[calibration] -> {args.out} (sha256 {sha})")
+            if not rec["usable"]:
+                print(f"[calibration] WARNING: the core is not usable: {rec['reason']}")
+            return
+        if verb == "show":
+            print(CF.show_text(CF.load(args.json)))
+            return
+        if verb == "compare":
+            a, b = CF.load(args.a), CF.load(args.b)
+            print(json.dumps(CF.compare(a, b), indent=1) if args.json_out else CF.compare_text(a, b))
+            return
+    except CF.CalibrationError as e:
+        sys.exit(f"[calibration] {e}")
+    sys.exit(f"unknown calibration verb {verb!r}")
+
+
+def cmd_relevel(args) -> None:
+    """`peaky relevel <run dir> --out DIR [--tier-calibration cal.json]`: the
+    evidence levels of a finished batch run again, offline, with a calibration
+    json lent to the files no calibration reached (assignment/calfile.py)."""
+    from peaky.assignment import calfile as CF
+    try:
+        rec = CF.load(args.tier_calibration) if args.tier_calibration else None
+        if args.tier_calibration_lent and rec is None:
+            sys.exit("[relevel] --tier-calibration-lent needs --tier-calibration PATH")
+        out = CF.relevel_run(args.run_dir, rec, out_dir=args.out, lent_ok=args.tier_calibration_lent, log=print)
+    except CF.CalibrationError as e:
+        sys.exit(f"[relevel] {e}")
+    print(f"[relevel] -> {args.out} ({out['n_pairs']} pairs; read as {out['read_as']}"
+          + (f"; {out['reason']}" if out["reason"] else "") + ")")
 
 
 def report_inputs_of(run_dir: str) -> dict:
@@ -2116,6 +2167,18 @@ def _add_iso_response_flag(p) -> None:
                         "record 'iso_response'. No effect off an Orbitrap")
 
 
+def _add_tier_calibration_flags(p) -> None:
+    p.add_argument("--tier-calibration", dest="tier_calibration", default=None, metavar="CAL.JSON",
+                   help="a calibration json (`peaky calibration pool`): lent ONLY to a file whose own core "
+                        "and the batch's pooled core both fall short of a tier calibration, as 'campaign' "
+                        "(the json's reagent, polarity and scan range match the batch) or 'lent' (another "
+                        "scan range). A file that calibrates either way is unchanged. The json's sha256 goes "
+                        "into run_manifest.json; batch_summary 'levels_calibration' says how it was read")
+    p.add_argument("--tier-calibration-lent", dest="tier_calibration_lent", action="store_true", default=False,
+                   help="allow the --tier-calibration json of ANOTHER reagent of the same polarity and "
+                        "instrument class over the same days to be lent ('lent'); never implicit")
+
+
 def _add_isotopologue_flag(p) -> None:
     p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
                    help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
@@ -2315,6 +2378,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_sidelobe_flag(pb)
     _add_iso_response_flag(pb)
     _add_isotopologue_flag(pb)
+    _add_tier_calibration_flags(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -2362,6 +2426,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_sidelobe_flag(pp)
     _add_iso_response_flag(pp)
     _add_isotopologue_flag(pp)
+    _add_tier_calibration_flags(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
@@ -2563,6 +2628,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dry(pcx)
 
     pc.set_defaults(func=cmd_curate)
+
+    pK = sub.add_parser("calibration", help="the tier calibration as a file (offline): pool a core over "
+                                            "finished run dirs into a json, show one, compare two")
+    pKs = pK.add_subparsers(dest="cal_verb", required=True)
+    pKp = pKs.add_parser("pool", help="pool the per-file ledgers of finished run dirs (one reagent and "
+                                      "polarity) into a calibration json")
+    pKp.add_argument("runs", nargs="+", help="finished batch run dirs")
+    pKp.add_argument("--out", required=True, help="the json to write")
+    pKp.add_argument("--allow-mixed", action="store_true",
+                     help="pool runs of different reagents / polarities anyway (refused by default)")
+    pKp.add_argument("--scan-range", default=None, metavar="LO-HI",
+                     help="the scan range to record (default: read off the runs' series)")
+    pKp.add_argument("--verbose", "-v", action="store_true", help="print the core ions too")
+    pKw = pKs.add_parser("show", help="print a calibration json's core and width")
+    pKw.add_argument("json")
+    pKc = pKs.add_parser("compare", help="two calibration jsons: width ratio (b / a), centre, core overlap")
+    pKc.add_argument("a")
+    pKc.add_argument("b")
+    pKc.add_argument("--json", dest="json_out", action="store_true", help="print the comparison as json")
+    pK.set_defaults(func=cmd_calibration)
+
+    pRl = sub.add_parser("relevel", help="the evidence levels of a finished batch run again, offline, "
+                                         "optionally with a calibration json (no re-assignment)")
+    pRl.add_argument("run_dir")
+    pRl.add_argument("--out", required=True, help="the new run dir to write (never the run dir itself)")
+    _add_tier_calibration_flags(pRl)
+    pRl.set_defaults(func=cmd_relevel)
 
     pL = sub.add_parser("lists", help="reference-list snapshots: pin (lock), verify, show, import a "
                                       "source offline (the only verb that touches the network)")
