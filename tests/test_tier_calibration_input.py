@@ -452,11 +452,24 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     """A finished run whose files no calibration reached: re-levelled with a matching json its pairs get
     levels ('campaign', the per-file windows centred on the files); with a json it may not read the
     level table is the one a re-level without a json writes. The run dir is never written."""
+    from peaky.reporting import provenance as PV
     run = tmp_path / "run"
     _run(run, monkeypatch)
+    json.dump({"code": {"git": {"commit": "c0ffee"}}, "input": {"batch_name": "b"},
+               "output": {"merged_ledger_sha1": PV.sha1_file(str(run / "merged_ledger.csv"))}},
+              open(run / "run_manifest.json", "w"))
     before = {f: os.path.getmtime(run / f) for f in os.listdir(run) if os.path.isfile(run / f)}
     rec = _json(tmp_path, "r.json")
     out = CF.relevel_run(str(run), rec, out_dir=str(tmp_path / "rl"), log=lambda *a: None)
+    # the re-levelled dir's manifest: the json by its sha256, the merged ledger's new sha1, the source's
+    man = json.load(open(tmp_path / "rl" / "run_manifest.json"))
+    assert man["input"]["tier_calibration"] == {"path": rec["_path"], "sha256": rec["_sha256"], "lent_flag": False}
+    assert man["output"]["merged_ledger_sha1"] == PV.sha1_file(str(tmp_path / "rl" / "merged_ledger.csv"))
+    rl = man["relevel"]
+    assert rl["source_merged_ledger_sha1"] == PV.sha1_file(str(run / "merged_ledger.csv"))
+    assert rl["merged_ledger_changed"] is True and rl["cal_sha256"] == rec["_sha256"] and rl["read_as"] == "campaign"
+    assert rl["source_manifest_sha1"] == PV.sha1_file(str(run / "run_manifest.json"))
+    assert man["input"]["batch_name"] == "b" and man["code"]["git"]["commit"] == "c0ffee"
     assert out["read_as"] == "campaign" and set(out["centres"].values()) == {"file"}
     s = json.load(open(tmp_path / "rl" / "batch_summary.json"))
     assert s["levels_calibration"]["source"] == "campaign" and s["levels_not_assessed_reason"] is None
@@ -466,6 +479,8 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     m = pd.read_csv(tmp_path / "rl" / "merged_ledger.csv", keep_default_na=False)
     assert m["evidence_level"].isin(["3c", "4a", "4b", "5a", "5b"]).any()
     CF.relevel_run(str(run), None, out_dir=str(tmp_path / "none"), log=lambda *a: None)
+    m0 = json.load(open(tmp_path / "none" / "run_manifest.json"))
+    assert "tier_calibration" not in m0["input"] and m0["relevel"]["merged_ledger_changed"] is False
     # without a json the re-level reproduces the run's own level table and merged ledger byte for byte
     for f in ("tables/evidence_levels.csv", "merged_ledger.csv"):
         assert filecmp.cmp(run / f, tmp_path / "none" / f, shallow=False), f

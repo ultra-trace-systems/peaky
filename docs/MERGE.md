@@ -183,7 +183,12 @@ selected sample_ids (SAMPLING.md)
    sha256 under `input.tier_calibration` and its descriptor in the fingerprinted
    `config`. `peaky relevel <run dir> --tier-calibration CAL.JSON --out DIR` makes
    the same choice offline on a finished run and re-levels it (levels only: a
-   finished run keeps no tier-time ledger, so nothing is re-tiered).
+   finished run keeps no tier-time ledger, so nothing is re-tiered). The new dir's
+   `run_manifest.json` is the run's own with the json's sha256 under
+   `input.tier_calibration`, `output.merged_ledger_sha1` refreshed (the merged
+   ledger's level columns are re-stamped, every other byte is the run's) and a
+   `relevel` record (the source dir, the sha1 of its manifest and merged ledger,
+   whether the ledger changed, the json's sha256, the re-levelling code).
 
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the

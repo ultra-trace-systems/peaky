@@ -779,4 +779,35 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
     summ["relevel"] = rec
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:
         json.dump(summ, fh, indent=2, default=str)
+    _relevel_manifest(run_dir, out_dir, record, rec)
     return rec
+
+
+def _relevel_manifest(run_dir: str, out_dir: str, record: dict | None, rec: dict) -> None:
+    """The re-levelled dir's run_manifest.json: the run's own (code, input, config as the
+    run had them), with `input.tier_calibration` (the json's path, sha256, lent flag) when
+    a json was given, `output.merged_ledger_sha1` refreshed to the re-stamped merged
+    ledger (its level columns are new; every other byte is the run's), and `relevel`:
+    the source run dir, the sha1 of its manifest and merged ledger, whether the ledger's
+    bytes changed, the json's sha256, how it was read and the code that re-levelled."""
+    from peaky.reporting import provenance as PV
+    src_m = os.path.join(run_dir, "run_manifest.json")
+    try:
+        man = json.load(open(src_m)) if os.path.isfile(src_m) else {}
+    except (OSError, ValueError):
+        man = {}
+    src_led = PV.sha1_file(os.path.join(run_dir, "merged_ledger.csv"))
+    new_led = PV.sha1_file(os.path.join(out_dir, "merged_ledger.csv"))
+    man.setdefault("output", {})["merged_ledger_sha1"] = new_led
+    if record is not None:
+        man.setdefault("input", {})["tier_calibration"] = {"path": record.get("_path"), "sha256": record.get("_sha256"),
+                                                           "lent_flag": bool(rec.get("lent_flag"))}
+    man["relevel"] = {"source_run_dir": run_dir, "source_manifest_sha1": PV.sha1_file(src_m) if os.path.isfile(src_m)
+                      else None, "source_merged_ledger_sha1": src_led, "merged_ledger_sha1": new_led,
+                      "merged_ledger_changed": src_led != new_led,
+                      "cal_sha256": record.get("_sha256") if record is not None else None,
+                      "read_as": rec.get("read_as"), "reason": rec.get("reason"), "lent_flag": rec.get("lent_flag"),
+                      "peaky_version": rec.get("peaky_version"),
+                      "git": PV.git_info(os.path.dirname(os.path.dirname(__file__)))}
+    with open(os.path.join(out_dir, "run_manifest.json"), "w") as fh:
+        json.dump(man, fh, indent=2, default=str)
