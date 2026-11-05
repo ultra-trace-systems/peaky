@@ -152,9 +152,11 @@ run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
 coverage is in `batch_summary.json['selection']`. An **episode stage** (on by
 default; `--no-episodes` reproduces the run without it) follows the cover: every
 short bright episode (bins in 3 to max(19, 1 %) samples, ≥ 5× their baseline,
-≥ 3× the sample's edge, grouped by time overlap) gets its peak sample and up to 2
-neighbours, at most clamp(⌊0.15 × the cover's files⌋, 1, 8) files beyond the
-cover's (`--k-episode-max N`: an absolute number instead), assigned with
+≥ 3× the sample's edge, grouped by time overlap) is covered by rule: every such bin
+peaking at ≥ 5× its sample's edge (`--episode-min-x-edge`) has its peak spectrum
+assigned, with its episode's peak sample and up to 2 neighbours -- no budget (a
+coverage guarantee, not a cost bound; `--k-episode-max N` is an optional safety
+cap, flagged when it binds), assigned with
 them (role `episode`; `tables/episodes.csv`, `selection.episodes`; per-file rows
 on an episodic bin carry `episode = True`; `docs/SAMPLING.md` §3c). A **residual stage** (on by
 default; `--no-residual` reproduces the cover-only run) then targets the bins the

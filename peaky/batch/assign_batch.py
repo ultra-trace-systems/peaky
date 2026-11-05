@@ -47,8 +47,9 @@ reproduces the cover-only run exactly.
 
 THE EPISODE STAGE (sampling.py, THE EPISODE STAGE). Between the cover and the
 first assignment, every short bright episode of the batch gets its peak file and
-up to two neighbours on a budget of its own (`sampling.episode_budget`:
-clamp(floor(0.15 x the cover's files), 1, 8), or `k_episode_max`); those files are
+up to two neighbours, and every episodic bin peaking at >= 5x its sample's noise
+edge its own peak spectrum -- no budget (`k_episode_max` is an optional safety
+cap); those files are
 assigned with the cover's (`stage` cover; `tables/selected_samples.csv` role
 'episode'), `tables/episodes.csv` and `batch_summary.json['selection']['episodes']`
 record the episodes, and the per-file ledgers of a batch with an episode file
@@ -79,7 +80,7 @@ from peaky.batch import sampling as SS
 
 __version__ = "0.13.0"  # + the episode stage between the cover and the first assignment (sampling.py,
                         #   tables/episodes.csv, selection["episodes"], the per-file `episode` column; its
-                        #   budget sized by the cover, sampling.episode_budget; k_episode_max overrides)
+                        #   the coverage rule: every episodic bin >= 5x edge gets its peak spectrum, no budget)
                         # 0.12.1: + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
                         #   tables/sideband_holds.csv, merge_gates["sideband"])
                         # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
@@ -2371,7 +2372,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_min_cps: float | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
-        episodes: bool = SS.EPISODE_DEFAULT, k_episode_max: int | None = None,
+        episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
+        k_episode_max: int | None = SS.K_EPISODE_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
@@ -2413,11 +2415,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     `residual_samples` to append to its own selection table.
 
     `episodes` (default `sampling.EPISODE_DEFAULT`) runs the episode stage
-    right after the cover (sampling.py, THE EPISODE STAGE): the batch's short
-    bright episodes get their peak file and up to two neighbours, at most
-    `sampling.episode_budget` files beyond the cover's -- clamp(floor(0.15 x
-    the cover's files), 1, 8): about 15 % more files on average, at least one;
-    `k_episode_max` = an absolute number instead -- assigned with the cover's files
+    right after the cover (sampling.py, THE EPISODE STAGE, THE COVERAGE RULE):
+    every episodic bin peaking at >= `episode_min_x_edge` (5) x its sample's
+    noise edge gets its peak spectrum, and its episode its peak file and up to
+    two neighbours -- no budget (a coverage guarantee, not a cost bound);
+    `k_episode_max` is an optional safety cap, flagged when it binds -- assigned with the cover's files
     (tables/selected_samples.csv role 'episode'); the record is
     batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
     of an episode's files on an episodic bin carry `episode = True` in the
@@ -2669,14 +2671,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if _warn:
             log(f"[assign_batch] WARNING: {_warn}")
         if episodes:
-            # THE EPISODE STAGE (sampling.py): the peak file (+ neighbours) of every
-            # short bright episode, on its own budget, outside the cover's stop rule
-            episode_univ = SS.episode_universe(src, tol_ppm=tol_ppm)
-            ebudget = SS.episode_budget(len(sample_ids), k_episode_max)
+            # THE EPISODE STAGE (sampling.py): THE COVERAGE RULE -- every episodic
+            # bin peaking at >= episode_min_x_edge x its sample's edge gets its peak
+            # spectrum (and its episode's, + neighbours); no budget, outside the
+            # cover's stop rule; k_episode_max is an optional safety cap
+            episode_univ = SS.episode_universe(src, tol_ppm=tol_ppm, min_x_edge=episode_min_x_edge)
             esel = SS.select_episode_samples(src, episode_univ, assigned=sample_ids,
-                                             k_max=ebudget["k_max"])
+                                             k_max=k_episode_max)
             emeta = dict(esel.attrs.get("selection", {}))
-            emeta["budget"] = ebudget
             episode_flag_files = list(esel.attrs.get("flag_files") or [])
             SS.episodes_table(emeta).to_csv(os.path.join(TAB, "episodes.csv"), index=False)
             emeta["episodes"] = [{k: v for k, v in e.items() if k not in ("bins", "n_bright")}
@@ -3149,7 +3151,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                dict(res.get("stats", {})), STAGE_COVER, res.get("pattern_scoring"))
         log(f"[assign_batch] (1/1) done {trace_sample.sample_id}")
     else:
+        _t_cover = time.time()
         _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
+        if n_episode_files and isinstance(selection.get("episodes"), dict):
+            # information only (no gate): the share of the cover pool's wall the
+            # episode files took, the files being alike on average
+            _w = time.time() - _t_cover
+            selection["episodes"]["est_extra_wall_s"] = round(_w * n_episode_files / max(len(sample_ids), 1), 1)
+            selection["episodes"]["assign_wall_s"] = round(_w, 1)
 
     from peaky.chem import reagents as _RG
     from peaky.assignment import plausibility as PL

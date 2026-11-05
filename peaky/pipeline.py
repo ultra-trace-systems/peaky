@@ -423,7 +423,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               residual_min_x_edge: float = SS.RESIDUAL_MIN_X_EDGE,
               residual_min_cps: float | None = None,
               residual_k_max: int = SS.RESIDUAL_K_MAX,
-              episodes: bool = SS.EPISODE_DEFAULT, k_episode_max: int | None = None,
+              episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
+              k_episode_max: int | None = SS.K_EPISODE_MAX,
               occurrence_min: float | None = None,
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,
@@ -452,9 +453,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     lands in batch_summary.json['selection']['residual'].
     With `episodes` (the default) the episode stage runs right after the cover
     (sampling.episode_universe / select_episode_samples): every short bright
-    episode gets its peak file and up to two neighbours, at most
-    `sampling.episode_budget` files beyond the cover's (clamp(floor(0.15 x the
-    cover's files), 1, 8); `k_episode_max` = an absolute number instead); the
+    episode gets its peak file and up to two neighbours, and every episodic bin
+    peaking at >= `episode_min_x_edge` (5) x its sample's noise edge its own peak
+    spectrum (no budget; `k_episode_max` = an optional safety cap); the
     record lands in
     batch_summary.json['selection']['episodes'] and tables/episodes.csv.
     `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
@@ -539,7 +540,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                      k_min=k_min, k_max=k_max, min_gain=min_gain,
                      residual=residual, residual_min_x_edge=residual_min_x_edge,
                      residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
-                     episodes=episodes, k_episode_max=k_episode_max,
+                     episodes=episodes, episode_min_x_edge=episode_min_x_edge,
+                     k_episode_max=k_episode_max,
                      mass_axis=mass_axis, lists=lists, axis_fingerprints=axis_fingerprints,
                      axis_fingerprint_dir=axis_fingerprint_dir, n_jobs=n_jobs, log=log, **assign_kw)
     finally:

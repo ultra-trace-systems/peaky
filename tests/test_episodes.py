@@ -233,11 +233,13 @@ def test_neighbours_need_half_the_bins_and_come_nearest_first():  # EPISODE_NEIG
     (e,) = u.attrs["episodes"]
     assert e["peak_sample"] == "s012"
     # nearest first even with fewer bins (s013 before s014 / s010); never s011 (25 %)
-    assert e["wanted"] == ["s012", "s013", "s014"]
+    assert e["neighbours"] == ["s013", "s014"]
     _, u3 = _episodic_mz(t, n_neighbours=3)
-    assert u3.attrs["episodes"][0]["wanted"] == ["s012", "s013", "s014", "s010"]
+    assert u3.attrs["episodes"][0]["neighbours"] == ["s013", "s014", "s010"]
     _, u25 = _episodic_mz(t, neighbour_frac=0.25)
-    assert u25.attrs["episodes"][0]["wanted"] == ["s012", "s013", "s011"]
+    assert u25.attrs["episodes"][0]["neighbours"] == ["s013", "s011"]
+    # the three bins on 300+ peak in s014 (6e3): their own peak spectrum is wanted before the neighbours
+    assert e["bin_peaks"] == ["s014"] and e["wanted"] == ["s012", "s014", "s013"]
 
 
 # --------------------------------------------------------------------------- the budget
@@ -270,24 +272,51 @@ def test_the_budget_flags_only_when_a_wanted_file_is_left_out(fx):  # K_EPISODE_
     assert list(hit["sample_item_id"]) == ["ep21"]
     assert m["stop_reason"] == SS.STOP_KMAX and m["episodes"][0]["over_budget"] == ["ep22"]
     assert "k_episode_max=1" in SS.episode_budget_warning(m)
-    assert (SS.K_EPISODE_MAX, SS.K_EPISODE_FRAC, SS.K_EPISODE_MIN) == (8, 0.15, 1)
+    assert (SS.K_EPISODE_MAX, SS.EPISODE_MIN_X_EDGE, SS.EPISODE_BRIGHT_X_EDGE) == (None, 5.0, 3.0)
     none = SS.select_episode_samples(t, u, assigned=cover, k_max=0)
     assert len(none) == 0 and none.attrs["selection"]["stop_reason"] == SS.STOP_KMAX
 
 
-@pytest.mark.parametrize("n_files,k", [(0, 1), (1, 1), (6, 1), (7, 1), (13, 1), (14, 2), (20, 3), (26, 3),
-                                       (27, 4), (53, 7), (54, 8), (60, 8), (200, 8)])
-def test_the_default_budget_is_sized_by_the_cover(n_files, k):   # K_EPISODE_FRAC, _MIN, _MAX
-    """clamp(floor(0.15 x the cover's files), 1, 8): about 15 % more files on any batch."""
-    b = SS.episode_budget(n_files)
-    assert (b["k_max"], b["source"], b["n_files"]) == (k, "proportional", n_files)
+@pytest.mark.parametrize("cap,picks,stop", [(None, 9, "exhausted"), (9, 9, "exhausted"), (4, 4, "k_max"),
+                                             (0, 0, "k_max")])
+def test_no_budget_by_default_and_the_cap_is_optional(cap, picks, stop):   # K_EPISODE_MAX = None
+    """Three qualifying single-bin episodes, each wanting its peak and two neighbours (9 files):
+    with no cap all are taken; a cap is flagged when it binds."""
+    t, u = _three_episodes()
+    kw = {} if cap is None else {"k_max": cap}
+    sel = SS.select_episode_samples(t, u, assigned=[], **kw)
+    m = sel.attrs["selection"]
+    assert (len(sel), m["stop_reason"], m["k_max"], m["n_over_budget"]) == (picks, stop, cap, 9 - picks)
+    assert (SS.episode_budget_warning(m) is None) == (stop == "exhausted")
 
 
-@pytest.mark.parametrize("k", [0, 3, 8, 12])
-def test_an_absolute_budget_overrides_the_proportional_one(k):
-    b = SS.episode_budget(7, k)
-    assert (b["k_max"], b["source"]) == (k, "override")
-    assert SS.episode_budget(7, -2)["k_max"] == 0
+@pytest.mark.parametrize("peak,min_x,covered", [(980.0, 5.0, False), (1000.0, 5.0, True), (980.0, 4.0, True),
+                                                (1000.0, 5.5, False)])
+def test_the_coverage_threshold(peak, min_x, covered):           # EPISODE_MIN_X_EDGE, --episode-min-x-edge
+    """An episodic bin (lift >= 5: the other spectra's edge is 100) whose peak spectrum's own
+    edge is 200: at 4.9x that edge it is not covered at the default 5.0, at 5.0x it is."""
+    t = _table(40, [(300.0, {7: 400.0, 8: peak, 9: 400.0})], flat=True, edges={8: 200.0})
+    u = SS.episode_universe(t, min_x_edge=min_x)
+    assert len(u) == 1 and bool(u["qualifies"].iloc[0]) is covered
+    sel = SS.select_episode_samples(t, u, assigned=[])
+    m = sel.attrs["selection"]
+    assert ("s008" in list(sel["sample_item_id"])) is covered
+    assert (m["n_qualifying_bins"], m["min_x_edge"]) == (int(covered), min_x)
+    if not covered:
+        assert m["stop_reason"] == SS.STOP_EMPTY and m["episodes"][0]["wanted"] == []
+
+
+def test_a_qualifying_bins_own_peak_spectrum_is_selected():
+    """Bins A (peak s010) and B (peak s015) form one episode whose peak sample is s012 and whose
+    neighbours are s013 / s011: both bins still get their own peak spectrum."""
+    a = (300.0, {9: 3e3, 10: 9e3, 11: 6e3, 12: 3e3, 13: 2e3})
+    b = (310.0, {12: 3e3, 13: 3e3, 14: 3e3, 15: 8e3})
+    t = _table(40, [a, b])
+    u = SS.episode_universe(t)
+    (e,) = u.attrs["episodes"]
+    assert (e["peak_sample"], e["bin_peaks"], e["neighbours"]) == ("s012", ["s010", "s015"], ["s013", "s011"])
+    sel = SS.select_episode_samples(t, u, assigned=[])
+    assert list(sel["sample_item_id"]) == ["s012", "s010", "s015", "s013", "s011"]
 
 
 def test_a_file_the_cover_took_is_free(fx):
@@ -339,26 +368,9 @@ def plume_run(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     H.patch(t, comp, mp.setattr)
     d = tmp_path_factory.mktemp("plume")
-    summ = H.run_batch(str(d), t, k_episode_max=8)
+    summ = H.run_batch(str(d), t)
     mp.undo()
     return d, summ, t
-
-
-def test_the_default_budget_of_a_seven_file_cover_is_one_file(tmp_path, monkeypatch):
-    """The cover takes 7 files: the default budget is clamp(floor(1.05), 1, 8) = 1 -- the peak
-    ep21 is assigned, the neighbour ep22 is left out and the stage is flagged."""
-    t, comp = MK.build()
-    H.patch(t, comp, monkeypatch.setattr)
-    summ = H.run_batch(str(tmp_path), t)
-    e = summ["selection"]["episodes"]
-    assert e["budget"] == {"k_max": 1, "source": "proportional", "n_files": 7, "frac": 0.15, "min": 1, "cap": 8}
-    assert e["k_max"] == 1 and e["sample_ids"] == ["ep21"] and e["stop_reason"] == SS.STOP_KMAX
-    assert e["episodes"][0]["over_budget"] == ["ep22"]
-    assert summ["n_files_by_stage"] == {"cover": 7, "episode": 1, "residual": 0}
-    sel = pd.read_csv(tmp_path / "tables" / "selected_samples.csv")
-    assert list(sel.loc[sel["role"] == SS.ROLE_EPISODE, "sample_item_id"]) == ["ep21"]
-    text = " ".join(s for _k, s in PR._selection_lines({"n_files": 8, "batch": summ}))
-    assert "budget 1 = 0.15 × the cover's 7 files" in text and "WARNING: the episode budget" in text
 
 
 def test_the_batch_assigns_the_episode_files_and_writes_the_record(plume_run):
@@ -374,7 +386,8 @@ def test_the_batch_assigns_the_episode_files_and_writes_the_record(plume_run):
     assert (r["picked"], r["files"], r["over_budget"]) == ("ep21;ep22", "ep21;ep22;ep20", "")
     e = summ["selection"]["episodes"]
     assert e["k"] == 2 and e["stop_reason"] == SS.STOP_EXHAUSTED and e["sample_ids"] == ["ep21", "ep22"]
-    assert e["budget"]["source"] == "override" and e["k_max"] == 8
+    assert e["k_max"] is None and e["min_x_edge"] == 5.0 and e["n_qualifying_bins"] == 5
+    assert e["est_extra_wall_s"] >= 0 and e["assign_wall_s"] >= e["est_extra_wall_s"]
     assert e["episodes"][0]["picked"] == ["ep21", "ep22"] and "bins" not in e["episodes"][0]
     # the stage's yield is counted apart from the cover's (summary only; its ions read stage = cover)
     assert summ["n_files_by_stage"] == {"cover": 7, "episode": 2, "residual": 0}
@@ -402,15 +415,16 @@ def test_the_batch_flags_the_budget(tmp_path, monkeypatch):
     summ = H.run_batch(str(tmp_path), t, k_episode_max=1)
     e = summ["selection"]["episodes"]
     assert e["stop_reason"] == SS.STOP_KMAX and e["n_over_budget"] == 1 and e["sample_ids"] == ["ep21"]
-    assert any("WARNING: the episode budget k_episode_max=1" in s for s in
+    assert summ["n_files_by_stage"] == {"cover": 7, "episode": 1, "residual": 0}
+    assert any("WARNING: the cap k_episode_max=1" in s for s in
                (x[1] for x in PR._selection_lines({"n_files": 8, "batch": summ})))
 
 
 def test_the_methods_page_names_the_stage(plume_run):
     _d, summ, _t = plume_run
     text = " ".join(s for _k, s in PR._selection_lines({"n_files": 9, "batch": summ}))
-    assert "Episode stage: 1 short bright episode(s)" in text and "2 added (budget 8)" in text
-    assert "WARNING: the episode budget" not in text
+    assert "Episode stage: 1 short bright episode(s)" in text and "2 added (no cap)" in text
+    assert "peaking at ≥5× the edge (5)" in text and "WARNING: the cap" not in text
 
 
 # --------------------------------------------------------------------------- GOLDEN
@@ -444,9 +458,10 @@ def test_cli_flags():
     from peaky import cli
     p = cli.build_parser()
     a = p.parse_args(["batch", "--batch", "B"])
-    assert a.episodes is SS.EPISODE_DEFAULT and a.k_episode_max is None
-    a = p.parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "3"])
-    assert a.episodes is False and a.k_episode_max == 3
+    assert a.episodes is SS.EPISODE_DEFAULT and a.k_episode_max is None and a.episode_min_x_edge == 5.0
+    a = p.parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "3",
+                      "--episode-min-x-edge", "4.5"])
+    assert a.episodes is False and a.k_episode_max == 3 and a.episode_min_x_edge == 4.5
 
 
 def test_cmd_batch_forwards_the_episode_knobs(monkeypatch):
@@ -464,7 +479,19 @@ def test_cmd_batch_forwards_the_episode_knobs(monkeypatch):
     monkeypatch.setattr(cli, "_require_creds", lambda: None)
     monkeypatch.setattr(PL, "run_batch", fake_run_batch)
     a = cli.build_parser().parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "5",
-                                       "--no-progress"])
+                                       "--episode-min-x-edge", "4.5", "--no-progress"])
     with pytest.raises(_Stop):
         cli.cmd_batch(a)
-    assert (got["episodes"], got["k_episode_max"]) == (False, 5)
+    assert (got["episodes"], got["k_episode_max"], got["episode_min_x_edge"]) == (False, 5, 4.5)
+
+
+def test_the_batch_applies_the_coverage_threshold(tmp_path, monkeypatch):
+    """--episode-min-x-edge reaches the stage: above every bin's peak, nothing qualifies and
+    the batch is the stage-off batch (the parent's selection, byte for byte)."""
+    t, comp = MK.build()
+    H.patch(t, comp, monkeypatch.setattr)
+    summ = H.run_batch(str(tmp_path), t, episode_min_x_edge=1e6)
+    e = summ["selection"]["episodes"]
+    assert (e["min_x_edge"], e["n_qualifying_bins"], e["k"], e["stop_reason"]) == (1e6, 0, 0, SS.STOP_EMPTY)
+    assert filecmp.cmp(tmp_path / "tables" / "selected_samples.csv",
+                       os.path.join(H.GOLDEN_OFF_DIR, "selected_samples.csv"), shallow=False)

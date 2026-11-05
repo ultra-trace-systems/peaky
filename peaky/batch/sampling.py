@@ -87,7 +87,7 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
     batch baseline where absent elsewhere"): read literally, that gives 235
     episodic bins in 66 episodes on 36 field batches against this rule's 736 in
     140 (a plume recurring at a similar height counts here, not there) -- and
-    a peak height >= `EPISODE_MIN_X_EDGE` (3) x that sample's noise edge
+    a peak height >= `EPISODE_BRIGHT_X_EDGE` (3) x that sample's noise edge
     (`EDGE_Q`, as the residual stage reads it).
   * EPISODE: time overlap. Each episodic bin's RUN is the stretch of
     time-ordered samples around its peak sample in which it is present, one
@@ -95,27 +95,25 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
     episode. Recorded: start, end, peak sample (the sample holding the most of
     the episode's bins at >= 3x edge, then the largest summed multiple), n_bins,
     max_x_edge.
-  * SELECTION: each episode's peak sample, then up to `EPISODE_NEIGHBOURS` (2)
-    neighbours -- samples inside the episode in which >= `EPISODE_NEIGHBOUR_FRAC`
-    (50 %) of its bins still stand at >= 3x edge, nearest the peak first -- under
-    a budget sized by the batch (`episode_budget`): clamp(floor(`K_EPISODE_FRAC`
-    (0.15) x the cover's files), `K_EPISODE_MIN` (1), `K_EPISODE_MAX` (8)) new
-    files -- a file-count share: about 15 % more files on average, at least
-    one, so more than 15 % on a cover of <= 6 files. On the 2-worker pool one
-    extra file adds between nothing and one per-file time to the batch's wall
-    clock, depending on how the cover's last two files end. An absolute
-    `k_episode_max` overrides it. The
-    cover's files are free. The
-    episodes are served by descending max_x_edge, every peak sample before any
-    neighbour (so the budget reaches as many episodes as it can before it buys a
-    second file for one). A stage that leaves a wanted file out is flagged as
-    `k_max` is (`stop_reason == 'k_max'`, `episode_budget_warning`). The picks are
-    outside the cover's `k_max` / `min_gain` and are assigned with the cover's
+  * THE COVERAGE RULE (selection): every episodic bin whose peak reaches
+    `EPISODE_MIN_X_EDGE` (5) x that sample's noise edge (`--episode-min-x-edge`)
+    QUALIFIES and has its own peak spectrum selected; an episode holding one also
+    gets its peak sample and up to `EPISODE_NEIGHBOURS` (2) neighbours -- samples
+    inside the episode in which >= `EPISODE_NEIGHBOUR_FRAC` (50 %) of its bins
+    still stand at >= 3x edge, nearest the peak first. There is NO budget: the
+    stage guarantees the coverage of every qualifying bin, not a cost (wall time
+    is spent as the batch needs; bins below 5x may be lost). The cover's files are
+    free. `k_episode_max` (`K_EPISODE_MAX`, default None) is an optional safety
+    cap: the order is then every episode's peak sample, every qualifying bin's own
+    peak sample, then the neighbours, episodes by descending max_x_edge, and a cap
+    that leaves a wanted file out is flagged as `k_max` is (`stop_reason ==
+    'k_max'`, `episode_budget_warning`) -- the rule then does not hold. The picks
+    are outside the cover's `k_max` / `min_gain` and are assigned with the cover's
     files (selected_samples.csv role 'episode'); the residual stage that follows
     reads them as assigned.
-  * ROW FLAG: in every file an episode picked (its own pick or a cover file it
-    wanted), the per-file ledger rows on an episodic bin carry `episode = True`
-    (`episode_row_flags`), the column the merge-side readers key on.
+  * ROW FLAG: in every file an episode wanted that is selected (its own pick or a
+    cover file), the per-file ledger rows on an episodic bin carry `episode =
+    True` (`episode_row_flags`); per-file only, nothing reads it yet.
 
 Pure pandas/numpy; no network. The selected `sample_item_id`s feed `assign.run`
 one at a time (in pick order), then the ledgers are merged (assign_batch.py).
@@ -155,14 +153,14 @@ EDGE_Q = 0.01                # the noise edge: the 1st percentile of a sample's 
 # assign_batch.run / pipeline.run_batch (`--episodes` / `--no-episodes`); off
 # reproduces the run without the stage exactly.
 EPISODE_DEFAULT = True
-K_EPISODE_MAX = 8            # the episode budget's cap (files beyond the cover's)
-K_EPISODE_FRAC = 0.15        # the default budget: this share of the cover's files ...
-K_EPISODE_MIN = 1            # ... at least this many (episode_budget)
+K_EPISODE_MAX = None         # optional safety cap on the files the stage adds (None = unlimited)
 EPISODE_MIN_N = 3            # an episodic bin is present in at least this many samples ...
 EPISODE_MAX_N = 19           # ... and at most max(this, EPISODE_MAX_FRAC x the samples)
 EPISODE_MAX_FRAC = 0.01
 EPISODE_MIN_LIFT = 5.0       # its maximum over its baseline (module note)
-EPISODE_MIN_X_EDGE = 3.0     # its peak, and a neighbour's bins, at >= this x the sample's noise edge
+EPISODE_MIN_X_EDGE = 5.0     # THE COVERAGE RULE: an episodic bin peaking at >= this x its sample's
+                             # noise edge has its peak spectrum (and its episode's) selected
+EPISODE_BRIGHT_X_EDGE = 3.0  # an episodic bin's peak, and a neighbour's bins, at >= this x the edge
 EPISODE_NEIGHBOURS = 2       # neighbours per episode beside its peak sample
 EPISODE_NEIGHBOUR_FRAC = 0.5  # a neighbour holds >= this share of the episode's bins at >= 3x edge
 EPISODE_GAP = 1              # missing samples a run (and two touching runs) may have between them
@@ -802,8 +800,9 @@ def describe_residual(meta: dict | None, universe: dict | None = None) -> str:
 # the episode stage: short bright episodes get their peak file and a neighbour
 # ---------------------------------------------------------------------------
 EPISODE_BIN_COLS = ["bin", "bin_mz", "n_present", "max_cps", "max_x_edge", "lift", "baseline_cps",
-                    "peak_sample", "run_start", "run_end", "episode"]
+                    "peak_sample", "run_start", "run_end", "episode", "qualifies"]
 EPISODE_TABLE_COLS = ["episode", "start", "end", "start_time", "end_time", "n_spectra", "peak_sample",
+                      "n_qualifying", "bin_peaks",
                       "n_bins", "max_x_edge", "bins_mz", "wanted", "files", "picked", "over_budget"]
 
 
@@ -820,6 +819,7 @@ def _runs(positions: np.ndarray, gap: int) -> list[tuple[int, int]]:
 def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
                      min_n: int = EPISODE_MIN_N, max_n: int = EPISODE_MAX_N,
                      max_frac: float = EPISODE_MAX_FRAC, min_lift: float = EPISODE_MIN_LIFT,
+                     bright_x_edge: float = EPISODE_BRIGHT_X_EDGE,
                      min_x_edge: float = EPISODE_MIN_X_EDGE, gap: int = EPISODE_GAP,
                      n_neighbours: int = EPISODE_NEIGHBOURS,
                      neighbour_frac: float = EPISODE_NEIGHBOUR_FRAC,
@@ -835,7 +835,9 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
     max(`max_n`, floor(`max_frac` x samples)) samples, its maximum height is
     >= `min_lift` x its baseline (the median over every sample of its height
     there, or that sample's edge where it is absent) and that maximum is
-    >= `min_x_edge` x the edge of the sample holding it (ties: the earliest).
+    >= `bright_x_edge` x the edge of the sample holding it (ties: the earliest).
+    It QUALIFIES (the coverage rule) when that maximum is >= `min_x_edge` x
+    the edge.
 
     Returns one row per episodic bin (EPISODE_BIN_COLS, ascending m/z): its
     presence count, maximum (cps and x edge), lift and baseline, the sample at
@@ -848,12 +850,12 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
                       bins (bin numbers), bins_mz, wanted} in time order. Runs
                       that overlap or touch (`gap` allowed) are one episode;
                       the peak sample holds the most of its bins at
-                      >= `min_x_edge` x edge (then the largest summed multiple,
+                      >= `bright_x_edge` x edge (then the largest summed multiple,
                       then the earliest); `wanted` = the peak sample, then up to
                       `n_neighbours` samples inside the episode holding
-                      >= `neighbour_frac` of its bins at >= `min_x_edge` x edge,
+                      >= `neighbour_frac` of its bins at >= `bright_x_edge` x edge,
                       nearest the peak first (then more bins, then brighter);
-                      `n_bright` = {sample id -> its bins at >= `min_x_edge` x
+                      `n_bright` = {sample id -> its bins at >= `bright_x_edge` x
                       edge} over the episode's samples.
       episode_meta    the funnel: n_samples, n_max, n_bins_in_range (presence
                       within [min_n, n_max]), n_episodic, n_episodes and the
@@ -867,7 +869,8 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
     meta: dict = {"n_samples": 0, "n_max": int(max_n), "n_bins_in_range": 0, "n_episodic": 0,
                   "n_episodes": 0, "min_n": int(min_n), "max_n": int(max_n),
                   "max_frac": float(max_frac), "min_lift": float(min_lift),
-                  "min_x_edge": float(min_x_edge), "gap": int(gap),
+                  "bright_x_edge": float(bright_x_edge), "min_x_edge": float(min_x_edge),
+                  "n_qualifying": 0, "gap": int(gap),
                   "n_neighbours": int(n_neighbours), "neighbour_frac": float(neighbour_frac),
                   "tol_ppm": float(tol_ppm)}
 
@@ -919,7 +922,7 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
         k = int(np.lexsort((p, -hh))[0])               # the maximum; ties -> the earliest sample
         hmax, xmax = float(hh[k]), float(g["x"].to_numpy()[k])
         lift = hmax / base if base > 0 else np.inf
-        if not (lift >= float(min_lift) and xmax >= float(min_x_edge)):
+        if not (lift >= float(min_lift) and xmax >= float(bright_x_edge)):
             continue
         ps = np.sort(p)
         run = next(r for r in _runs(ps, int(gap)) if r[0] <= p[k] <= r[1])
@@ -959,14 +962,27 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
             sel = xb.index.to_numpy()
             ok = (sel >= lo) & (sel <= hi)
             X[r, sel[ok] - lo] = xb.to_numpy()[ok]
-        bright = X >= float(min_x_edge)
+        bright = X >= float(bright_x_edge)
         cnt = bright.sum(axis=0)
         sumx = np.where(bright, X, 0.0).sum(axis=0)
         pk = int(np.lexsort((win, -sumx, -cnt))[0])     # most bins bright, then brightest, then earliest
         cand = [j for j in range(len(win)) if j != pk and cnt[j] > 0
                 and cnt[j] >= float(neighbour_frac) * nb]
         cand.sort(key=lambda j: (abs(j - pk), -cnt[j], -sumx[j], j))
-        wanted = [order[win[pk]]] + [order[win[j]] for j in cand[:max(int(n_neighbours), 0)]]
+        neigh = [str(order[win[j]]) for j in cand[:max(int(n_neighbours), 0)]]
+        peak_s = str(order[win[pk]])
+        # the coverage rule: the bins of this episode peaking at >= min_x_edge x edge
+        # each want their own peak spectrum (brightest first), beside the episode's
+        q = g[g["max_x_edge"].astype(float) >= float(min_x_edge)].sort_values(
+            ["max_x_edge", "peak_pos"], ascending=[False, True], kind="mergesort")
+        bin_peaks = []
+        for x in q["peak_sample"].astype(str):
+            if x != peak_s and x not in bin_peaks:
+                bin_peaks.append(x)
+        if len(q):
+            wanted = [peak_s] + bin_peaks + [x for x in neigh if x not in bin_peaks]
+        else:
+            wanted, bin_peaks, neigh = [], [], []
         t0 = tab["datetime_utc"].iloc[lo] if "datetime_utc" in tab.columns else None
         t1 = tab["datetime_utc"].iloc[hi] if "datetime_utc" in tab.columns else None
         episodes.append({"episode": int(e), "start": order[lo], "end": order[hi],
@@ -976,9 +992,14 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
                          "n_bins": int(nb), "max_x_edge": round(float(g["max_x_edge"].max()), 3),
                          "bins": [int(x) for x in g["bin"]],
                          "bins_mz": [round(float(x), 5) for x in sorted(g["bin_mz"])],
+                         "n_qualifying": int(len(q)),
+                         "bin_peaks": bin_peaks,
+                         "neighbours": list(neigh),
                          "wanted": [str(x) for x in wanted],
                          "n_bright": {str(order[win[j]]): int(cnt[j]) for j in range(len(win)) if cnt[j]}})
     meta["n_episodes"] = len(episodes)
+    rows["qualifies"] = rows["max_x_edge"].astype(float) >= float(min_x_edge)
+    meta["n_qualifying"] = int(rows["qualifies"].sum())
     epi_bins = set(rows["bin"].tolist())
     inb = np.isin(b, list(epi_bins)) & pres
     ep_mz: dict = {}
@@ -994,60 +1015,55 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
     return _out(rows[EPISODE_BIN_COLS], episodes, ep_peaks, ep_mz)
 
 
-def episode_budget(n_files: int, k_max: int | None = None) -> dict:
-    """The episode stage's budget (module note): `k_max` when given (an absolute
-    override, >= 0), else clamp(floor(`K_EPISODE_FRAC` x `n_files`),
-    `K_EPISODE_MIN`, `K_EPISODE_MAX`) for a batch whose cover took `n_files`
-    files -- about `K_EPISODE_FRAC` more files, so the batch's wall clock grows by
-    about that share. Returns {k_max, source ('override' | 'proportional'),
-    n_files, frac, min, cap}."""
-    rec = {"n_files": int(n_files), "frac": K_EPISODE_FRAC, "min": K_EPISODE_MIN, "cap": K_EPISODE_MAX}
-    if k_max is not None:
-        return {"k_max": max(int(k_max), 0), "source": "override", **rec}
-    k = int(np.floor(K_EPISODE_FRAC * max(int(n_files), 0) + 1e-9))
-    return {"k_max": min(max(k, K_EPISODE_MIN), K_EPISODE_MAX), "source": "proportional", **rec}
-
-
 def select_episode_samples(peaks: pd.DataFrame, universe: pd.DataFrame, *, assigned,
-                           k_max: int = K_EPISODE_MAX, sample_col: str = "sample_item_id",
+                           k_max: int | None = K_EPISODE_MAX, sample_col: str = "sample_item_id",
                            **table_kw) -> pd.DataFrame:
-    """The episode stage's picks (module note). `universe` is `episode_universe`'s
-    frame; `assigned` the cover's sample ids (free: a wanted file already
-    selected costs nothing). The episodes are served by descending max_x_edge
-    (then the earliest): first every episode's peak sample, then the neighbours
-    in the same order, until `k_max` NEW files are taken; a wanted file left out
-    is `over_budget` and the stage stops on 'k_max' (flag it as the cover's
-    budget is flagged: `episode_budget_warning`). No episode -> 'empty'; all
+    """The episode stage's picks (module note, THE COVERAGE RULE). `universe` is
+    `episode_universe`'s frame; `assigned` the cover's sample ids (a wanted file
+    already selected is free). Every episode holding a QUALIFYING bin (peak >=
+    the universe's `min_x_edge` x edge) wants its peak sample, the peak sample of
+    each qualifying bin, and its neighbours; an episode with none wants nothing.
+    All are taken (no budget) unless `k_max` (an optional safety cap on the NEW
+    files) binds; then the order is every episode's peak sample, then every
+    qualifying bin's own peak sample, then the neighbours, episodes by descending
+    max_x_edge; a wanted file the cap leaves out is `over_budget` and the stage
+    stops on 'k_max' (`episode_budget_warning`). No episode -> 'empty'; all
     served -> 'exhausted'.
 
     Returns the `sample_table` rows of the new files in pick order with `pick`
     (1-based within the stage), `role` (ROLE_EPISODE), `bins_new` (the
-    episode's bins the file holds at >= the stage's x edge), `coverage` (the
-    fraction of the episodes with at least one selected file after this pick)
-    and `episode` (the episode it was taken for); `.attrs['selection']` = {method
-    'episode', k, k_max, n_episodes, n_wanted, n_free, n_over_budget,
+    episode's bins the file holds at >= the bright x edge), `coverage` (the
+    fraction of the qualifying episodes with at least one selected file after
+    this pick) and `episode` (the episode it was taken for);
+    `.attrs['selection']` = {method 'episode', min_x_edge, n_qualifying_bins, k,
+    k_max, n_episodes, n_episodes_qualifying, n_wanted, n_free, n_over_budget,
     stop_reason, sample_ids, episodes: the universe's records with `files`
     (wanted files in the selection, free or picked), `picked` (taken by this
     stage for it) and `over_budget`} and `.attrs['flag_files']` = every file an
     episode wanted that is selected (the files whose episodic rows are flagged)."""
-    k_max = max(int(k_max), 0)
+    cap = None if k_max is None else max(int(k_max), 0)
     tab = (sample_table(peaks, sample_col=sample_col, **table_kw) if peaks is not None and len(peaks)
            else pd.DataFrame(columns=[sample_col]))
     eps = [dict(e) for e in (universe.attrs.get("episodes") or [])] if universe is not None else []
     emeta = dict(universe.attrs.get("episode_meta") or {}) if universe is not None else {}
-    meta: dict = {"method": "episode", "k": 0, "k_max": k_max, "n_episodes": len(eps),
+    meta: dict = {"method": "episode", "min_x_edge": emeta.get("min_x_edge", EPISODE_MIN_X_EDGE),
+                  "n_qualifying_bins": int(emeta.get("n_qualifying", 0)), "k": 0, "k_max": cap,
+                  "n_episodes": len(eps),
+                  "n_episodes_qualifying": sum(1 for e in eps if e.get("wanted")),
                   "n_episodic_bins": int(emeta.get("n_episodic", 0)), "n_wanted": 0, "n_free": 0,
                   "n_over_budget": 0, "stop_reason": STOP_EMPTY, "sample_ids": [], "universe": emeta}
     for e in eps:
         e.update(files=[], picked=[], over_budget=[])
-    if not eps:
+    if not any(e.get("wanted") for e in eps):
         meta["episodes"] = eps
         out = _empty(tab, meta)
         out.attrs["flag_files"] = []
         return out
     order = sorted(range(len(eps)), key=lambda i: (-float(eps[i]["max_x_edge"]), i))
-    rounds = [[(i, eps[i]["wanted"][0]) for i in order],
-              [(i, s) for i in order for s in eps[i]["wanted"][1:]]]
+    rounds = [[(i, eps[i]["wanted"][0]) for i in order if eps[i].get("wanted")],
+              [(i, s) for i in order for s in eps[i].get("bin_peaks", [])],
+              [(i, s) for i in order for s in eps[i].get("neighbours", [])
+               if s not in eps[i].get("bin_peaks", [])]]
     have = {str(x) for x in (assigned or [])}
     picked: list = []
     pick_ep: list = []
@@ -1058,7 +1074,7 @@ def select_episode_samples(peaks: pd.DataFrame, universe: pd.DataFrame, *, assig
             if s in have:
                 meta["n_free"] += 1
                 e["files"].append(s)
-            elif len(picked) < k_max:
+            elif cap is None or len(picked) < cap:
                 have.add(s)
                 picked.append(s)
                 pick_ep.append(e["episode"])
@@ -1078,7 +1094,7 @@ def select_episode_samples(peaks: pd.DataFrame, universe: pd.DataFrame, *, assig
     sel["pick"] = np.arange(1, len(picked) + 1)
     sel["role"] = ROLE_EPISODE
     free = {str(x) for x in (assigned or [])}
-    served = {e["episode"]: any(s in free for s in e["files"]) for e in eps}
+    served = {e["episode"]: any(s in free for s in e["files"]) for e in eps if e.get("wanted")}
     by_ep = {e["episode"]: e for e in eps}
     nbright, cov = [], []
     for s, eid in zip(picked, pick_ep):
@@ -1138,18 +1154,16 @@ def episodes_table(selection_meta: dict | None) -> pd.DataFrame:
 
 
 def episode_budget_warning(meta: dict | None) -> str | None:
-    """The warning for an episode stage that hit its budget (a wanted file left
-    out); None otherwise."""
+    """The warning for an episode stage whose optional cap (`k_episode_max`) left a
+    wanted file out; None otherwise (the stage has no budget by default)."""
     if not meta or meta.get("stop_reason") != STOP_KMAX:
         return None
     left = sorted({e["episode"] for e in meta.get("episodes") or [] if e.get("over_budget")})
-    unserved = [e["episode"] for e in meta.get("episodes") or [] if not e.get("files")]
-    b = meta.get("budget") or {}
-    how = (f" ({b.get('frac', K_EPISODE_FRAC):g} x the cover's {b.get('n_files')} files)"
-           if b.get("source") == "proportional" else "")
-    return (f"episode stage hit its budget k_episode_max={meta.get('k_max')}{how}: {meta.get('n_over_budget')} "
+    unserved = [e["episode"] for e in meta.get("episodes") or [] if e.get("wanted") and not e.get("files")]
+    return (f"episode stage hit its cap k_episode_max={meta.get('k_max')}: {meta.get('n_over_budget')} "
             f"wanted file(s) of {len(left)} episode(s) left out ({len(unserved)} episode(s) with no file "
-            f"at all) -- pass --k-episode-max N to assign them")
+            f"at all); the coverage rule (every episodic bin at >= {meta.get('min_x_edge')}x edge has its "
+            f"peak spectrum) does not hold -- drop --k-episode-max to restore it")
 
 
 def describe_episodes(meta: dict | None) -> str:
@@ -1158,11 +1172,12 @@ def describe_episodes(meta: dict | None) -> str:
     u = m.get("universe") or {}
     s = (f"episodes: {u.get('n_episodic', 0)} episodic bin(s) (present in "
          f"{u.get('min_n', EPISODE_MIN_N)}-{u.get('n_max', EPISODE_MAX_N)} samples, lift >= "
-         f"{u.get('min_lift', EPISODE_MIN_LIFT):g}, peak >= {u.get('min_x_edge', EPISODE_MIN_X_EDGE):g}x "
-         f"the sample's edge) in {m.get('n_episodes', 0)} episode(s)")
+         f"{u.get('min_lift', EPISODE_MIN_LIFT):g}, peak >= {u.get('bright_x_edge', EPISODE_BRIGHT_X_EDGE):g}x "
+         f"the sample's edge) in {m.get('n_episodes', 0)} episode(s); {m.get('n_qualifying_bins', 0)} "
+         f"peak at >= {m.get('min_x_edge', EPISODE_MIN_X_EDGE):g}x edge (the coverage rule)")
     if m.get("n_episodes"):
-        b = m.get("budget") or {}
         s += (f"; {m.get('n_wanted', 0)} wanted file(s), {m.get('n_free', 0)} already selected, "
-              f"{m.get('k', 0)} added (budget {m.get('k_max')}"
-              + (f", {b.get('source')}" if b.get("source") else "") + f"), stop={m.get('stop_reason')}")
+              f"{m.get('k', 0)} added ("
+              + ("no cap" if m.get("k_max") is None else f"cap {m.get('k_max')}")
+              + f"), stop={m.get('stop_reason')}")
     return s
