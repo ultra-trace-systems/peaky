@@ -437,12 +437,16 @@ def _two_partner_series(n=12, seed=3):
 
 
 def test_the_artefact_test_reads_the_brightest_partner():                     # the partner choice
-    def dim(sid):
-        return [_row(f"{sid}d", SMZ - 2e-3, 3e5, role="unexplained", tier=None)]     # 3x the satellite
-    led = _sat_ledgers(dim)
+    # s01 shows the 20x parent the satellite follows; s02 shows only a 3x line 2 mDa below that varies on
+    # its own: the test reads the brightest of the files' partners (the 20x one) -> held
+    led = _sat_ledgers()
+    led["s02"] = pd.concat([led["s02"][led["s02"]["peak_id"] != "s02p"],
+                            pd.DataFrame([_row("s02d", SMZ - 2e-3, 3e5, role="unexplained", tier=None)])],
+                           ignore_index=True)
     merged = _merged(led)
     tab, summ = SB.hold_low_file_promotions(merged, led, _two_partner_series(), **NOLOG)
-    assert summ["satellite_held"] == 1 and (tab["partner_mz"].round(4) == round(PMZ, 4)).all()
+    assert summ["satellite_held"] == 1 and set(tab["partner_mz"].round(4)) == {round(PMZ, 4), round(SMZ - 2e-3, 4)}
+    assert (tab["fit_r2"] >= 0.9).all()
 
 
 def test_own_13c_is_read_only_where_testable():                                # SAT_13C_TESTABLE_X at the use site
