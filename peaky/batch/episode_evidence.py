@@ -67,7 +67,9 @@ cluster line at its own m/z + the solvent's neutral mass. A merged row there
 whose presence is confined to the spectra where the solvent's own ion (its
 reagent-profile ion forms and its proton-bound dimer) is bright (>= SOLVENT_X x
 the spectrum's edge), beside a known PERSISTENT Assigned ion (in >=
-PERSIST_FRAC of the batch's spectra), is read as that ion's cluster: the
+PERSIST_FRAC of the batch's spectra), is read as that ion's cluster -- the
+solvent's bright spectra being an episode (at most SOLVENT_MAX_FRAC of the
+batch's): the
 parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
 neutral. Its tier is the parent's when the cluster tracks the product parent x
 solvent across the spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N spectra),
@@ -146,6 +148,10 @@ TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "tier_in", "tier_out", "verd
 # --------------------------------------------------------------------------- Part C constants
 #: the solvent's own ion is bright in a spectrum at this multiple of its noise edge
 SOLVENT_X = 5.0
+#: the solvent is in an EPISODE: bright in at most this share of the batch's spectra (a solvent
+#: ion bright everywhere is the source's or the air's background, and a line "confined" to its
+#: bright spectra is then confined to nothing)
+SOLVENT_MAX_FRAC = 0.5
 #: a cluster line sits within this many ppm of parent + solvent
 CLUSTER_PPM = 3.0
 #: a parent is persistent when its line is in at least this share of the batch's spectra
@@ -771,7 +777,7 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
         if hs is None or not len(hs):
             continue
         bright = set(hs.index[hs >= SOLVENT_X * edge.reindex(hs.index).to_numpy()])
-        if not bright:
+        if not bright or len(bright) > SOLVENT_MAX_FRAC * n_spec:
             continue
         out["solvents_bright"].append({"solvent": solv.formula, "name": solv.name, "n_bright": len(bright)})
         # persistent Assigned parents

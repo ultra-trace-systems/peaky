@@ -364,7 +364,8 @@ selected sample_ids (SAMPLING.md)
    row within 3 ppm of a persistent Assigned ion (its line in >= 50 % of the
    batch's spectra) + the solvent, whose spectra lie >= 90 % inside those where
    the solvent's own ion (its reagent-profile forms and its proton-bound dimer) is
-   >= 5x the spectrum's noise edge, and that is in <= 50 % of the batch's spectra,
+   >= 5x the spectrum's noise edge -- an episode: bright in <= 50 % of the batch's
+   spectra (`SOLVENT_MAX_FRAC`) -- and that is in <= 50 % of the batch's spectra,
    is read as that ion's cluster: the parent's neutral, the adduct naming the
    solvent (`[M+(C5H9NO)H]+`, `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift`
    resolves such a label in any process), `solvent_cluster_of` = `<parent> +

@@ -378,6 +378,8 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
     (dict(track=False), True, "Candidate"),                             # TRACK_R
     (dict(bright=tuple(range(20)), cluster_at=tuple(range(11))), False, None),   # CLUSTER_MAX_FRAC: 11 of 20
     (dict(parent_tier="Candidate"), False, None),                       # a KNOWN (Assigned) persistent ion only
+    (dict(bright=tuple(range(11))), False, None),                       # SOLVENT_MAX_FRAC: bright in 11 of 20
+    (dict(bright=tuple(range(10))), True, "Assigned"),                  # ... in 10 of 20: an episode
 ])
 def test_the_cluster_rules(kw, relabelled, tier):
     merged, ts = _cluster_series(**kw)
@@ -388,8 +390,8 @@ def test_the_cluster_rules(kw, relabelled, tier):
         assert (r["neutral_formula"], r["adduct"], r["tier"]) == ("C16H22O4", "[M+(C5H9NO)H]+", tier)
     else:
         assert merged.iloc[1]["neutral_formula"] == "C21H31NO5"
-    assert (EE.SOLVENT_X, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R, EE.TRACK_MIN_N) == \
-        (5.0, 0.5, 0.9, 0.5, 0.7, 4)
+    assert (EE.SOLVENT_X, EE.SOLVENT_MAX_FRAC, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R,
+            EE.TRACK_MIN_N) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4)
 
 
 def test_a_dim_solvent_is_no_episode():                                                           # SOLVENT_X
