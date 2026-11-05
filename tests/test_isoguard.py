@@ -204,3 +204,19 @@ def test_the_merged_row_says_what_the_per_file_guard_held():
     t = str(merged.at[0, "tier_reason"])
     assert t.startswith("isotope contradiction in 1 of 2 file(s): 13C reads ") and merged.at[0, "tier"] == "Assigned"
     assert pd.isna(merged.at[1, "tier_reason"])
+
+
+def test_the_batch_merge_holds_a_reading_its_pooled_facts_contradict(tmp_path, monkeypatch):
+    """Every file reads the C10 reading's own 13C line at ~C6 (the per-file stage is faked here, so
+    the per-file guard does not run): the pooled facts make the merged row Candidate with the note,
+    and batch_summary counts it."""
+    import json
+    from tests.test_evidence_outputs import _run_batch
+    _run_batch(tmp_path, monkeypatch, ledger_of=lambda n: _ledger(c13_count=6.0, snr13=40.0))
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
+    r = merged[(merged["neutral_formula"] == "C10H16O4") & (merged["adduct"] == "[M-H]-")]
+    assert len(r) == 1 and r["tier"].iloc[0] == "Candidate"
+    assert "isotope contradiction: 13C reads " in str(r["tier_reason"].iloc[0])
+    g = summ["merge_gates"]["isotope_guard"]
+    assert g["demoted"] == 1 and g["by_fact"]["13C"] == 1 and g["rows"][0]["neutral_formula"] == "C10H16O4"
