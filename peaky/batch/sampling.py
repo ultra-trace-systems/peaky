@@ -92,7 +92,11 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
   * SELECTION: each episode's peak sample, then up to `EPISODE_NEIGHBOURS` (2)
     neighbours -- samples inside the episode in which >= `EPISODE_NEIGHBOUR_FRAC`
     (50 %) of its bins still stand at >= 3x edge, nearest the peak first -- under
-    a budget of `K_EPISODE_MAX` (8) files a batch, the cover's files free. The
+    a budget sized by the batch (`episode_budget`): clamp(floor(`K_EPISODE_FRAC`
+    (0.15) x the cover's files), `K_EPISODE_MIN` (1), `K_EPISODE_MAX` (8)) new
+    files, so one batch's wall clock grows by about 15 % at most (an extra file
+    costs what a cover file costs); an absolute `k_episode_max` overrides it. The
+    cover's files are free. The
     episodes are served by descending max_x_edge, every peak sample before any
     neighbour (so the budget reaches as many episodes as it can before it buys a
     second file for one). A stage that leaves a wanted file out is flagged as
@@ -142,7 +146,9 @@ EDGE_Q = 0.01                # the noise edge: the 1st percentile of a sample's 
 # assign_batch.run / pipeline.run_batch (`--episodes` / `--no-episodes`); off
 # reproduces the run without the stage exactly.
 EPISODE_DEFAULT = True
-K_EPISODE_MAX = 8            # budget of the episode stage (files beyond the cover's)
+K_EPISODE_MAX = 8            # the episode budget's cap (files beyond the cover's)
+K_EPISODE_FRAC = 0.15        # the default budget: this share of the cover's files ...
+K_EPISODE_MIN = 1            # ... at least this many (episode_budget)
 EPISODE_MIN_N = 3            # an episodic bin is present in at least this many samples ...
 EPISODE_MAX_N = 19           # ... and at most max(this, EPISODE_MAX_FRAC x the samples)
 EPISODE_MAX_FRAC = 0.01
@@ -979,6 +985,20 @@ def episode_universe(peaks: pd.DataFrame, *, tol_ppm: float = BATCH_TOL_PPM,
     return _out(rows[EPISODE_BIN_COLS], episodes, ep_peaks, ep_mz)
 
 
+def episode_budget(n_files: int, k_max: int | None = None) -> dict:
+    """The episode stage's budget (module note): `k_max` when given (an absolute
+    override, >= 0), else clamp(floor(`K_EPISODE_FRAC` x `n_files`),
+    `K_EPISODE_MIN`, `K_EPISODE_MAX`) for a batch whose cover took `n_files`
+    files -- about `K_EPISODE_FRAC` more files, so the batch's wall clock grows by
+    about that share. Returns {k_max, source ('override' | 'proportional'),
+    n_files, frac, min, cap}."""
+    rec = {"n_files": int(n_files), "frac": K_EPISODE_FRAC, "min": K_EPISODE_MIN, "cap": K_EPISODE_MAX}
+    if k_max is not None:
+        return {"k_max": max(int(k_max), 0), "source": "override", **rec}
+    k = int(np.floor(K_EPISODE_FRAC * max(int(n_files), 0) + 1e-9))
+    return {"k_max": min(max(k, K_EPISODE_MIN), K_EPISODE_MAX), "source": "proportional", **rec}
+
+
 def select_episode_samples(peaks: pd.DataFrame, universe: pd.DataFrame, *, assigned,
                            k_max: int = K_EPISODE_MAX, sample_col: str = "sample_item_id",
                            **table_kw) -> pd.DataFrame:
@@ -1109,15 +1129,18 @@ def episodes_table(selection_meta: dict | None) -> pd.DataFrame:
 
 
 def episode_budget_warning(meta: dict | None) -> str | None:
-    """The warning for an episode stage that hit `K_EPISODE_MAX` (a wanted file
-    left out); None otherwise."""
+    """The warning for an episode stage that hit its budget (a wanted file left
+    out); None otherwise."""
     if not meta or meta.get("stop_reason") != STOP_KMAX:
         return None
     left = sorted({e["episode"] for e in meta.get("episodes") or [] if e.get("over_budget")})
     unserved = [e["episode"] for e in meta.get("episodes") or [] if not e.get("files")]
-    return (f"episode stage hit k_episode_max={meta.get('k_max')}: {meta.get('n_over_budget')} wanted "
-            f"file(s) of {len(left)} episode(s) left out ({len(unserved)} episode(s) with no file "
-            f"at all) -- raise --k-episode-max to assign them")
+    b = meta.get("budget") or {}
+    how = (f" ({b.get('frac', K_EPISODE_FRAC):g} x the cover's {b.get('n_files')} files)"
+           if b.get("source") == "proportional" else "")
+    return (f"episode stage hit its budget k_episode_max={meta.get('k_max')}{how}: {meta.get('n_over_budget')} "
+            f"wanted file(s) of {len(left)} episode(s) left out ({len(unserved)} episode(s) with no file "
+            f"at all) -- pass --k-episode-max N to assign them")
 
 
 def describe_episodes(meta: dict | None) -> str:
@@ -1129,6 +1152,8 @@ def describe_episodes(meta: dict | None) -> str:
          f"{u.get('min_lift', EPISODE_MIN_LIFT):g}, peak >= {u.get('min_x_edge', EPISODE_MIN_X_EDGE):g}x "
          f"the sample's edge) in {m.get('n_episodes', 0)} episode(s)")
     if m.get("n_episodes"):
+        b = m.get("budget") or {}
         s += (f"; {m.get('n_wanted', 0)} wanted file(s), {m.get('n_free', 0)} already selected, "
-              f"{m.get('k', 0)} added (budget {m.get('k_max')}), stop={m.get('stop_reason')}")
+              f"{m.get('k', 0)} added (budget {m.get('k_max')}"
+              + (f", {b.get('source')}" if b.get("source") else "") + f"), stop={m.get('stop_reason')}")
     return s

@@ -145,9 +145,9 @@ try:
               == (False, 3, 800.0, 7.0),
               {k: v for k, v in _got["ab"].items() if k.startswith("residual")})
         # the episode stage's switch and budget reach assign_batch.run, defaults = sampling's
-        check("run_batch forwards the episode knobs (defaults = sampling.EPISODE_DEFAULT / K_EPISODE_MAX)",
+        check("run_batch forwards the episode knobs (defaults = sampling.EPISODE_DEFAULT / the proportional budget)",
               _got["ab"]["episodes"] is _SS.EPISODE_DEFAULT
-              and _got["ab"]["k_episode_max"] == _SS.K_EPISODE_MAX,
+              and _got["ab"]["k_episode_max"] is None,
               {k: _got["ab"].get(k) for k in ("episodes", "k_episode_max")})
     with tempfile.TemporaryDirectory() as d:
         _got.clear()

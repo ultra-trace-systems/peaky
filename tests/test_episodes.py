@@ -224,9 +224,24 @@ def test_the_budget_flags_only_when_a_wanted_file_is_left_out(fx):  # K_EPISODE_
     assert list(hit["sample_item_id"]) == ["ep21"]
     assert m["stop_reason"] == SS.STOP_KMAX and m["episodes"][0]["over_budget"] == ["ep22"]
     assert "k_episode_max=1" in SS.episode_budget_warning(m)
-    assert SS.K_EPISODE_MAX == 8
+    assert (SS.K_EPISODE_MAX, SS.K_EPISODE_FRAC, SS.K_EPISODE_MIN) == (8, 0.15, 1)
     none = SS.select_episode_samples(t, u, assigned=cover, k_max=0)
     assert len(none) == 0 and none.attrs["selection"]["stop_reason"] == SS.STOP_KMAX
+
+
+@pytest.mark.parametrize("n_files,k", [(0, 1), (1, 1), (6, 1), (7, 1), (13, 1), (14, 2), (20, 3), (26, 3),
+                                       (27, 4), (53, 7), (54, 8), (60, 8), (200, 8)])
+def test_the_default_budget_is_sized_by_the_cover(n_files, k):   # K_EPISODE_FRAC, _MIN, _MAX
+    """clamp(floor(0.15 x the cover's files), 1, 8): about 15 % more files on any batch."""
+    b = SS.episode_budget(n_files)
+    assert (b["k_max"], b["source"], b["n_files"]) == (k, "proportional", n_files)
+
+
+@pytest.mark.parametrize("k", [0, 3, 8, 12])
+def test_an_absolute_budget_overrides_the_proportional_one(k):
+    b = SS.episode_budget(7, k)
+    assert (b["k_max"], b["source"]) == (k, "override")
+    assert SS.episode_budget(7, -2)["k_max"] == 0
 
 
 def test_a_file_the_cover_took_is_free(fx):
@@ -264,9 +279,25 @@ def plume_run(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     H.patch(t, comp, mp.setattr)
     d = tmp_path_factory.mktemp("plume")
-    summ = H.run_batch(str(d), t)
+    summ = H.run_batch(str(d), t, k_episode_max=8)
     mp.undo()
     return d, summ, t
+
+
+def test_the_default_budget_of_a_seven_file_cover_is_one_file(tmp_path, monkeypatch):
+    """The cover takes 7 files: the default budget is clamp(floor(1.05), 1, 8) = 1 -- the peak
+    ep21 is assigned, the neighbour ep22 is left out and the stage is flagged."""
+    t, comp = MK.build()
+    H.patch(t, comp, monkeypatch.setattr)
+    summ = H.run_batch(str(tmp_path), t)
+    e = summ["selection"]["episodes"]
+    assert e["budget"] == {"k_max": 1, "source": "proportional", "n_files": 7, "frac": 0.15, "min": 1, "cap": 8}
+    assert e["k_max"] == 1 and e["sample_ids"] == ["ep21"] and e["stop_reason"] == SS.STOP_KMAX
+    assert e["episodes"][0]["over_budget"] == ["ep22"]
+    sel = pd.read_csv(tmp_path / "tables" / "selected_samples.csv")
+    assert list(sel.loc[sel["role"] == SS.ROLE_EPISODE, "sample_item_id"]) == ["ep21"]
+    text = " ".join(s for _k, s in PR._selection_lines({"n_files": 8, "batch": summ}))
+    assert "budget 1 = 0.15 × the cover's 7 files" in text and "WARNING: the episode budget" in text
 
 
 def test_the_batch_assigns_the_episode_files_and_writes_the_record(plume_run):
@@ -282,6 +313,7 @@ def test_the_batch_assigns_the_episode_files_and_writes_the_record(plume_run):
     assert (r["picked"], r["files"], r["over_budget"]) == ("ep21;ep22", "ep21;ep22;ep20", "")
     e = summ["selection"]["episodes"]
     assert e["k"] == 2 and e["stop_reason"] == SS.STOP_EXHAUSTED and e["sample_ids"] == ["ep21", "ep22"]
+    assert e["budget"]["source"] == "override" and e["k_max"] == 8
     assert e["episodes"][0]["picked"] == ["ep21", "ep22"] and "bins" not in e["episodes"][0]
     assert summ["n_files_by_stage"]["cover"] == 9
 
@@ -349,7 +381,7 @@ def test_cli_flags():
     from peaky import cli
     p = cli.build_parser()
     a = p.parse_args(["batch", "--batch", "B"])
-    assert a.episodes is SS.EPISODE_DEFAULT and a.k_episode_max == SS.K_EPISODE_MAX
+    assert a.episodes is SS.EPISODE_DEFAULT and a.k_episode_max is None
     a = p.parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "3"])
     assert a.episodes is False and a.k_episode_max == 3
 

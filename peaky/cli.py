@@ -2022,9 +2022,12 @@ def _add_episode_args(sp) -> None:
                          "(tables/episodes.csv; per-file rows flagged `episode`). "
                          f"{'ON' if SS.EPISODE_DEFAULT else 'OFF'} by default; --no-episodes "
                          "reproduces the run without the stage exactly.")
-    sp.add_argument("--k-episode-max", type=int, default=SS.K_EPISODE_MAX,
-                    help="budget of the episode stage: at most this many files beyond the "
-                         f"cover's (default {SS.K_EPISODE_MAX}); a stage that leaves a wanted "
+    sp.add_argument("--k-episode-max", type=int, default=None, metavar="N",
+                    help="budget of the episode stage as an absolute number of files beyond the "
+                         "cover's. Default: sized by the batch, clamp(floor("
+                         f"{SS.K_EPISODE_FRAC:g} x the cover's files), {SS.K_EPISODE_MIN}, "
+                         f"{SS.K_EPISODE_MAX}) -- about {SS.K_EPISODE_FRAC * 100:g}%% more files, so the "
+                         "batch's wall clock grows by about that share. A stage that leaves a wanted "
                          "file out is flagged in batch_summary.json['selection']['episodes']")
 
 
