@@ -64,12 +64,14 @@ to an ion-only reading.
 (`read_solvent_clusters`).** During an industrial-solvent episode
 (solvent_clusters.episode_solvents: NMP, DMSO) every persistent ion can gain a
 cluster line at its own m/z + the solvent's neutral mass. A merged row there
-whose presence is confined to the spectra where the solvent's own ion (its
-reagent-profile ion forms and its proton-bound dimer) is bright (>= SOLVENT_X x
-the spectrum's edge), beside a known PERSISTENT Assigned ion (in >=
-PERSIST_FRAC of the batch's spectra), is read as that ion's cluster -- the
-solvent's bright spectra being an episode (at most SOLVENT_MAX_FRAC of the
-batch's): the
+whose elevated spectra (>= CLUSTER_X x the edge; for a line present in most
+spectra also >= SOLVENT_LIFT x its median) lie inside the solvent's episode --
+the spectra where one of the solvent's own ion forms (its reagent-profile ion
+forms and its proton-bound dimer) is elevated the same way at >= SOLVENT_X x the
+edge, in at most SOLVENT_MAX_FRAC of the batch's spectra (a solvent background
+everywhere is fine; its episodes are what count) -- beside a known PERSISTENT
+Assigned ion (in >= PERSIST_FRAC of the batch's spectra), is read as that ion's
+cluster: the
 parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
 neutral -- when, and only when, the cluster tracks the product parent x
 solvent across the spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N spectra):
@@ -155,6 +157,11 @@ SOLVENT_X = 5.0
 #: ion bright everywhere is the source's or the air's background, and a line "confined" to its
 #: bright spectra is then confined to nothing)
 SOLVENT_MAX_FRAC = 0.5
+#: a line present in most spectra (a background) is ELEVATED only at >= this multiple of its median
+#: height there (the episode stage's lift): the solvent's episode and the cluster's spectra are read so
+SOLVENT_LIFT = 5.0
+#: the cluster line counts in a spectrum at >= this multiple of the spectrum's noise edge
+CLUSTER_X = 3.0
 #: a cluster line sits within this many ppm of parent + solvent
 CLUSTER_PPM = 3.0
 #: a parent is persistent when its line is in at least this share of the batch's spectra
@@ -727,6 +734,19 @@ def _series_lines(ts: pd.DataFrame):
     return line
 
 
+def _elevated(h: pd.Series, edge: pd.Series, n_spec: int, x_edge: float) -> set:
+    """The spectra where a line stands out: >= x_edge x the spectrum's noise edge, and -- for a
+    line present in more than half of the batch's spectra (a background) -- >= SOLVENT_LIFT x
+    its median height there."""
+    h = h[h > 0]
+    if not len(h):
+        return set()
+    thr = x_edge * edge.reindex(h.index).to_numpy()
+    if len(h) > 0.5 * n_spec:
+        thr = np.maximum(thr, SOLVENT_LIFT * float(h.median()))
+    return set(h.index[h.to_numpy() >= thr])
+
+
 def cluster_label(adduct: str, solvent: str) -> str | None:
     """The adduct of a persistent ion's cluster with `solvent`: '[M+H]+' -> '[M+(C5H9NO)H]+',
     '[M+(CH4N2O)H]+' -> '[M+(C5H9NO)(CH4N2O)H]+', '[M-H]-' -> '[M+(C2H6OS)-H]-'; None when the
@@ -780,7 +800,7 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
             s_ = line(m_)
             if not len(s_):
                 continue
-            b_ = set(s_.index[s_ >= SOLVENT_X * edge.reindex(s_.index).to_numpy()])
+            b_ = _elevated(s_, edge, n_spec, SOLVENT_X)
             if not b_ or len(b_) > SOLVENT_MAX_FRAC * n_spec:
                 continue
             bright |= b_
@@ -812,10 +832,11 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
             for k in hit:
                 ks = line(_num(merged.at[k, "mz"]))
                 ks = ks[ks > 0]
-                if not len(ks) or len(ks) > CLUSTER_MAX_FRAC * n_spec:
+                kel = _elevated(ks, edge, n_spec, CLUSTER_X)
+                if not kel or len(kel) > CLUSTER_MAX_FRAC * n_spec:
                     continue
-                n_in = int(sum(1 for x in ks.index if x in bright))
-                if n_in < CONFINED_FRAC * len(ks):
+                n_in = int(sum(1 for x in kel if x in bright))
+                if n_in < CONFINED_FRAC * len(kel):
                     continue
                 j3 = pd.concat([ks.rename("k"), ps.rename("p"), hs.rename("s")], axis=1, join="inner").dropna()
                 j3 = j3[(j3 > 0).all(axis=1)]
@@ -855,8 +876,8 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                     merged.at[k, "alternatives"] = f"{was[0]} {was[1]} (the covalent reading)" + (
                         f"; {prev}" if prev else "")
                 _note(merged, k, (f"{CLUSTER_MARK}: the {solv.formula} ({solv.name}) cluster of the persistent "
-                                  f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): present in "
-                                  f"{len(ks)} spectra, {n_in} with the solvent ion bright; "
+                                  f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): elevated in "
+                                  f"{len(kel)} spectra, {n_in} of them in the solvent's episode; "
                                   + f"tracks parent x solvent (r {r:.2f} on {len(j3)} spectra); "
                                   + (f"the pair test passed ({pair_txt}): the parent's tier" if passed else
                                      "no cluster of the parent's other ion forms in its spectra (the pair "
@@ -868,7 +889,7 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 rows.append(dict(mz=_num(merged.at[k, "mz"]), was_neutral=was[0], was_adduct=was[1],
                                  neutral_formula=p["neutral_formula"], adduct=lab, solvent=solv.formula,
                                  parent_mz=pm, parent_reading=f"{p['neutral_formula']} {p['adduct']}",
-                                 parent_tier=ptier, tier_in=tier_in, tier_out=tier_out, n_spectra=len(ks),
+                                 parent_tier=ptier, tier_in=tier_in, tier_out=tier_out, n_spectra=len(kel),
                                  n_in_episode=n_in, n_track=len(j3), track_r=round(r, 4) if np.isfinite(r) else np.nan,
                                  pair_test=passed, pair=pair_txt))
     if out["relabelled"]:

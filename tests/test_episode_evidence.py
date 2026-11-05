@@ -352,7 +352,7 @@ def test_the_cluster_label_names_the_solvent_and_resolves_in_a_fresh_lookup(addu
 
 
 def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6, 7, 8, 9), track=True,
-                    parent_tier="Assigned", pair=False):
+                    parent_tier="Assigned", pair=False, background=False):
     """A batch series: a persistent parent, the NMP.urea ion bright in `bright`, the cluster in
     `cluster_at` (tracking parent x solvent, or not), and with `pair` the cluster's urea form."""
     pm = C.ion_mz("C16H22O4", "[M+H]+")
@@ -363,16 +363,19 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
     for k in range(n):
         sid = f"s{k:02d}"
         hp = 1e5 * (1 + 0.3 * np.sin(k))
-        hs = 1e6 * (1 + 0.5 * np.cos(k)) if k in bright else 0.0
+        hs = 1e6 * (1 + 0.5 * np.cos(k)) if k in bright else (1e3 * (1 + 0.2 * np.sin(k)) if background else 0.0)
         if k < parent_in:
             rows.append(dict(sample_item_id=sid, mz=pm, height=hp))
         if hs:
             rows.append(dict(sample_item_id=sid, mz=sm, height=hs))
         if k in cluster_at:
-            hk = 0.02 * hp * (hs or 1e5) / 1e6 if track else 1e3 * (1 + (k % 3))
+            # outside the solvent's episode the cluster stands as high as inside it (not confined)
+            hk = 0.02 * hp * (hs if k in bright else 1e6) / 1e6 if track else 1e3 * (1 + (k % 3))
             rows.append(dict(sample_item_id=sid, mz=km, height=hk))
             if pair:
                 rows.append(dict(sample_item_id=sid, mz=k2, height=0.3 * hk))
+        elif background and track:              # the cluster of the solvent background: faint, everywhere
+            rows.append(dict(sample_item_id=sid, mz=km, height=0.02 * hp * hs / 1e6 + 50.0))
         rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
     ts = pd.DataFrame(rows)
     merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
@@ -394,6 +397,7 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
     (dict(bright=tuple(range(11))), False, None),                       # SOLVENT_MAX_FRAC: bright in 11 of 20
     (dict(bright=tuple(range(10))), True, "Candidate"),                 # ... in 10 of 20: an episode
     (dict(bright=tuple(range(10)), cluster_at=tuple(range(10)), pair=True), True, "Assigned"),
+    (dict(background=True), True, "Candidate"),                         # a solvent background everywhere + an episode
 ])
 def test_the_cluster_rules(kw, relabelled, tier):
     merged, ts = _cluster_series(**kw)
@@ -405,7 +409,7 @@ def test_the_cluster_rules(kw, relabelled, tier):
     else:
         assert merged.iloc[1]["neutral_formula"] == "C21H31NO5"
     assert (EE.SOLVENT_X, EE.SOLVENT_MAX_FRAC, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R,
-            EE.TRACK_MIN_N) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4)
+            EE.TRACK_MIN_N, EE.SOLVENT_LIFT, EE.CLUSTER_X) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4, 5.0, 3.0)
 
 
 def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
