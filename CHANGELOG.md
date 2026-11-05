@@ -78,7 +78,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]` (the threshold, the qualifying bins,
   the files added and, for information, the estimated extra wall time), the stage's files are counted apart in
   `batch_summary.json["n_files_by_stage"]["episode"]`, and every per-file ledger of a batch with an episode file
-  carries `episode` (True on an episode file's rows on an episodic bin; per-file only, nothing reads it yet). On
+  carries `episode` (True on an episode file's rows on an episodic bin; the merge carries it to the merged row, where the episode evidence below reads it). On
   by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the previous selection
   and merged ledger byte for byte.
 

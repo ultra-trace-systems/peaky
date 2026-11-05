@@ -113,7 +113,8 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
     reads them as assigned.
   * ROW FLAG: in every file an episode wanted that is selected (its own pick or a
     cover file), the per-file ledger rows on an episodic bin carry `episode =
-    True` (`episode_row_flags`); per-file only, nothing reads it yet.
+    True` (`episode_row_flags`); the merge carries it to the merged row and the episode evidence
+    (batch/episode_evidence.py) and the unidentified-lines table read it.
 
 Pure pandas/numpy; no network. The selected `sample_item_id`s feed `assign.run`
 one at a time (in pick order), then the ledgers are merged (assign_batch.py).
