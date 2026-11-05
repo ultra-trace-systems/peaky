@@ -421,4 +421,11 @@ def test_a_labelled_nitrate_batch_demotes_the_shadow_reading(tmp_path, monkeypat
     assert "13C shadow" in merged.at[(X, NO3), "tier_reason"]
     assert merged.at[(X, NO3), "evidence_level"] == "5b"
     assert merged.at[(X_TWIN, NO3), "tier"] == "Assigned"
-    assert merged.at[(P, ACID), "tier"] == "Assigned"
+    # the shadow gate leaves the parent alone; its own pooled facts in this synthetic series contradict it
+    # (rule C over a series whose reference clusters carry no 13C line: P reads ~20 C for 10, the pair 5b
+    # on the levels already), so the isotope-contradiction guard (isoguard.guard_merged) takes it off
+    # Assigned with its note
+    assert "13C shadow" not in merged.at[(P, ACID), "tier_reason"]
+    assert merged.at[(P, ACID), "evidence_level"] == "5b"
+    assert merged.at[(P, ACID), "tier"] == "Candidate"
+    assert "isotope contradiction: 13C reads " in merged.at[(P, ACID), "tier_reason"]
