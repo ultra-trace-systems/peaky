@@ -38,22 +38,38 @@ def _known(comp: dict) -> dict:
             if x.get("neutral_formula")}
 
 
-def fake_engine(ts: pd.DataFrame, comp: dict):
-    """An `assign.run` stand-in over the fixture table."""
+def fake_engine(ts: pd.DataFrame, comp: dict, *, tiers: dict | None = None, alternatives: dict | None = None,
+                ppm: dict | None = None, commit: dict | None = None):
+    """An `assign.run` stand-in over the fixture table. The episode-evidence tests shape what
+    a file commits: `tiers` {line key: tier} (a per-file cap, e.g. Candidate for an open
+    rival), `alternatives` {line key: [{formula, adduct}]} (the engine's rivals),
+    `ppm` {line key: ppm_error}, `commit` {line key: (neutral, adduct, files or None)} (a
+    reading of a line the fixture names none for, in those files only). None of them:
+    the stand-in the goldens were cut with."""
     known = _known(comp)
+    tiers, alternatives, ppm, commit = tiers or {}, alternatives or {}, ppm or {}, commit or {}
 
     def run(sid, context="ambient-air", **kw):
         pk = ts[ts["sample_item_id"] == sid]
         led = L.new_ledger(pk[["peak_id", "mz", "height"]].reset_index(drop=True))
+        tier_of = {}
         for pid, key in zip(pk["peak_id"], pk["key"]):
-            if key in known:
-                n, a = known[key]
+            na = known.get(key)
+            if key in commit and (commit[key][2] is None or sid in commit[key][2]):
+                na = commit[key][:2]
+            if na is not None:
+                n, a = na
                 L.commit_assignment(led, pid, neutral_formula=n, adduct=a,
                                     ion_formula=C.format_formula(EV.ion_composition(n, a, None)) + "+",
-                                    ion_score=0.95, compound_score=0.95, ppm_error=0.1, pass_no=1,
-                                    method="cheminfo+grid", confidence="High", commentary="Pass 1")
+                                    ion_score=0.95, compound_score=0.95, ppm_error=ppm.get(key, 0.1), pass_no=1,
+                                    method="cheminfo+grid", confidence="High", commentary="Pass 1",
+                                    alternatives=alternatives.get(key))
+                tier_of[pid] = tiers.get(key, "Assigned")
         led["tier"] = led["tier"].astype(object)
         led.loc[led["role"] == L.ROLE_M0, "tier"] = "Assigned"
+        for pid, t in tier_of.items():
+            if t != "Assigned":
+                led.loc[led["peak_id"] == pid, "tier"] = t
         led["below_assignability"] = False
         return {"ledger": led,
                 "stats": {"noise_edge_cps": 80.0, "height_gate_cps": 240.0, "side_channels": [],
@@ -62,13 +78,14 @@ def fake_engine(ts: pd.DataFrame, comp: dict):
     return run
 
 
-def patch(ts: pd.DataFrame, comp: dict, setattr_=setattr) -> None:
-    """Stub the server and the engine (`setattr_` = a pytest monkeypatch's setattr)."""
+def patch(ts: pd.DataFrame, comp: dict, setattr_=setattr, **engine) -> None:
+    """Stub the server and the engine (`setattr_` = a pytest monkeypatch's setattr;
+    `engine` = fake_engine's shaping switches)."""
     setattr_(IO, "connect", lambda *a, **k: "CLIENT")
     setattr_(IO, "fetch_peaks", lambda client, sid, use_cache=True:
              ts[ts["sample_item_id"] == sid][["peak_id", "mz", "height"]].reset_index(drop=True))
     setattr_(IO, "estimate_offset", lambda raw: 0.0)
-    setattr_(A, "run", fake_engine(ts, comp))
+    setattr_(A, "run", fake_engine(ts, comp, **engine))
 
 
 def run_batch(out_dir: str, ts: pd.DataFrame, **kw) -> dict:

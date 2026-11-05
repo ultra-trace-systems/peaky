@@ -34,6 +34,25 @@ What is in it (`components.json` names every line, its m/z, its spectra and its 
   noise edge; singleton bins the cover's prevalence gate drops).
 
 All masses carry a deterministic +-0.5 ppm jitter per spectrum.
+
+The episode-evidence variants (all off by default, so `build()` is the stored table; none
+draws from the random generator, so every default line keeps its jitter and heights):
+
+* `envelope`: the plume ion's 15N (4 N), 13C2 and 18O lines at their first-order shares --
+  its isotope envelope complete enough for the evidence level to reach 4b;
+* `rival_lines`: the exact-alias rival's own 29Si / 30Si lines in the plume spectra (the
+  rival's silicon is then no longer refuted by the spectra; only the 13C count could
+  exclude it, and at 8 C against its 10 it cannot);
+* `dim`: a dim plume ion, C7H8N4O2 [M+H]+ at 1.5e3 cps, no 13C line (its predicted 13C
+  S/N ~1.4: untestable) -- it rises exactly with the plume (co-occurrence, r = 1);
+* `pair_adduct`: the plume ion's urea adduct C8H10N4O2 [M+(CH4N2O)H]+ at 0.3x it (an
+  adduct partner in the same spectra);
+* `true_ion`: a line 3.85 mDa above the persistent C16H22O4 [M+H]+ that follows it at 0.1x
+  and carries its own 13C line (11 C) -- an ion at the satellite's offset (its `reading`
+  is recorded, not committed: a test commits it in the files it chooses);
+* `cluster_track=False`: the solvent cluster's heights do not follow parent x solvent;
+* `cluster_outside`: the solvent cluster is also in 10 spectra outside the plume (not
+  confined to the episode).
 """
 from __future__ import annotations
 
@@ -80,8 +99,17 @@ def _r13(n_c: int, h):
     return ISO.satellite_height("C", n_c, h)
 
 
+DIM_ION = ("E2", "C7H8N4O2", "[M+H]+", 7, 1.5e3)
+PAIR_ION = ("E3", "C8H10N4O2", "[M+(CH4N2O)H]+", 9, 0.3)        # x the plume ion
+TRUE_ION = ("T1", "C11H20F2N4O2", "[M+H]+", 11, 0.1)            # x P1, 3.85 mDa above it
+OUTSIDE_AT = (2, 5, 9, 14, 17, 26, 30, 34, 38, 39)
+CLUSTER_NOTRACK = (1.0, 0.2, 0.9, 0.5)                           # the cluster's shape when it does not track
+
+
 def build(*, plume: bool = True, c13_child: bool = True, cluster: bool = True,
-          satellite: bool = True, pairs: bool = True) -> tuple[pd.DataFrame, dict]:
+          satellite: bool = True, pairs: bool = True, envelope: bool = False, rival_lines: bool = False,
+          dim: bool = False, pair_adduct: bool = False, true_ion: bool = False, cluster_track: bool = True,
+          cluster_outside: bool = False) -> tuple[pd.DataFrame, dict]:
     """(per-peak batch table, component record). Deterministic."""
     rng = np.random.default_rng(SEED)
     jit = rng.normal(0.0, 0.25, size=(N_SPECTRA, 64)).clip(-0.5, 0.5)   # ppm, per spectrum and line slot
@@ -134,9 +162,44 @@ def build(*, plume: bool = True, c13_child: bool = True, cluster: bool = True,
             key, nf, ad = CLUSTER
             hs = [CLUSTER_K * p_h["P1"][i] * s / h0 * (1 + clu_scatter[i])
                   for i, s in zip(PLUME_AT, s_h)]
-            add(key, C.ion_mz(nf, ad), PLUME_AT, hs, "solvent_cluster", slot, neutral_formula=nf,
+            if not cluster_track:
+                hs = [max(hs) * f for f in CLUSTER_NOTRACK]
+            at = PLUME_AT
+            if cluster_outside:
+                at = tuple(sorted(PLUME_AT + OUTSIDE_AT))
+                hv = dict(zip(PLUME_AT, hs))
+                hs = [hv.get(i, 0.3 * max(hs)) for i in at]
+            add(key, C.ion_mz(nf, ad), at, hs, "solvent_cluster", slot, neutral_formula=nf,
                 adduct=ad, parent="P1", solvent="S1", solvent_neutral="C5H9NO")
         slot += 1
+        e_h = [PLUME_ION[4] * f for f in PLUME_SHAPE]
+        e_mz = C.ion_mz(PLUME_ION[1], PLUME_ION[2])
+        if envelope:          # the plume ion's 15N, 13C2 and 18O lines
+            add("E1_15N", e_mz + ISO.D_15N, PLUME_AT, [h * ISO.R_15N_PER_N * 4 for h in e_h], "15N", 40,
+                parent="E1")
+            add("E1_13C2", e_mz + 2 * ISO.D_13C, PLUME_AT, [h * (ISO.R_13C_PER_C * 8) ** 2 / 2 * 7 / 8
+                                                            for h in e_h], "13C2", 41, parent="E1")
+            add("E1_18O", e_mz + ISO.D_18O, PLUME_AT, [h * ISO.R_18O_PER_O * 2 for h in e_h], "18O", 42,
+                parent="E1")
+        if rival_lines:       # the rival's silicon lines
+            add("R1_29Si", e_mz + ISO.D_29SI, PLUME_AT, [h * ISO.R_29SI_PER_SI for h in e_h], "29Si", 43,
+                parent="E1")
+            add("R1_30Si", e_mz + ISO.D_30SI, PLUME_AT, [h * ISO.R_30SI_PER_SI for h in e_h], "30Si", 44,
+                parent="E1")
+        if dim:
+            key, nf, ad, nc, h0d = DIM_ION
+            add(key, C.ion_mz(nf, ad), PLUME_AT, [h0d * f for f in PLUME_SHAPE], "plume_dim", 45,
+                neutral_formula=nf, adduct=ad, n_c=nc)
+        if pair_adduct:
+            key, nf, ad, nc, x = PAIR_ION
+            add(key, C.ion_mz(nf, ad), PLUME_AT, [h * x for h in e_h], "plume_pair", 46, neutral_formula=nf,
+                adduct=ad, n_c=nc, parent="E1")
+    if true_ion:
+        key, nf, ad, nc, x = TRUE_ION
+        mz = C.ion_mz("C16H22O4", "[M+H]+") + SAT_DMZ
+        hs = [x * h for h in p_h["P1"]]
+        add(key, mz, every, hs, "true_ion", 47, reading=[nf, ad], n_c=nc, parent="P1", dmz=SAT_DMZ)
+        add(key + "_13C", mz + ISO.D_13C, every, [_r13(nc, h) for h in hs], "13C", 48, parent=key)
     if pairs:
         for p, (a, b) in enumerate(PAIRS):
             for j in range(6):
