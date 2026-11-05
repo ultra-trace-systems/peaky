@@ -598,7 +598,7 @@ def test_the_batch_word_is_the_weakest_files_source():
 def test_the_inorganic_core_keeps_the_confidence_and_mass_guards():
     """A carbon-free row on its own 34S line enters only High/Good and within 15 ppm."""
     led = _file("g", _rows(16))
-    for k, (conf, ppm) in enumerate([("Good", 0.02), ("Low", 0.02), ("Good", 20.0)]):
+    for k, (conf, ppm) in enumerate([("Good", 0.02), ("Low", 0.03), ("Good", 20.0)]):
         mz = C.ion_mz("H2SO4", AD) * (1 + ppm * 1e-6)
         pid = f"g-s{k}"
         led = pd.concat([led, L.new_ledger(pd.DataFrame([(pid, mz, 2e5), (pid + "i", mz + 1.9958, 1e4)],
@@ -608,8 +608,8 @@ def test_the_inorganic_core_keeps_the_confidence_and_mass_guards():
                             commentary="Pass 1")
         L.attach_isotopologue(led, pid + "i", pid, iso_label="34S", iso_match_score=0.9)
     rows = CP.core_rows(led, inorganic=True, sid="g")
-    taken = set(rows.loc[rows["neutral_formula"] == "H2SO4", "ppm"].round(2))
-    assert taken == {0.02}
+    taken = rows.loc[rows["neutral_formula"] == "H2SO4", "ppm"].round(2).tolist()
+    assert taken == [0.02]
 
 
 def test_a_line_within_12_ppm_of_a_reagent_library_ion_is_the_reagents():
@@ -634,3 +634,17 @@ def test_relevel_never_lends_to_a_file_that_calibrated_alone(tmp_path, monkeypat
     assert s["levels_calibration"]["source"] == "per_file"
     for f in ("tables/evidence_levels.csv", "merged_ledger.csv"):
         assert filecmp.cmp(tmp_path / "rl" / f, tmp_path / "none" / f, shallow=False), f
+
+
+def test_the_receiving_scatter_is_about_each_files_own_centre_and_skips_thin_files():
+    """Two files 2 ppm apart (centres +1 / -1 ppm), their core rows +-0.1 ppm about their centres: the
+    receiving scatter is the within-file one (scaled MAD 0.11 ppm), not the 2-ppm spread between them;
+    a third file with fewer than CENTRE_MIN_ROWS Assigned rows has no centre and is not read."""
+    def f(sid, centre, n, n_iso):
+        return _file(sid, [(nf, AD, centre + 0.05 * ((k % 5) - 2), 1e5 * (1 + k), k < n_iso, "Good")
+                           for k, nf in enumerate(MORE_NEUTRALS[:n])])
+    led = {"a": f("a", 1.0, 16, 6), "b": f("b", -1.0, 16, 6), "c": f("c", 3.0, 10, 10)}
+    assert all((L_["tier"] == "Assigned").sum() >= 10 for L_ in led.values())
+    r = CF.receiving_scatter(led, reagent="Br", polarity="negative")
+    assert (r["n_files"], r["n_rows"]) == (2, 12) and r["sigma"] == pytest.approx(1.4826 * 0.075, abs=1e-3)
+
