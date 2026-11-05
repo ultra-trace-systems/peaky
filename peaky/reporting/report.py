@@ -295,8 +295,11 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
 
 
 def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
-                 sample_id: str = "", *, tof_flag_mz=None) -> dict[str, pd.DataFrame]:
+                 sample_id: str = "", *, tof_flag_mz=None, unidentified=None) -> dict[str, pd.DataFrame]:
     """Return the report sheets as DataFrames (insertion order == sheet order).
+    ``unidentified``: the bright lines no output explains (batch/unidentified.py's
+    table) -- given, the sheet "Unidentified bright lines" follows "Below
+    assignability"; None leaves the workbook as it was.
     A ledger carrying the TOF mass-only flag (assignment/mass_only.py) shows it on
     the Assigned sheet and counts it in the Summary, split at `tof_flag_mz`
     (None = the package default); a ledger without it renders as before."""
@@ -457,6 +460,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         "Assigned": identified,
         "Candidates": candidates,
         "Below assignability": below,
+        **({UNIDENTIFIED_SHEET: unidentified} if unidentified is not None else {}),
         "Unassigned": un,
         "By class": by_class,
         "Unique formulas": uniq,
@@ -994,9 +998,13 @@ def _style_summary(ws, df):
             ws.cell(row=i, column=sec_j).value = None
 
 
+#: the workbook sheet of the bright unidentified lines (batch/unidentified.py)
+UNIDENTIFIED_SHEET = "Unidentified bright lines"
+
+
 def write_excel(ledger: pd.DataFrame, path: str | Path,
-                context: str = "ambient-air", sample_id: str = "", *, tof_flag_mz=None):
-    sheets = build_sheets(ledger, context, sample_id, tof_flag_mz=tof_flag_mz)
+                context: str = "ambient-air", sample_id: str = "", *, tof_flag_mz=None, unidentified=None):
+    sheets = build_sheets(ledger, context, sample_id, tof_flag_mz=tof_flag_mz, unidentified=unidentified)
     chip_cols = ("tier", "confidence", "residual_evidence", "best_tier", "evidence_level", "level",
                  "claim", "best_claim", MO.COLUMN)
     with pd.ExcelWriter(path, engine="openpyxl") as xl:

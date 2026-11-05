@@ -363,8 +363,16 @@ def _write_assign_outputs(args, out, base) -> None:
     if flag["applied"]:
         print(MO.describe(flag))
     led.to_csv(f"{base}_ledger.csv", index=False)
+    # the bright lines the sample's ledger leaves unexplained (batch/unidentified.py, the
+    # sample as a one-file batch): the workbook's "Unidentified bright lines" sheet
+    from peaky.batch import unidentified as UN
+    try:
+        unident = UN.build_single(led, st0.get("noise_edge_cps"), sample_id=args.sample_id)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic sheet never fails a finished run
+        print(f"[report] WARNING the unidentified-lines sheet was not built: {type(e).__name__}: {e}")
+        unident = None
     report.write_excel(led, f"{base}_assignments.xlsx", out["context"],
-                       sample_id=args.sample_id, tof_flag_mz=thr)
+                       sample_id=args.sample_id, tof_flag_mz=thr, unidentified=unident)
     report.write_markdown(out, f"{base}_summary.md")
     manifest = {k: v for k, v in out.items() if k != "ledger"}
     Path(f"{base}_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))

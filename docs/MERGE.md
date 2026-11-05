@@ -765,6 +765,47 @@ selected sample_ids (SAMPLING.md)
    in-scope table), `lines`, `demoted` and `demoted_rows` (`skipped` without a
    table).
 
+6d. **The vote-drop recorder** (`batch/unidentified.DropLog` / `vote_drops`; inside
+   the merge and right after the element-signature removal, before the per-file
+   rewrite). `align` itself never drops a cluster, but the gates after it remove
+   merged rows: the reagent-cluster strip, the reagent-water rungs (4a), the
+   isotopologue strip (4c) and the element-signature removal (6a). Each removal is
+   noted (the merged row's m/z and reading, the gate), and every per-file M0 row
+   left with **no merged row within the merge window** of its (offset-corrected)
+   m/z is listed once in `tables/vote_drops.csv`: `file`, `peak_id`, `mz`,
+   `neutral_formula`, `adduct`, `tier_in` (the file's tier), `reason` (the gate and
+   the removed reading, e.g. `isotopologue strip (C9H10O7 [M-H]-)`;
+   `trace-first scope (not on a residual bin)` for a residual file's row the scope
+   kept out of the vote; `no merged row at its m/z` when no recorded removal sits
+   in the window). Read before the per-file rewrite turns the stripped readings'
+   rows into iso_child / unexplained rows. A diagnostic: nothing reads it but the
+   unidentified table below.
+
+6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`;
+   right after the pooled evidence levels are stamped). An Assigned merged row
+   whose POOLED pair the levels' own isotope facts contradict -- the 13C carbon
+   count (test c), an absent own 34S / 37Cl line (test a), a 34S / 37Cl line it
+   cannot explain while it carries no S / Cl (test b);
+   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 -- is Candidate with the note
+   `isotope contradiction: <fact>`. The per-file guard (stage `isotope_guard`)
+   already held the files' tiers before the vote; this one reads every file's facts
+   together. Demote-only; `batch_summary.json["merge_gates"]["isotope_guard"]`
+   records `tested`, `demoted`, `by_fact` (`13C` / `absent` / `unexplained`) and
+   the first 50 `rows`.
+
+6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before
+   the merged ledger is written). Every per-file row bright in its file (>= 5x the
+   file's noise edge, `per_file[].noise_edge_cps`; or flagged `episode`) that no
+   output explains -- `unexplained` at the end of the run, an `iso_child` /
+   `artifact` whose parent the merged ledger does not hold Assigned (a reagent
+   parent explains it), or an M0 row step 6d lists -- is binned by m/z (single
+   linkage at the merge window, offset-corrected); a bin no merged row (any tier)
+   holds becomes one row of `tables/unidentified.csv` with its `why`
+   (`vote_dropped` > `orphan_iso_child` > `orphan_artifact` > `all_blocked` >
+   `no_formula`) and the readings tried ([OUTPUTS.md](OUTPUTS.md)).
+   `batch_summary.json["unidentified_bright"]` is the row count,
+   `["unidentified"]` the counts by why and the vote-drop counts by reason.
+
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
@@ -856,6 +897,8 @@ All in `peaky/batch/assign_batch.py`.
 | `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
 | `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b); `label_shadow` (step 6c)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
+| `tables/vote_drops.csv` | the vote-drop recorder (step 6d): one row per per-file M0 row with no merged row at its m/z — `file`, `peak_id`, `mz`, `neutral_formula`, `adduct`, `tier_in`, `reason` |
+| `tables/unidentified.csv` | the bright lines no output explains (step 6f, [OUTPUTS.md](OUTPUTS.md)) |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

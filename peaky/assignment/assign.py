@@ -22,6 +22,7 @@ from peaky.assignment import degeneracy
 from peaky.io import io_mascope
 from peaky.chem import isotopes
 from peaky.assignment import iso_response
+from peaky.assignment import isoguard
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
@@ -41,7 +42,8 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.7.2"  # + every unexplained row says why (blocked.py: blocked_reading / blocked_by);
+__version__ = "0.7.3"  # + the isotope-contradiction guard stage after `evidence` (isoguard.py, stats["isotope_guard"])
+#                        0.7.2: + every unexplained row says why (blocked.py: blocked_reading / blocked_by);
 #                        + cfg.width_model: the run's width model for every stage's commit contract
 #                        0.7.1 the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
 #                        context profile (the NOx-skeleton switches) and the
@@ -495,7 +497,9 @@ def _stage_evidence(st):
         activation=getattr(st, "reflists_context", None),
         reagent_halogen=getattr(st, "reagent_halogen", evidence.DETECT_HALOGEN))
     st.level_inputs = ri
-    s = evidence.apply_levels(st.led, cfg=st.cfg, run_inputs=ri)
+    # the file's pair facts, kept for the isotope guard below (isoguard: it reads them, never recomputes)
+    st.level_pairs = []
+    s = evidence.apply_levels(st.led, cfg=st.cfg, run_inputs=ri, pairs_out=st.level_pairs)
     claims = s.get("claims") or {}
     inst = s.get("instrument") or {}
     st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
@@ -503,6 +507,20 @@ def _stage_evidence(st):
            f"{inst.get('class') or 'unknown'}); "
            "claims " + " | ".join(f"{k} {claims.get(k, 0)}" for k in evidence.CLAIM_KEYS))
     return s
+
+
+def _stage_isotope_guard(st):
+    """The per-file isotope-contradiction guard (isoguard.guard_ledger) on the
+    facts the `evidence` stage computed for this file (`st.level_pairs`); a file
+    the stage could not level has no facts and nothing is demoted."""
+    pairs = (getattr(st, "level_pairs", None) or [None])[-1]
+    s = isoguard.guard_ledger(st.led, pairs, log=st.log)
+    s["rows"] = s["rows"][:ISOGUARD_ROWS_KEPT]
+    return s
+
+
+#: the per-file stats keep at most this many of the guard's demoted rows (the counts are complete)
+ISOGUARD_ROWS_KEPT = 50
 
 
 def _stage_resolvability(st):
@@ -766,6 +784,12 @@ _STAGES = [
     # evidence levels -- not `safe`: a level that cannot be computed is a bug,
     # not a lost stage. The stage order above is the design (spec §6.1).
     _Stage("evidence", _stage_evidence, safe=False),
+    # the isotope-contradiction guard (isoguard.py): an Assigned row whose own lines'
+    # isotope facts -- the ones the `evidence` stage just computed (the 13C carbon count,
+    # an absent own 34S / 37Cl line, a 34S / 37Cl line the reading cannot explain) --
+    # contradict it is Candidate with the note. The last per-file tier word: after the
+    # facts exist, before `timeseries`, the batch's vote and its sideband hold
+    _Stage("isotope_guard", _stage_isotope_guard),
     _Stage("timeseries", _stage_timeseries,
            when=lambda st: st.ts_peaks is not None and len(st.ts_peaks)),
 ]
@@ -1266,6 +1290,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["tof_assign_floor_cps"] = tiers.tof_assign_floor(cfg)
     # the TOF ion-M+2 test's counts (tiers.apply_tof_m2; `skipped` says why it did not run)
     st["tof_m2"] = summaries.get("tof_m2")
+    # the isotope-contradiction guard's record (isoguard.guard_ledger; absent when the stage did not run)
+    st["isotope_guard"] = summaries.get("isotope_guard")
     st["snr_source"] = scoring_snapshot.get("snr_source")
     # the centre the file's mass errors were judged at and where it came from
     # ("fitted" anchors, the batch's "axis", the file's own "self"-centre, a "trend",
