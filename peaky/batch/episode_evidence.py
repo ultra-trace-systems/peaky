@@ -52,8 +52,13 @@ partners in the same minutes (another reagent's batch) are not available
 inside one batch run and are not read.
 
 All five hold -> the reading is Assigned from that episode (tier Assigned, the
-note says which facts). Otherwise it is Candidate (DEMOTES; a curated neutral
-keeps the vote's tier) with the failed clauses in the note; when no isotope
+note says which facts; a Candidate is promoted). Otherwise it is not Assigned
+FROM ITS EPISODE: a Candidate stays Candidate, and a reading the vote made
+Assigned keeps that tier with the failed clauses in the note (DEMOTES False, the
+default: measured on a 12-ledger field arm, demoting such rows cost two true
+episode lines whose 13C line is untestable at their height and moved precision
+by 0.0002; DEMOTES True makes them Candidate, a curated neutral excepted); when
+no isotope
 line was testable the claim is `single episode, isotopes untestable`
 (UNTESTABLE_CLAIM; the evidence level is the level machinery's, untouched).
 Promotion is open only to readings whose ion carries no element the isotopes
@@ -138,9 +143,9 @@ ALIAS_SWAPS = (
 #: the ion forms a 15N-label alias rival may take beside the reagent profile's own: the
 #: carbonate radical anion's cluster and the radical anion itself (the [M+CO3]- / [M+^NO3]- pair)
 ALIAS_EXTRA_ADDUCTS = ("[M+CO3]-", "[M]-.")
-#: a reading that fails is Candidate (the spec: Assigned from one episode only when all hold);
-#: False: a reading the vote made Assigned keeps its tier with the note (promotion only)
-DEMOTES = True
+#: True: a reading that fails is Candidate (Assigned from one episode only when all hold); False (the
+#: default): a reading the vote made Assigned keeps its tier with the note -- the rule promotes only
+DEMOTES = False
 NOTE_MARK = "episode evidence"
 UNTESTABLE_CLAIM = "single episode, isotopes untestable"
 ASSIGNED_CLAIM = "single episode, isotope facts hold"

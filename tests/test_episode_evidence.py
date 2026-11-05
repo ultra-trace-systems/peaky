@@ -103,7 +103,7 @@ def test_a_capped_plume_reading_is_promoted_when_its_isotopes_exclude_the_rival(
 
 def test_without_its_13c_line_the_plume_reading_stays_candidate(tmp_path, monkeypatch):
     _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True, c13_child=False),
-                 engine=dict(alternatives={"E1": RIV}), k_episode_max=8)
+                 engine=dict(tiers={"E1": "Candidate"}, alternatives={"E1": RIV}), k_episode_max=8)
     r = _get(m, *E1)
     assert r["tier"] == "Candidate" and "(b) failed: 13C reads" in r["tier_reason"]
 
@@ -123,27 +123,33 @@ def test_co_occurrence_alone_is_no_evidence(tmp_path, monkeypatch):
     d = t[(t["mz"] - C.ion_mz(*DIM)).abs() < 0.002].set_index("sample_item_id")["height"]
     e = t[(t["mz"] - C.ion_mz(*E1)).abs() < 0.002].set_index("sample_item_id")["height"]
     assert np.corrcoef(d, e.reindex(d.index))[0, 1] > 0.999
-    summ, m = _run(tmp_path, monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
+    summ, m = _run(tmp_path, monkeypatch, build=dict(envelope=True, dim=True),
+                   engine=dict(tiers={"E2": "Candidate"}), k_episode_max=8)
     r = _get(m, *DIM)
     assert r["tier"] == "Candidate" and r["episode_claim"] == EE.UNTESTABLE_CLAIM
     assert "(b) untestable" in r["tier_reason"]
     assert summ["merge_gates"]["episode_evidence"]["untestable"] == 1
 
 
-def test_a_failing_reading_keeps_the_votes_tier_when_demotion_is_off(tmp_path, monkeypatch):     # DEMOTES
-    monkeypatch.setattr(EE, "DEMOTES", False)
-    _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
+def test_a_failing_reading_the_vote_assigned_keeps_its_tier_unless_demotion_is_on(tmp_path, monkeypatch):  # DEMOTES
+    assert EE.DEMOTES is False
+    summ, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
     r = _get(m, *DIM)
     assert r["tier"] == "Assigned" and r["episode_claim"] == EE.UNTESTABLE_CLAIM
-    assert EE.NOTE_MARK in r["tier_reason"]
+    assert EE.NOTE_MARK in r["tier_reason"] and summ["merge_gates"]["episode_evidence"]["kept_assigned"] == 1
+    monkeypatch.setattr(EE, "DEMOTES", True)
+    summ2, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
+    assert _get(m2, *DIM)["tier"] == "Candidate" and summ2["merge_gates"]["episode_evidence"]["demoted"] == 1
 
 
 def test_one_episode_file_needs_an_adduct_partner_in_its_spectrum(tmp_path, monkeypatch):        # (e)
     # no episode budget: the plume's only file is the cover's ep20
-    _s, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True), k_episode_max=0)
+    _s, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True), engine=dict(tiers={"E1": "Candidate"}),
+                 k_episode_max=0)
     r = _get(m, *E1)
     assert r["tier"] == "Candidate" and "(e) one episode file, no adduct partner" in r["tier_reason"]
-    _s, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True, pair_adduct=True), k_episode_max=0)
+    _s, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True, pair_adduct=True),
+                  engine=dict(tiers={"E1": "Candidate"}), k_episode_max=0)
     r2 = _get(m2, *E1)
     assert r2["tier"] == "Assigned" and "(e) C8H10N4O2 [M+(CH4N2O)H]+ at 255.12" in r2["tier_reason"]
 
@@ -151,7 +157,8 @@ def test_one_episode_file_needs_an_adduct_partner_in_its_spectrum(tmp_path, monk
 @pytest.mark.parametrize("ppm,tier", [(0.55, "Assigned"), (0.65, "Candidate")])
 def test_the_mass_must_sit_in_every_episode_files_calibrated_window(tmp_path, monkeypatch, ppm, tier):  # (a), K_SIGMA
     # the files' degeneracy calibration: mu 0, sigma 0.2 ppm -> the window is +-0.6 ppm
-    _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True), engine=dict(ppm={"E1": ppm}), k_episode_max=8)
+    _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True), engine=dict(tiers={"E1": "Candidate"}, ppm={"E1": ppm}),
+                 k_episode_max=8)
     r = _get(m, *E1)
     assert r["tier"] == tier
     if tier == "Candidate":
@@ -209,7 +216,7 @@ def test_a_held_or_contradicted_row_is_never_assigned_from_its_episode():       
     assert "(e)" in m.at[0, "tier_reason"]
     for reason in (f"{SB.HOLD_MARK}: Assigned in 1 file(s) only", f"{SB.SATELLITE_HOLD_MARK}: x",
                    "isotope contradiction in 1 of 1 file(s): 13C reads 1 C for 8"):
-        m, led, ts, w = _unit(reason=reason)
+        m, led, ts, w = _unit(tmp_tier="Candidate", reason=reason)
         _t, s = _judge(m, led, ts, w)
         assert "(d) held" in m.at[0, "tier_reason"] and m.at[0, "tier"] == "Candidate"
     # the pooled pair's contradiction fact alone (the merged guard demotes only Assigned rows)
@@ -221,15 +228,18 @@ def test_a_held_or_contradicted_row_is_never_assigned_from_its_episode():       
 
 
 def test_without_a_calibrated_window_the_mass_cannot_hold():                                         # (a)
-    m, led, ts, _w = _unit()
+    m, led, ts, _w = _unit(tmp_tier="Candidate")
     _t, s = _judge(m, led, ts, {})
     assert "(a) s1: no calibrated window" in m.at[0, "tier_reason"] and m.at[0, "tier"] == "Candidate"
 
 
 def test_a_curated_neutral_keeps_the_votes_tier():
     m, led, ts, w = _unit()
-    _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}))
+    _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), demote=True)
     assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
+    m, led, ts, w = _unit()
+    _t, s = _judge(m, led, ts, w, demote=True)
+    assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
 
 
 @pytest.mark.parametrize("nf,ad,cls", [

@@ -91,7 +91,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   15N-label classes, and the exotic rivals within 0.5 mDa the files and the levels left open), (d) no low-file
   hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
   spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
-  Otherwise it is Candidate (a curated neutral keeps the vote's tier); with no testable isotope line the new
+  A Candidate that passes is promoted; otherwise a Candidate stays one and a reading the vote made Assigned keeps
+  its tier with the note (`episode_evidence.DEMOTES = False`; True makes it Candidate); with no testable isotope
+  line the new
   `episode_claim` column reads `single episode, isotopes untestable`. Promotion is closed to ions carrying F, Si,
   P or I. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
   unchanged byte for byte.

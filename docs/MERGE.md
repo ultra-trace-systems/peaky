@@ -926,8 +926,12 @@ selected sample_ids (SAMPLING.md)
    file reading the ion. Co-occurrence with other episode lines is never
    evidence; partners in another reagent's batch in the same minutes are not
    available inside one batch and are not read. Promotion is open only to ions of
-   C H N O S Cl Br. Otherwise the reading is Candidate (`DEMOTES`; a curated
-   neutral keeps the vote's tier), the note names the failed clauses, and where no
+   C H N O S Cl Br; a Candidate that passes is promoted. Otherwise the reading is
+   not Assigned from its episode: a Candidate stays one, a reading the vote made
+   Assigned keeps that tier (`DEMOTES = False`, the default: on a 12-ledger field
+   arm demoting cost two true episode lines whose 13C line is untestable at their
+   height; `True` makes them Candidate, a curated neutral excepted), the note names
+   the failed clauses, and where no
    isotope line was testable the claim column `episode_claim` reads `single
    episode, isotopes untestable` (the evidence level is untouched).
    `tables/episode_evidence.csv` (one row per judged reading: the five clauses),
