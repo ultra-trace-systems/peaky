@@ -369,17 +369,18 @@ selected sample_ids (SAMPLING.md)
    spectra, >= 5x its median there (`SOLVENT_LIFT`), in <= 50 % of the batch's
    spectra (`SOLVENT_MAX_FRAC`; a solvent background in every spectrum is fine, its
    episodes are what count) -- and that is in <= 50 % of the batch's spectra,
-   and that tracks parent x solvent across the episode's spectra (Pearson r >= 0.7
-   on >= 4 of them holding all three lines; co-occurrence alone reads nothing), is read as
-   that ion's cluster: the parent's neutral, the adduct naming the solvent
-   (`[M+(C5H9NO)H]+`, `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift` resolves
-   such a label in any process), `solvent_cluster_of` = `<parent> + <solvent>`, the
-   covalent reading first in `alternatives`, the note `solvent cluster: ...`. The
-   solvent's ion forms are read one by one and only the forms bright in an episode
-   count (a form bright everywhere is another ion's mass). Its tier is the parent's
-   when the pair test passes -- the same solvent cluster of the parent's neutral
-   under another reagent ion form sits in the cluster's spectra (>= 3x the edge) --
-   else the parent's capped at Candidate. The reagent-cluster strip below spares such a
+   and that shares at least 4 of the episode's spectra with the parent and the
+   solvent ion (fewer: nothing is read), is read as that ion's cluster: the
+   parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`,
+   `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift` resolves such a label in any
+   process), `solvent_cluster_of` = `<parent> + <solvent>`, the covalent reading
+   first in `alternatives`, the note `solvent cluster: ...` -- the same ion
+   composition, read as a cluster, not as a new neutral. The solvent's ion forms are
+   read one by one and only the forms in an episode count (a form at its background
+   in every spectrum still has its episodes). Its tier is the parent's when the pair
+   test passes -- the line tracks parent x solvent across those episode spectra
+   (Pearson r >= 0.7, `TRACK_R`; co-occurrence alone is no track) -- else the
+   parent's capped at Candidate. The reagent-cluster strip below spares such a
    row (a 12-ppm match to a urea cluster is no reason to drop a line the pair test
    reads as the parent's cluster). `tables/solvent_clusters.csv`,
    `merge_gates["solvent_clusters"]`.

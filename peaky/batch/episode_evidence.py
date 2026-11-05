@@ -73,14 +73,11 @@ everywhere is fine; its episodes are what count) -- beside a known PERSISTENT
 Assigned ion (in >= PERSIST_FRAC of the batch's spectra), is read as that ion's
 cluster: the
 parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
-neutral -- when, and only when, the cluster tracks the product parent x
-solvent across the episode's spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N of
-them):
-co-occurrence alone reads nothing. Its tier is the parent's when the pair test
-passes (the same solvent cluster of the parent's neutral under another reagent
-ion form in the cluster's spectra, >= PAIR_X x the edge), else the parent's
-capped at Candidate. The reagent-cluster strip of the merge spares a row read
-so.
+neutral -- where the line, the parent and the solvent ion share at least
+TRACK_MIN_N of the episode's spectra (fewer: nothing is read). Its tier is the
+parent's when the pair test passes -- the cluster tracks the product parent x
+solvent across those spectra (Pearson r >= TRACK_R) -- else the parent's capped
+at Candidate. The reagent-cluster strip of the merge spares a row read so.
 
 Pure: reads the merged ledger, the per-file ledgers and the batch series;
 mutates only the merged rows it judges or relabels; returns a table and a
@@ -175,7 +172,7 @@ TRACK_MIN_N = 4
 CLUSTER_MARK = "solvent cluster"
 CLUSTER_COLUMNS = ["mz", "was_neutral", "was_adduct", "neutral_formula", "adduct", "solvent", "parent_mz",
                    "parent_reading", "parent_tier", "tier_in", "tier_out", "n_spectra", "n_in_episode",
-                   "n_track", "track_r", "pair_test", "pair"]
+                   "n_track", "track_r", "pair_test"]
 
 
 def empty_table() -> pd.DataFrame:
@@ -843,27 +840,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 j3 = j3[(j3 > 0).all(axis=1) & j3.index.isin(list(bright))]
                 r = (float(np.corrcoef(j3["k"], j3["p"] * j3["s"])[0, 1]) if len(j3) >= 2
                      and j3["k"].std() > 0 and (j3["p"] * j3["s"]).std() > 0 else float("nan"))
-                tracks = bool(len(j3) >= TRACK_MIN_N and np.isfinite(r) and r >= TRACK_R)
-                if not tracks:
-                    continue                   # co-occurrence alone reads nothing
-                # the pair test: the same solvent cluster of the parent's neutral under another
-                # reagent ion form, in the cluster's spectra
-                passed, pair_txt = False, ""
-                for a2 in adducts:
-                    if a2 == p["adduct"] or not str(a2).endswith(sign):
-                        continue
-                    lab2 = cluster_label(a2, solv.formula)
-                    try:
-                        m2 = C.ion_mz(p["neutral_formula"], lab2) if lab2 else None
-                    except Exception:  # noqa: BLE001
-                        m2 = None
-                    if m2 is None:
-                        continue
-                    l2 = line(m2).reindex(ks.index).fillna(0.0)
-                    ok2 = l2 >= PAIR_X * edge.reindex(l2.index)
-                    if ok2.any():
-                        passed, pair_txt = True, f"{p['neutral_formula']} {lab2} in {int(ok2.sum())} of its spectra"
-                        break
+                if len(j3) < TRACK_MIN_N:
+                    continue                   # too few episode spectra to read a track: nothing is read
+                # the pair test: the cluster tracks the product of the pair, parent x solvent
+                passed = bool(np.isfinite(r) and r >= TRACK_R)
                 ptier = _s(p["tier"])
                 tier_out = ptier if passed else ("Candidate" if ptier == "Assigned" else ptier)
                 was = (_s(merged.at[k, "neutral_formula"]), _s(merged.at[k, "adduct"]))
@@ -879,10 +859,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 _note(merged, k, (f"{CLUSTER_MARK}: the {solv.formula} ({solv.name}) cluster of the persistent "
                                   f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): present in "
                                   f"{len(kel)} spectra, {n_in} of them in the solvent's episode; "
-                                  + f"tracks parent x solvent (r {r:.2f} on {len(j3)} spectra); "
-                                  + (f"the pair test passed ({pair_txt}): the parent's tier" if passed else
-                                     "no cluster of the parent's other ion forms in its spectra (the pair "
-                                     "test): capped at Candidate")
+                                  + (f"tracks parent x solvent (r {r:.2f} on {len(j3)} episode spectra): the "
+                                     "parent's tier" if passed else
+                                     f"the pair test not passed (r {r:.2f} on {len(j3)} episode spectra; needs "
+                                     f">= {TRACK_R:g}): capped at Candidate")
                                   + (f"; was {was[0]} {was[1]}" if all(was) else "")))
                 out["relabelled"] += 1
                 out["pair_passed"] += int(passed)
@@ -892,10 +872,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                                  parent_mz=pm, parent_reading=f"{p['neutral_formula']} {p['adduct']}",
                                  parent_tier=ptier, tier_in=tier_in, tier_out=tier_out, n_spectra=len(kel),
                                  n_in_episode=n_in, n_track=len(j3), track_r=round(r, 4) if np.isfinite(r) else np.nan,
-                                 pair_test=passed, pair=pair_txt))
+                                 pair_test=passed))
     if out["relabelled"]:
         log(f"[episode] {out['relabelled']} merged row(s) read as a persistent ion's plume-solvent cluster "
-            f"({out['pair_passed']} with the pair test, {out['capped']} capped at Candidate)")
+            f"({out['pair_passed']} track parent x solvent, {out['capped']} capped at Candidate)")
     return pd.DataFrame(rows, columns=CLUSTER_COLUMNS), out
 
 
