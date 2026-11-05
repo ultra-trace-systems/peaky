@@ -423,6 +423,9 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     m = pd.read_csv(tmp_path / "rl" / "merged_ledger.csv", keep_default_na=False)
     assert m["evidence_level"].isin(["3c", "4a", "4b", "5a", "5b"]).any()
     CF.relevel_run(str(run), None, out_dir=str(tmp_path / "none"), log=lambda *a: None)
+    # without a json the re-level reproduces the run's own level table and merged ledger byte for byte
+    for f in ("tables/evidence_levels.csv", "merged_ledger.csv"):
+        assert filecmp.cmp(run / f, tmp_path / "none" / f, shallow=False), f
     CF.relevel_run(str(run), _json(tmp_path, "x.json", reagent="NO3"), out_dir=str(tmp_path / "x"),
                    log=lambda *a: None)
     assert filecmp.cmp(tmp_path / "none" / "tables" / "evidence_levels.csv",

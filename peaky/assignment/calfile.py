@@ -623,7 +623,12 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
                                          f"(centres: {sorted(set(centres.values()))})" if used
                                          else f"no window lent ({why or 'no calibration json'})"))
     levels = EV.level_source(src)
-    merged = EV.stamp_merged(src.inputs.merged, levels) if src.inputs.merged is not None else None
+    # the merged ledger re-stamped on an exact (round-trip) read of the run's own: the
+    # level columns are the new ones, every other column keeps the run's bytes (the
+    # level inputs above read the CSVs as the batch reads them)
+    mp = os.path.join(run_dir, "merged_ledger.csv")
+    merged = (EV.stamp_merged(pd.read_csv(mp, low_memory=False, float_precision="round_trip"), levels)
+              if src.inputs.merged is not None and os.path.isfile(mp) else None)
     os.makedirs(os.path.join(out_dir, "tables"), exist_ok=True)
     for f in os.listdir(run_dir):
         p = os.path.join(run_dir, f)
