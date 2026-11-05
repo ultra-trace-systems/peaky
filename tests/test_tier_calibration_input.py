@@ -248,6 +248,8 @@ def test_the_scan_range_match_reads_the_low_edge_and_the_high_edge_band():
     assert not CF.scan_match([65.0, 118.0], [45.0, 383.0])      # 65-120 vs 40-600
     assert CF.scan_match([122.1, 579.2], [124.0, 579.2])        # low edge within 3 Da
     assert not CF.scan_match([45.0, 159.0], [45.0, 540.0])      # the top 3.4x apart
+    assert not CF.scan_match([45.0, 383.0], [65.0, 383.0])      # the low edge alone 20 Da apart
+    assert not CF.scan_match([45.0, 383.0], [50.0, 383.0])      # 5 Da: over max(3 Da, 5 %)
 
 
 @pytest.mark.parametrize("calibrated", [True, False])
@@ -522,7 +524,7 @@ def test_a_lent_constant_window_takes_the_absolute_floor_in_the_mass_error_test(
 
 
 
-# --------------------------------------------------------------------------- the pool's lending scatter and scan ranges
+# --------------------------------------------------------------------------- refute round: the pool's records and guards
 def test_the_pool_records_the_lending_files_unfloored_scatter_and_only_theirs(tmp_path):
     """22 core rows per file that calibrated alone: the json keeps each file's unfloored scatter (scaled
     MAD 0.074 ppm, under the 0.15 floor its floored sigma sits on); files the batch pool lent a window
@@ -548,3 +550,72 @@ def test_the_pool_refuses_mixed_scan_ranges_unless_asked_and_records_their_union
     assert rec["scan_mixed"] is True and rec["scan_range"][0] == pytest.approx(45.0)
     same = CF.pool_runs([r1, _run_dir(tmp_path / "r3", ["c0", "c1"])], log=lambda *a: None)
     assert same["scan_mixed"] is False
+
+
+def test_a_file_in_two_runs_is_one_file(tmp_path):
+    """The same sample in two run dirs counts once: an ion isotope-backed only in it is in ONE file."""
+    r1 = _run_dir(tmp_path / "r1", ["a0"])
+    r2 = _run_dir(tmp_path / "r2", ["a0"])
+    lines = []
+    rec = CF.pool_runs([r1, r2], log=lines.append)
+    assert rec["core"]["n_files_read"] == 1 and rec["core"]["n_ions"] == 0 and rec["usable"] is False
+    assert any("a0 is in more than one run; read once" in ln for ln in lines)
+
+
+def test_the_sha256_is_of_the_files_own_bytes(tmp_path):
+    import hashlib
+    p = tmp_path / "hand.json"
+    p.write_text(json.dumps(_record(), indent=4, sort_keys=True))     # not the bytes CF.write would give
+    assert CF.load(str(p))["_sha256"] == hashlib.sha256(p.read_bytes()).hexdigest()
+    assert CF.load(str(p))["_sha256"] != hashlib.sha256(CF.dumps(_record()).encode()).hexdigest()
+
+
+def test_the_batch_word_is_the_weakest_files_source():
+    rec = CF.levels_record
+    st = lambda *w: [{"tier_calibration": x} for x in w]                # noqa: E731
+    assert rec(st("per_file", "lent", "none"), None, used_as=None, reason=None, lent_flag=False)["source"] == "none"
+    assert rec(st("per_file", "campaign", "pooled"), None, used_as=None, reason=None, lent_flag=False)["source"] == \
+        "campaign"
+    assert rec(st("per_file", "pooled", "lent"), None, used_as=None, reason=None, lent_flag=False)["source"] == "lent"
+    assert rec(st("per_file", "pooled"), None, used_as=None, reason=None, lent_flag=False)["source"] == "pooled"
+
+
+def test_the_inorganic_core_keeps_the_confidence_and_mass_guards():
+    """A carbon-free row on its own 34S line enters only High/Good and within 15 ppm."""
+    led = _file("g", _rows(16))
+    for k, (conf, ppm) in enumerate([("Good", 0.02), ("Low", 0.02), ("Good", 20.0)]):
+        mz = C.ion_mz("H2SO4", AD) * (1 + ppm * 1e-6)
+        pid = f"g-s{k}"
+        led = pd.concat([led, L.new_ledger(pd.DataFrame([(pid, mz, 2e5), (pid + "i", mz + 1.9958, 1e4)],
+                                                        columns=["peak_id", "mz", "height"]))], ignore_index=True)
+        L.commit_assignment(led, pid, neutral_formula="H2SO4", adduct=AD, ion_formula=_ion("H2SO4", AD), ion_score=0.9,
+                            compound_score=0.9, ppm_error=ppm, pass_no=1, method="cheminfo+grid", confidence=conf,
+                            commentary="Pass 1")
+        L.attach_isotopologue(led, pid + "i", pid, iso_label="34S", iso_match_score=0.9)
+    rows = CP.core_rows(led, inorganic=True, sid="g")
+    taken = set(rows.loc[rows["neutral_formula"] == "H2SO4", "ppm"].round(2))
+    assert taken == {0.02}
+
+
+def test_a_line_within_12_ppm_of_a_reagent_library_ion_is_the_reagents():
+    led = _file("q", _rows(16))
+    mz = C.ion_mz(NEUTRALS[0], AD)
+    near = CP.core_rows(led, reagent_masses=[mz * (1 + 5e-6)])
+    far = CP.core_rows(led, reagent_masses=[mz * (1 + 20e-6)])
+    assert NEUTRALS[0] not in set(near["neutral_formula"]) and NEUTRALS[0] in set(far["neutral_formula"])
+
+
+def test_relevel_never_lends_to_a_file_that_calibrated_alone(tmp_path, monkeypatch):
+    """Offline byte identity: every file calibrated alone, a matching json: per-file windows, sources and
+    the level table are the no-json re-level's."""
+    run = tmp_path / "run"
+    _run(run, monkeypatch, calibrated=True, iso_rows=16)
+    rec = _json(tmp_path, "rc.json", mu=0.4, sigma=0.9)
+    CF.relevel_run(str(run), rec, out_dir=str(tmp_path / "rl"), log=lambda *a: None)
+    CF.relevel_run(str(run), None, out_dir=str(tmp_path / "none"), log=lambda *a: None)
+    s = json.load(open(tmp_path / "rl" / "batch_summary.json"))
+    assert all(p["tier_calibration"] == "per_file" and p["degeneracy_cal"] == {"mu": 0.0, "sigma": 0.3}
+               for p in s["per_file"])
+    assert s["levels_calibration"]["source"] == "per_file"
+    for f in ("tables/evidence_levels.csv", "merged_ledger.csv"):
+        assert filecmp.cmp(tmp_path / "rl" / f, tmp_path / "none" / f, shallow=False), f
