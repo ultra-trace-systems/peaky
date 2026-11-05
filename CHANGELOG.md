@@ -222,7 +222,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C20H30O11 `[M+^NO3]-` (C8 S = H ^N O7), and MS2 read the dimer.
 - **A reading the label twins refute is capped Candidate** (`label_twins.demote_vetoed`,
   `merge_gates.label_veto`), not only rejected at 5b: 5 of the 6 14N organonitrates MS2 read as
-  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters.
+  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters. With the ion-level tiers this holds for a refutation
+  that names another ion (the 13C shadow, a `[Y+^NO3]-` reading with no 14N twin); an `[X+NO3]-` line
+  that is "cluster or organonitrate undecided" is the organonitrate's ion too, so it keeps its tier
+  and says so (`merge_gates.label_veto.noted`); on a 15N-nitrate field campaign that cap kept 4 truth
+  A/B lines off Assigned and caught no wrong ion.
 - **Urea adducts of hydrocarbons and N-rich neutrals are noted** (`cleanup.note_implausible_urea_adducts`,
   `merge_gates.urea.noted`): the same ion as protonated X+urea, so the split is open. (First built as a
   Candidate cap; with the ion-level tiers below it is a note and the tier stands.)

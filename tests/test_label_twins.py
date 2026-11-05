@@ -25,6 +25,7 @@ import pandas as pd
 import pytest
 
 from peaky.assignment import evidence as EV
+from peaky.assignment import cleanup as CU
 from peaky.batch import label_twins as LT
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
@@ -771,7 +772,7 @@ def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
 
 
 
-def test_a_refuted_reading_is_capped_candidate_in_the_merged_ledger():
+def test_a_refuted_reading_is_capped_or_noted_in_the_merged_ledger_by_what_it_refutes():
     table = pd.DataFrame([
         dict(neutral_formula="C10H18O4", adduct="[M+NO3]-", veto=True,
              note="the 14N line runs 6.2x its cluster share of the 15N line; cluster or organonitrate undecided"),
@@ -787,14 +788,35 @@ def test_a_refuted_reading_is_capped_candidate_in_the_merged_ledger():
         dict(neutral_formula="C10H18O4", adduct="[M+^NO3]-", tier="Assigned", tier_reason=pd.NA),  # other adduct
     ])
     out = LT.demote_vetoed(merged, table, exempt={"C2HF3O2"}, log=lambda *a: None)
-    assert list(merged["tier"]) == ["Candidate", "Candidate", "Assigned", "Assigned", "Assigned"]
-    assert out == {"capped": 2}
+    # the [X+NO3]- line "cluster or organonitrate undecided" is the same ion as the organonitrate: noted, tier kept;
+    # the [Y+^NO3]- reading whose 14N twin is absent is no reagent cluster's ion: capped, as before
+    assert list(merged["tier"]) == ["Assigned", "Candidate", "Assigned", "Assigned", "Assigned"]
+    assert out == {"capped": 1, "noted": 1}
     assert "C10H19NO7 [M-H]-" in merged.at[0, "tier_reason"] and merged.at[0, "tier_reason"].startswith("vote | ")
-    assert "14N twin absent" in merged.at[1, "tier_reason"]
+    assert CU.SPLIT_OPEN_NOTE in merged.at[0, "tier_reason"] and "capped" not in merged.at[0, "tier_reason"]
+    assert "14N twin absent" in merged.at[1, "tier_reason"] and "capped Candidate" in merged.at[1, "tier_reason"]
+
+
+def test_a_same_ion_refutation_keeps_the_tier_and_another_ion_caps_it():
+    """Each kind of rule-K refutation the merged ledger meets: the 14N line above its cluster share
+    and the 14N line with no 15N partner are the organonitrate's ion too (noted, tier kept); the 13C
+    shadow of a brighter ion and the [Y+^NO3]- reading with no 14N twin are another ion (capped)."""
+    rows = [("C8H12O4", NO3, "the 14N line runs 3.0x its cluster share of the 15N line; " + LT.SAME_ION_UNDECIDED),
+            ("C7H10O5", NO3, "no 15N partner: seen in 2 of the 40 spectra of the 14N line; " + LT.SAME_ION_UNDECIDED),
+            ("C9H14O5", NO3, "13C shadow: the 14N line runs at 0.98x the 13C line of C10H15O5- 8.1 mDa above it; "
+                              "not X's cluster"),
+            ("C6H8O4", "[M+^NO3]-", "no 14N twin: seen in 0 of 12 expected detections")]
+    table = pd.DataFrame([dict(neutral_formula=n, adduct=a, veto=True, note=x) for n, a, x in rows])
+    merged = pd.DataFrame([dict(neutral_formula=n, adduct=a, tier="Assigned", tier_reason=pd.NA) for n, a, _x in rows])
+    out = LT.demote_vetoed(merged, table, log=lambda *a: None)
+    assert list(merged["tier"]) == ["Assigned", "Assigned", "Candidate", "Candidate"]
+    assert out == {"capped": 2, "noted": 2}
+    assert all(CU.SPLIT_OPEN_NOTE in t for t in merged["tier_reason"][:2])
+    assert "C7H11NO8 [M-H]- is the same ion" in merged.at[1, "tier_reason"]
 
 
 def test_no_table_changes_nothing():
     merged = pd.DataFrame([dict(neutral_formula="C10H18O4", adduct="[M+NO3]-", tier="Assigned")])
-    assert LT.demote_vetoed(merged, None, log=lambda *a: None) == {"capped": 0}
-    assert LT.demote_vetoed(merged, LT._empty(), log=lambda *a: None) == {"capped": 0}
+    assert LT.demote_vetoed(merged, None, log=lambda *a: None) == {"capped": 0, "noted": 0}
+    assert LT.demote_vetoed(merged, LT._empty(), log=lambda *a: None) == {"capped": 0, "noted": 0}
     assert merged.at[0, "tier"] == "Assigned"

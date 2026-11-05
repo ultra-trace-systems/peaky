@@ -130,6 +130,11 @@ PARTNER_PRESENT_SHARE = 0.8
 LINE_VERDICTS = ("tracks", "consistent", "excess", "absent", "shadow", "untestable")
 FOREIGN = ("excess", "absent", "shadow", "untestable")
 REFUTED = ("excess", "absent", "shadow")
+#: the refutation of a 14N [X+NO3]- line that leaves the ION standing: the line is X's cluster or
+#: the organonitrate X + HNO3 [M-H]-, the same ion either way (the `excess` / `absent` verdicts,
+#: _line_note); a refutation that names another ion (the 13C shadow of a brighter one, or the
+#: [Y+^NO3]- twin test) does not carry it
+SAME_ION_UNDECIDED = "cluster or organonitrate undecided"
 # the 13C shadow (Orbitrap-class batches)
 #: a 14N line CxHyNOz- sits this far below the 13C line of P = C(x+1)H(y+1)Oz- (Da;
 #: 13C + 12C + H - N = 8.106 mDa)
@@ -522,9 +527,9 @@ def _line_note(r) -> str:
                 f"{int(r.shadow_n)} spectra; its 15N twin's sd {r.shadow_twin_sd:.2f}); not X's cluster")
     if r.line_verdict == "absent":
         return (f"no 15N partner: seen in {int(r.n_codetected)} of the {int(r.n14)} spectra of the 14N line; "
-                f"cluster or organonitrate undecided")
+                f"{SAME_ION_UNDECIDED}")
     return (f"the 14N line runs {r.k_ratio:.1f}x its cluster share of the 15N line; "
-            f"cluster or organonitrate undecided")
+            f"{SAME_ION_UNDECIDED}")
 
 
 def facts(table: pd.DataFrame | None) -> dict | None:
@@ -633,27 +638,40 @@ def summary(table: pd.DataFrame | None, prof) -> dict:
 
 
 def demote_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *, exempt=(), log=print) -> dict:
-    """Rule K's refutation reaches the TIER, not only the level. A reading the
-    label twins refute (`veto`: an [X+NO3]- whose 14N line exceeds its cluster
-    share or has no 15N partner, an [Y+^NO3]- whose 14N twin is absent) was
-    rejected at 5b while the merge vote kept it Assigned: on a 2026 chamber campaign's
-    15NO3- composite 5 of the 6 14N organonitrates MS2 read as [X'-H]- (C10H19NO7 ...)
-    sat Assigned as C10H18O4 [M+NO3]- etc., and no Assigned reading MS2 confirmed
-    was refuted. Such an Assigned row is capped Candidate, the note naming the
-    alternative (X + HNO3 [M-H]- for a 14N line); `exempt` = neutral formulas a
-    curated list stands behind. Mutates `merged`; returns counts."""
-    out = {"capped": 0}
+    """Rule K's refutation on the merged ledger, by what it refutes. A reading the
+    label twins refute (`veto`) was rejected at 5b while the merge vote kept it
+    Assigned: on a 2026 chamber campaign's 15NO3- composite 5 of the 6 14N
+    organonitrates MS2 read as [X'-H]- (C10H19NO7 ...) sat Assigned as C10H18O4
+    [M+NO3]- etc.
+
+    * The 14N [X+NO3]- line refuted as "cluster or organonitrate undecided"
+      (SAME_ION_UNDECIDED: its 14N line runs above its cluster share, or has no
+      15N partner) is the SAME ION as the organonitrate X + HNO3 [M-H]-: the
+      doubt is which neutral the ion is -- the split -- not the ion, so the row
+      keeps the vote's tier and carries a note naming the alternative (the tier
+      reads the ion; the pooled pair's 5b stays the level's).
+    * Every other refutation names another ion -- the [Y+^NO3]- reading whose
+      14N twin is absent (the line is no reagent cluster's), the 13C shadow of a
+      brighter ion, a note without the same-ion mark -- and caps the Assigned
+      row Candidate, as before.
+
+    `exempt` = neutral formulas a curated list stands behind. Mutates `merged`;
+    returns {capped, noted}."""
+    out = {"capped": 0, "noted": 0}
     vt = veto(table)
     if not vt or merged is None or not len(merged) or "tier" not in merged.columns:
         return out
     if "tier_reason" not in merged.columns:
         merged["tier_reason"] = pd.NA
     exempt = {str(x) for x in (exempt or ())}
+    from peaky.assignment.cleanup import SPLIT_OPEN_NOTE
     for i in merged.index:
         key = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
         if key not in vt or str(merged.at[i, "tier"]) != "Assigned" or key[0] in exempt:
             continue
         n, a = key
+        why = vt[key] or "refuted"
+        same_ion = a == NO3 and SAME_ION_UNDECIDED in why
         alt = ""
         if a == NO3:
             cnt = C.parse_formula(n)
@@ -661,12 +679,16 @@ def demote_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *, exempt=()
             cnt["N"] = cnt.get("N", 0) + 1
             cnt["O"] = cnt.get("O", 0) + 3
             alt = f" (the organonitrate {C.format_formula(cnt)} [M-H]- is the same ion)"
-        msg = f"label twin: {vt[key] or 'refuted'}{alt}; capped Candidate"
+        msg = f"label twin: {why}{alt}; " + (SPLIT_OPEN_NOTE if same_ion else "capped Candidate")
         prev = merged.at[i, "tier_reason"]
         prev = "" if prev is None or (isinstance(prev, float) and np.isnan(prev)) or prev is pd.NA else str(prev)
         merged.at[i, "tier_reason"] = f"{prev} | {msg}" if prev else msg
+        if same_ion:
+            out["noted"] += 1
+            continue
         merged.at[i, "tier"] = "Candidate"
         out["capped"] += 1
-    if out["capped"]:
-        log(f"[label_twins] {out['capped']} Assigned readings the label twins refute capped Candidate")
+    if out["capped"] or out["noted"]:
+        log(f"[label_twins] of the Assigned readings the label twins refute: {out['noted']} the same ion as their "
+            f"organonitrate (noted, tier kept), {out['capped']} another ion (capped Candidate)")
     return out

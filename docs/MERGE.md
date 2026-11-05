@@ -613,9 +613,13 @@ selected sample_ids (SAMPLING.md)
    `batch_summary.json["merge_gates"]` records the gates' counts beside the
    known-species decision's.
    After the label twins are measured (15N-labelled nitrate),
-   `label_twins.demote_vetoed` caps Candidate every Assigned reading rule K
-   refutes (`merge_gates.label_veto`): the level was already 5b, now the tier
-   follows.
+   `label_twins.demote_vetoed` reads every Assigned reading rule K refutes
+   (`merge_gates.label_veto`: `capped`, `noted`). An `[X+NO3]-` line refuted as
+   "cluster or organonitrate undecided" (above its cluster share, or without its
+   15N partner) is the same ion as the organonitrate X + HNO3 `[M-H]-`: the row
+   keeps the vote's tier and a note naming it (the pooled pair stays 5b). A
+   refutation that names another ion -- the 13C shadow of a brighter ion, an
+   `[Y+^NO3]-` reading whose 14N twin is absent -- caps the row Candidate.
 
 6. **The residual stage** (`residual=True`, the default; [`SAMPLING.md`](SAMPLING.md)
    §3b). After the cover's merge and stamp, the universe bins in **no assigned

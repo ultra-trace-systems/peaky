@@ -929,7 +929,7 @@ try:
                                                     "ringing_lines"}
               and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_noted": 0,
                                                       "own_13c_kept": 0}
-              and summ["merge_gates"]["label_veto"] == {"capped": 0}
+              and summ["merge_gates"]["label_veto"] == {"capped": 0, "noted": 0}
               and summ["merge_gates"]["ringing_lines"]["released"] == 0
               and summ["merge_gates"]["label_shadow"] == {
                   "ran": False, "lines": 0, "demoted": 0, "demoted_rows": [],
