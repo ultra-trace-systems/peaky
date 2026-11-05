@@ -564,6 +564,8 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 **THE RULE — `select_cover_samples(k_min=K_MIN=6, k_max=K_MAX=30, min_gain=MIN_GAIN=0.005, min_prevalence=MIN_PREVALENCE=2, group_col=None)`** (sampling.py): bins all batch peaks by m/z (`timeseries.build_matrix`, 6 ppm); the universe is every bin PRESENT in `≥ 2` samples (no height floor — the picker edge spans ~1000× across instruments/modes); greedily picks the sample holding the most not-yet-covered universe bins; stops when the next pick would add `< 0.5 %` of the universe once `≥ 6` picks are taken (`stop_reason='gain-floor'`), or at the `30`-sample budget (`'k_max'`, warned), or when nothing is left (`'exhausted'`, padded to `k_min` with the richest-TIC samples, `role='pad'`). Returns the picks in order with `pick`, `role` (`cover`/`pad`), `bins_new` (marginal gain), `coverage` (cumulative) and `.attrs['selection']` (k, n_bins, achieved_coverage, stop_reason, next_gain; `coverage_by_group`/`picks_by_group` when `group_col` is given — the pool path). Fewer than `k_min` samples → all taken. Deterministic. See `docs/SAMPLING.md` for the measurements behind each choice.
 
+**The episode stage — `episode_universe` + `select_episode_samples`** (sampling.py, `episodes=True` by default; `docs/SAMPLING.md` §3c): right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples whose maximum is ≥ 5× its baseline (the median over every sample of its height, or the sample's noise edge where absent) and ≥ 3× that sample's edge is *episodic*; bins whose runs in time overlap (one gap allowed) form an episode. Each episode wants its peak sample and up to 2 neighbours holding ≥ 50 % of its bins at ≥ 3× edge; new files come from a separate budget `K_EPISODE_MAX = 8` (by descending `max_x_edge`, peak samples first; a wanted file left out → `stop_reason='k_max'`, warned), outside the cover's `k_max`/`min_gain`, and are assigned with the cover's (`role='episode'`). The record is `batch_summary["selection"]["episodes"]` and `tables/episodes.csv`; the per-file ledgers of a batch with an episode file carry `episode` (True on an episode file's rows on an episodic bin).
+
 ### 6.2 Offset-aware merge (assign_batch.align, assign_batch.py)
 
 For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → `estimate_offset` (median ppm of the sample's own matches, None if <8) → extract M0 rows (`_M0_COLS = [mz, neutral_formula, adduct, tier, ion_score]`).
@@ -577,7 +579,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 
 **Instrument class, once per batch**: `assign_batch.run` resolves `cfg.instrument_class` from the batch's axis class (`_axis_class`: a TOF roster wins over a width model that reads Orbitrap-class) and hands it to every file and worker; the trace-first sample runs with `cfg.trace_sample = True`. The class-gated stages (the side-lobe guard, the element-evidence gate, the narrowed twin / iso-pair windows, the NOx-skeleton switches) and the merge's two Orbitrap-class gates -- the isotopologue gate before the stamp and the element-signature removal after the batch isotope checks ([MERGE.md](MERGE.md) §3 steps 4c, 6a) -- all read it.
 
-**Outputs**: `merged_ledger.csv` (root), `batch_summary.json` (offsets, tier counts, `n_in_all_files`, `formula_disagreement_count`, `context_flags`, `merge_gates`), `tables/jitter.csv` (one row per cluster×file), `tables/selected_samples.csv`, `per_file/*.csv`.
+**Outputs**: `merged_ledger.csv` (root), `batch_summary.json` (offsets, tier counts, `n_in_all_files`, `formula_disagreement_count`, `context_flags`, `merge_gates`), `tables/jitter.csv` (one row per cluster×file), `tables/selected_samples.csv`, `tables/episodes.csv` (the episode stage), `per_file/*.csv`.
 
 ---
 
@@ -712,7 +714,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 | `assign_batch.py` | Per-file assignment + offset-aware m/z merge into the merged ledger; the batch's instrument class and context record; jitter report |
 | `iso_checks.py` | The batch isotope checks on the stamped series (rules C / REQ / HIGH / H), the merged-ledger isotopologue gate (`satellite_rows`, `SAT` vetoes), the element-signature removal (`remove_signature_vetoed`), the TOF ion-M+2 gates |
 | `reagent_water.py` | The batch's reagent-water ladder: rungs core.(H2O)n, the reagent-only cores as n = 0 (`reagent_core_rows`), the strip and the stamp rows |
-| `sampling.py` | Sample selection: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop (`docs/SAMPLING.md`) |
+| `sampling.py` | Sample selection: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop, the episode stage (each short bright episode's peak file + neighbours) and the residual stage (`docs/SAMPLING.md`) |
 | `timeseries.py` | Matrix binning, reagent normalization, native cadence, TS annotation (labels, no tier change), reproducible single-compound trace |
 | `cluster.py` | Correlation, complete-linkage clustering, merge, flat-split, big-changers, panel median |
 | `clustering.py` | Cluster orchestrator: assigned + unassigned funnel, channel-agreement QC, `clusters_summary.json` |

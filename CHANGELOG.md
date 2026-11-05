@@ -45,6 +45,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   claim or other column moves (an offline run with the recorder off is byte-identical minus the
   two columns); only `would_lift` on those no-level rows changes.
 
+- **Short bright episodes get their own files: the episode stage of the sample selection** (`batch/sampling.py`,
+  docs/SAMPLING.md §3c). The presence cover counts an episode's bins once, so a plume over a few spectra was
+  assigned from whichever single spectrum the cover took (often its flank) and a plume whose bins another file
+  covered got none. Right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples whose
+  maximum is >= 5x its baseline and >= 3x that sample's noise edge is episodic; bins whose runs in time overlap
+  (one gap allowed) form an episode, and each episode gets its peak sample and up to 2 neighbours holding >= 50 %
+  of its bins at >= 3x edge, from a separate budget `K_EPISODE_MAX = 8` files a batch (peak samples first, by
+  descending brightness; a wanted file left out is flagged as `k_max` is) outside the cover's `k_max` /
+  `min_gain`. The files are assigned with the cover's (`selected_samples.csv` role `episode`); the record is
+  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]`, and every per-file ledger of a batch
+  with an episode file carries `episode` (True on an episode file's rows on an episodic bin) for the merge-side
+  readers. On by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the
+  previous selection and merged ledger byte for byte. `--k-episode-max` sets the budget.
+
 - **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's
   axis correction where it reaches, else the file's own self-centre; and the lock model corrects
   sub-ppm axes.** Below five anchors every candidate was judged at 0 ppm whatever the file's offset:

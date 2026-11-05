@@ -45,6 +45,15 @@ ion), `tables/selected_samples.csv` the extra picks (role 'residual'),
 `batch_summary.json['selection']['residual']` the record. `residual=False`
 reproduces the cover-only run exactly.
 
+THE EPISODE STAGE (sampling.py, THE EPISODE STAGE). Between the cover and the
+first assignment, every short bright episode of the batch gets its peak file and
+up to two neighbours on a budget of its own (`k_episode_max`); those files are
+assigned with the cover's (`stage` cover; `tables/selected_samples.csv` role
+'episode'), `tables/episodes.csv` and `batch_summary.json['selection']['episodes']`
+record the episodes, and the per-file ledgers of a batch with an episode file
+carry an `episode` column (True on an episode file's rows on an episodic bin)
+for the merge-side readers. `episodes=False` reproduces the run without it.
+
 `align()` / `merge_union()` are PURE (offline-tested). `run()` does the network
 assignment loop.
 """
@@ -67,7 +76,9 @@ from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sideband as _SB
 from peaky.batch import sampling as SS
 
-__version__ = "0.12.1"  # + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
+__version__ = "0.13.0"  # + the episode stage between the cover and the first assignment (sampling.py,
+                        #   tables/episodes.csv, selection["episodes"], the per-file `episode` column)
+                        # 0.12.1: + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
                         #   tables/sideband_holds.csv, merge_gates["sideband"])
                         # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
                         # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
@@ -2358,6 +2369,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_min_cps: float | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
+        episodes: bool = SS.EPISODE_DEFAULT, k_episode_max: int = SS.K_EPISODE_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
@@ -2397,6 +2409,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     merge + stamp are redone once over everything. Needs `ts_peaks`; the
     pooled path (`sample_ids=`) gets the extra picks back as
     `residual_samples` to append to its own selection table.
+
+    `episodes` (default `sampling.EPISODE_DEFAULT`) runs the episode stage
+    right after the cover (sampling.py, THE EPISODE STAGE): the batch's short
+    bright episodes get their peak file and up to two neighbours, at most
+    `k_episode_max` files beyond the cover's, assigned with the cover's files
+    (tables/selected_samples.csv role 'episode'); the record is
+    batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
+    of an episode's files on an episodic bin carry `episode = True` in the
+    per-file ledgers (the column is written only when the batch has such a file).
+    Cover path only: the `sample_ids=` (pooled) and trace-first paths skip it.
 
     `corroborate`: run dirs / ledger CSVs (or a ready set of neutral formulas)
     whose neutrals corroborate this run -- the other reagent channel, or the
@@ -2531,6 +2553,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
+    episode_univ = None        # the episode stage's universe (sampling.episode_universe), when it ran
+    episode_flag_files: list = []   # the files whose episodic rows carry `episode = True`
     trace_sample = None
     # The peak-width model, resolved ONCE for the batch (chem.resolution) and
     # handed to every per-file run: it sizes trace-first's dedup cell and, on
@@ -2635,11 +2659,38 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                       tol_ppm=tol_ppm)      # = the merge's tolerance
         selection = dict(sel.attrs.get("selection", {}))
         sample_ids = sel["sample_item_id"].tolist()
-        sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)
         log(f"[assign_batch] {SS.describe(selection)}")
         _warn = SS.k_max_warning(selection)
         if _warn:
             log(f"[assign_batch] WARNING: {_warn}")
+        if episodes:
+            # THE EPISODE STAGE (sampling.py): the peak file (+ neighbours) of every
+            # short bright episode, on its own budget, outside the cover's stop rule
+            episode_univ = SS.episode_universe(src, tol_ppm=tol_ppm)
+            esel = SS.select_episode_samples(src, episode_univ, assigned=sample_ids,
+                                             k_max=k_episode_max)
+            emeta = dict(esel.attrs.get("selection", {}))
+            episode_flag_files = list(esel.attrs.get("flag_files") or [])
+            SS.episodes_table(emeta).to_csv(os.path.join(TAB, "episodes.csv"), index=False)
+            emeta["episodes"] = [{k: v for k, v in e.items() if k not in ("bins", "n_bright")}
+                                 for e in emeta.get("episodes") or []]
+            selection["episodes"] = emeta
+            if len(esel):
+                esel = esel.copy()
+                esel.attrs = {}
+                esel["pick"] = np.arange(len(sel) + 1, len(sel) + 1 + len(esel))
+                esel["episode"] = esel["episode"].astype("Int64")
+                _sel_attrs = dict(sel.attrs)
+                sel = sel.copy()
+                sel.attrs = {}
+                sel = pd.concat([sel, esel], ignore_index=True)
+                sel.attrs = _sel_attrs
+                sample_ids = sample_ids + esel["sample_item_id"].tolist()
+            log(f"[assign_batch] {SS.describe_episodes(emeta)}")
+            _warn = SS.episode_budget_warning(emeta)
+            if _warn:
+                log(f"[assign_batch] WARNING: {_warn}")
+        sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)
         log("[phase] assign")     # cover picked; everything past here is the run
     log(f"[assign_batch] {prof.label} context={context!r}: "
         f"{len(sample_ids)} selected files -> {pfdir}")
@@ -2845,6 +2896,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # columns were merged on (see the call): carried as a private column,
         # never written
         own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
+        if episode_flag_files:
+            # the episode stage's row flag (sampling.episode_row_flags): on every
+            # per-file ledger of a batch with an episode file, True on the rows of
+            # an episode's files whose peak is on an episodic bin
+            led["episode"] = SS.episode_row_flags(led, sid, episode_univ, episode_flag_files,
+                                                  tol_ppm=tol_ppm)
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         full_ledgers[sid] = led
         level_frames[sid] = EV.trim(led)

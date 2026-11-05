@@ -86,9 +86,13 @@ selected sample_ids (SAMPLING.md)
 
 ## 3. The transformation, stage by stage
 
-1. **Assign each selected file** (`run`). Loop the selected `sample_ids`,
+1. **Assign each selected file** (`run`). Loop the selected `sample_ids` (the
+   cover's picks, then the episode stage's, [`SAMPLING.md`](SAMPLING.md) §3c),
    `A.run(sid, …)` each, write `per_file/<sid>_ledger.csv`, keep the M0 rows, and
-   record the file's `estimate_offset`. The reagent's analyte channels are forced
+   record the file's `estimate_offset`. When the batch has an episode file, every
+   per-file ledger is written with an `episode` column (True on an episode file's
+   rows on an episodic bin, `sampling.episode_row_flags`); nothing in the merge
+   reads it yet. The reagent's analyte channels are forced
    at batch level (`assign_kw.setdefault("adducts", prof.adducts)`) so a per-sample
    match gap can't flip polarity.
 
@@ -850,7 +854,8 @@ All in `peaky/batch/assign_batch.py`.
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), the pooled evidence level on the evidence scale — `evidence_level`, `evidence`, `would_lift`, `competitors_left`, `tags`, `context`, `context_source`, `claim` (stamped after the vote, never read by it; [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `vote_class` (0 / 1 / 2: the vote class of that file's reading, the key the vote ranked ions by; not an evidence level) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge), with the isotopologue gate's decisions recorded (step 4c: a stripped reading's M0 row is the parent's `iso_child`, else `unexplained`) |
-| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
+| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `episode` / `residual`, `bins_new`, `coverage`; `episode` = the episode an episode pick was taken for, when the stage picked one) |
+| `tables/episodes.csv` | the episode stage's episodes ([`SAMPLING.md`](SAMPLING.md) §3c): window, peak sample, bins, the files wanted / selected / picked / over budget; written whenever the stage runs |
 | `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung (n = 0 for a passing reagent-only core) — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
 | `tables/isotopologue_rows.csv` | the isotopologue gate (step 4c): one row per merged row judged on a parent's isotope line — the row, its `verdict` (`isotopologue` / `mixed` / `exempt`) and `action` (`stripped` / `note`), the line `label` and `expected` share, the main parent and every parent read, the median area / height ratios over `n_both` spectra, `n_tail`, the per-file role votes; header only when nothing was found or the gate did not run ([OUTPUTS.md](OUTPUTS.md)) |
 | `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |
