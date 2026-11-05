@@ -28,12 +28,16 @@ functions write (`facts_of`) and keeps the three kinds the guard binds on:
 Every other contradiction of the scale (18O, 15N, 2x13C, 81Br, the labelled
 reagent's 14N line, ...) stays what it was: a level fact (5b), not a tier gate.
 
-Two call sites, one rule (`contradiction`):
+Three call sites, one rule (`contradiction`):
 
 * per file, `guard_ledger`: the `isotope_guard` stage of assign.run, right
   after the `evidence` stage that computed the facts (the file levelled alone)
   and before `timeseries` -- so before the batch's vote and M0.b's sideband
   hold, which read the per-file tiers;
+* per file again, `guard_ledger` inside `calpool.apply_pool` (step 5): a file
+  its own core could not calibrate has no level (no facts) at that stage; the
+  batch's pooled calibration re-levels it and guards it on those facts before
+  the vote folds it in -- every calibration lent through apply_pool;
 * on the merged ledger, `guard_merged`: after the batch's pooled levels
   (assign_batch.run), on the pooled facts.
 

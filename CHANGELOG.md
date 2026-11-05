@@ -32,7 +32,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same rule on the merged ledger, on the pooled facts) makes an Assigned reading Candidate, noted
   `isotope contradiction: <fact>`, where the evidence levels' own isotope facts contradict it: its 13C carbon
   count outside the levels' band, an absent own 34S / 37Cl line predicted at S/N >= 10, or a 34S / 37Cl line it
-  cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9).
+  cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file the
+  batch's pooled calibration re-levels is guarded on that level's facts (`calpool.apply_pool`). A line a merged row
+  of another ion absorbed while some file resolves both peaks is a row of its own (`why = absorbed_by_merge`).
 
 - **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
   `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**

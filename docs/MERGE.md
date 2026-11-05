@@ -770,14 +770,18 @@ selected sample_ids (SAMPLING.md)
    rewrite). `align` itself never drops a cluster, but the gates after it remove
    merged rows: the reagent-cluster strip, the reagent-water rungs (4a), the
    isotopologue strip (4c) and the element-signature removal (6a). Each removal is
-   noted (the merged row's m/z and reading, the gate), and every per-file M0 row
-   left with **no merged row within the merge window** of its (offset-corrected)
-   m/z is listed once in `tables/vote_drops.csv`: `file`, `peak_id`, `mz`,
-   `neutral_formula`, `adduct`, `tier_in` (the file's tier), `reason` (the gate and
-   the removed reading, e.g. `isotopologue strip (C9H10O7 [M-H]-)`;
-   `trace-first scope (not on a residual bin)` for a residual file's row the scope
-   kept out of the vote; `no merged row at its m/z` when no recorded removal sits
-   in the window). Read before the per-file rewrite turns the stripped readings'
+   noted (the merged row's m/z and reading, the gate) in the merge call's own log
+   (returned with the call's record; the last call is the run's). A per-file M0 row
+   is a drop when **the merged row of its own cluster** was removed: its cluster is
+   read off the vote's long form (`align`'s jitter, the cluster of every per-file row;
+   a merged row's m/z is its cluster's mean), so the end of a single-linkage chain
+   whose mean sits farther than the window from it is not a drop. Each drop is listed
+   once in `tables/vote_drops.csv`: `file`, `peak_id`, `mz`, `neutral_formula`,
+   `adduct`, `tier_in` (the file's tier), `reason` (the gate and the removed reading,
+   e.g. `isotopologue strip (C9H10O7 [M-H]-)`; `trace-first scope (not on a residual
+   bin)` for a residual file's row the scope kept out of the vote). Only for a row the
+   long form does not hold, the window rule decides: no merged row within the merge
+   window of its m/z, reason the nearest removal there or `no merged row at its m/z`. Read before the per-file rewrite turns the stripped readings'
    rows into iso_child / unexplained rows. A diagnostic: nothing reads it but the
    unidentified table below.
 
@@ -801,8 +805,15 @@ selected sample_ids (SAMPLING.md)
    parent explains it), or an M0 row step 6d lists -- is binned by m/z (single
    linkage at the merge window, offset-corrected); a bin no merged row (any tier)
    holds becomes one row of `tables/unidentified.csv` with its `why`
-   (`vote_dropped` > `orphan_iso_child` > `orphan_artifact` > `all_blocked` >
-   `no_formula`) and the readings tried ([OUTPUTS.md](OUTPUTS.md)).
+   (`vote_dropped` > `absorbed_by_merge` > `orphan_iso_child` > `orphan_artifact` >
+   `all_blocked` > `no_formula`) and the readings tried ([OUTPUTS.md](OUTPUTS.md)).
+   A merged row within the window holds a bin **unless some file resolves the line
+   from that row's peak** -- the same file holds another peak nearer the merged row
+   (two picks in one spectrum): then the line, an unidentified row or a vote loser of
+   another ion than its merged row (the vote's single linkage chains such a line
+   into a neighbour's cluster), gets its own row, `why = absorbed_by_merge`, the
+   merged row as partner. A line no file resolves stays the merged ion, as the merge
+   window reads it.
    `batch_summary.json["unidentified_bright"]` is the row count,
    `["unidentified"]` the counts by why and the vote-drop counts by reason.
 
