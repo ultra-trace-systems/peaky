@@ -19,9 +19,19 @@ from tests.test_isoguard import _ledger as _guard_ledger
 from tests.test_tier_calibration_input import _json, _run
 
 
-def test_apply_pool_guards_a_file_lent_a_window():
+def test_apply_pool_guards_a_file_lent_a_window(monkeypatch):
     """A reading whose 13C count contradicts it (6 C read for 10) is Candidate after a lent re-level, with
-    the guard's note, and the record says `lent`; the level facts come from the lent window's re-level."""
+    the guard's note, and the record says `lent`; the level facts come from the lent window's re-level,
+    whose run inputs name the window's own source (the level stage is told `lent`, not `pooled`)."""
+    from peaky.assignment import evidence as EV
+    seen = []
+    real = EV.apply_levels
+
+    def spy(ledger, *a, run_inputs=None, **kw):
+        seen.append(((run_inputs.summary.get("per_file") or [{}])[0]).get("tier_calibration"))
+        return real(ledger, *a, run_inputs=run_inputs, **kw)
+
+    monkeypatch.setattr(EV, "apply_levels", spy)
     pool = CP.pool_calibration(_batch())
     pool.source = T.CAL_SOURCE_LENT
     led = _guard_ledger(c13_count=6.0, snr13=40.0)
@@ -31,8 +41,9 @@ def test_apply_pool_guards_a_file_lent_a_window():
     row = led[led["role"] == "M0"].iloc[0]
     assert row["tier"] == T.TIER_CANDIDATE and f"{IG.NOTE_MARK}: 13C reads " in str(row["tier_reason"])
     assert out["isotope_guard"]["source"] == T.CAL_SOURCE_LENT and out["isotope_guard"]["demoted"] == 1
-    # the re-level ran in the lent window and says so (the level inputs carry the pool's source)
+    # the re-tier stamps the lent source, and the re-level's inputs carry it too
     assert row[T.TIER_CALIBRATION] == T.CAL_SOURCE_LENT
+    assert seen == [T.CAL_SOURCE_LENT]
 
 
 def test_a_batch_lent_a_calibration_json_records_the_guard_on_every_lent_file(tmp_path, monkeypatch):
