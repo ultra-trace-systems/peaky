@@ -692,6 +692,8 @@ CAL_SOURCE_PER_FILE, CAL_SOURCE_POOLED, CAL_SOURCE_NONE = "per_file", "pooled", 
 CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT = "campaign", "lent"
 #: the sources whose window a file borrows (not its own core)
 BORROWED_SOURCES = (CAL_SOURCE_POOLED, CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT)
+#: ... of them, the windows a calibration file lends (the mass-error test floors their sigma, `_cal_z`)
+FILE_SOURCES = (CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT)
 #: the window word a reason uses for a calibration of each source
 _WINDOW_WORD = {CAL_SOURCE_PER_FILE: "calibrated window", CAL_SOURCE_POOLED: "batch-pooled calibrated window",
                 CAL_SOURCE_CAMPAIGN: "campaign-pooled calibrated window",
@@ -816,12 +818,18 @@ def _cal_z(cal, ppm, mz=None) -> float:
     centre and sigma (masscal.centre / sigma_at, clamped to the backbone range)
     when the fit exists and an m/z is given, else the constant ones. A line
     outside the batch axis model's scope within its reach (the calibration's
-    `carry`) is judged at that centre plus the model's edge value."""
+    `carry`) is judged at that centre plus the model's edge value. A constant
+    window lent from a calibration file (CAL_SOURCE_CAMPAIGN / CAL_SOURCE_LENT,
+    assignment/calfile.py) takes the same absolute floor (masscal.sigma_at,
+    `abs_floor_mda`) a fitted trend's sigma takes: a file that ran no mass-error
+    test of its own is not judged tighter than 0.03 mDa at low m/z."""
     mu, sigma = cal[0], cal[1]
     b = getattr(cal, "b", None)
     if b is not None and mz is not None and not pd.isna(mz):
         mu = MC.centre(cal.a, b, mz, cal.mz_lo, cal.mz_hi)
         sigma = MC.sigma_at(cal.sigma_t or sigma, mz, cal.abs_floor_mda)
+    elif _cal_source(cal) in FILE_SOURCES and mz is not None and not pd.isna(mz):
+        sigma = MC.sigma_at(sigma, float(mz), getattr(cal, "abs_floor_mda", MC.ABS_FLOOR_MDA))
     carry = getattr(cal, "carry", None)
     if carry and mz is not None and not pd.isna(mz):
         mu = MC.carried_centre(carry, mu, float(mz))

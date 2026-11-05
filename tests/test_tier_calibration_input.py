@@ -450,3 +450,31 @@ def test_without_the_reagent_library_the_identity_and_the_neutral_element_rules_
     r1 = _run_dir(tmp_path / "r1", ["a0", "a1"], extra=extra)
     ions = {i["neutral_formula"] for i in CF.pool_runs([r1], log=lambda *a: None)["core"]["ions"]}
     assert "H2SO4" in ions and "HBr" not in ions and "SO2" not in ions
+
+
+# --------------------------------------------------------------------------- the mass-error floor of a lent window
+def test_a_lent_constant_window_takes_the_absolute_floor_in_the_mass_error_test():
+    """A lent (constant) window is judged with the 0.03 mDa absolute floor a fitted trend takes: +0.48 ppm
+    at m/z 41 (0.02 mDa) is no z-tail under a lent 0.15-ppm window; the same error in a file's own constant
+    calibration still is (unchanged), and at m/z 313 the floor (0.10 ppm) is under the sigma and changes
+    nothing."""
+    from peaky.assignment import masscal as MC
+    lent = T._Cal(0.0, 0.15, source=T.CAL_SOURCE_LENT)
+    camp = T._Cal(0.0, 0.15, source=T.CAL_SOURCE_CAMPAIGN)
+    own = T._Cal(0.0, 0.15, source=T.CAL_SOURCE_PER_FILE)
+    pooled = T._Cal(0.0, 0.15, source=T.CAL_SOURCE_POOLED)
+    floor41 = MC.ABS_FLOOR_MDA * 1000.0 / 41.0386
+    assert T._cal_z(lent, 0.48, 41.0386) == pytest.approx(0.48 / floor41)
+    assert T._cal_z(camp, 0.48, 41.0386) == pytest.approx(0.48 / floor41)
+    assert abs(T._cal_z(lent, 0.48, 41.0386)) < T.Z_TAIL_DEMOTE
+    assert T._cal_z(own, 0.48, 41.0386) == pytest.approx(3.2) and T._cal_z(pooled, 0.48, 41.0386) == pytest.approx(3.2)
+    assert T._cal_z(lent, 0.48, 313.18) == pytest.approx(3.2)
+    assert T._cal_z(lent, 0.48, None) == pytest.approx(3.2)          # no m/z: the constant sigma
+    # through the tier stage: an uncorroborated row at m/z 59 +0.6 ppm stays Assigned in a lent window,
+    # goes Candidate (z-tail) in the file's own constant one; at m/z 313 it goes Candidate in both
+    led = _file("z", [("C2H4O2", AD, 0.6, 1e5, False, "Good"), ("C16H26O6", AD, 0.6, 1e5, False, "Good")]
+                + [(nf, AD, 0.0, 1e5, True, "Good") for nf in NEUTRALS[4:12]], tier=False)
+    t_lent = T.compute_tiers(led, cal=lent).set_index("peak_id")["tier"]
+    t_own = T.compute_tiers(led, cal=own).set_index("peak_id")["tier"]
+    assert (t_lent["z-0"], t_own["z-0"]) == (T.TIER_ASSIGNED, T.TIER_CANDIDATE)
+    assert (t_lent["z-1"], t_own["z-1"]) == (T.TIER_CANDIDATE, T.TIER_CANDIDATE)
