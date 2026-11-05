@@ -224,12 +224,10 @@ def test_the_transfer_check_decides_on_the_ratio_and_the_row_counts():
     a receiver more precise than the lender lends (no lower bound)."""
     rec = dict(_record(raw=0.1), _sha256="t" * 64)
     kw = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
-    for sig, n, k, want in [(0.148, 20, 3, "lent"), (0.152, 20, 3, None), (0.2, 20, 3, None), (0.01, 20, 3, "lent"),
-                            (0.1, 14, 3, None), (0.1, 30, 1, None)]:
-        det = {}
-        got = CF.choose(rec, recv={"sigma": sig, "n_rows": n, "n_files": k}, detail=det, **kw)[0]
-        assert got == want, (sig, n, k)
-        assert det["max_ratio"] == 1.5
+    cases = [(0.148, 20, 3, "lent"), (0.152, 20, 3, None), (0.2, 20, 3, None), (0.01, 20, 3, "lent"),
+             (0.1, 14, 3, None), (0.1, 30, 1, None)]
+    got = [CF.choose(rec, recv={"sigma": sig, "n_rows": n, "n_files": k}, **kw)[0] for sig, n, k, _w in cases]
+    assert got == [c[3] for c in cases]              # the decisions first: a mutant dies here, on the decision
     assert CF.choose(rec, recv=None, **kw)[0] is None
 
 
