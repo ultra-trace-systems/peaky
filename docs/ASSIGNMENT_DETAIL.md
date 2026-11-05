@@ -554,6 +554,20 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 `prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. A multifunctional X (≥ 2 O on ≥ 5 C) keeps its adduct reading; a weak X (≤ 1 O or ≤ 4 C) re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). A re-read touches only `neutral_formula`/`adduct`: the ion is the same, so it keeps the vote's tier. The gate caps no tier: a weak X that tracks but has ≤ 6 C or no O (`nh4_weak_tracked`) keeps its `[M+NH4]+` reading and its tier with a note that the split is open, and `note_implausible_urea_adducts` notes a urea adduct of a hydrocarbon or N-rich X the same way ([MERGE.md](MERGE.md) §3 step 5).
 
+### 5.9 The isotope-contradiction guard (`isoguard.py`, pipeline stage `isotope_guard`; and on the merged ledger)
+
+A reading is never **Assigned** when the line's own isotope facts contradict it. The facts are the evidence scale's, computed once for the committed reading of every (neutral, adduct) pair by `levels.lines.q1_isotopes` (via `levels.competitors.q1_pass` / `pass_b`) and kept as the pair's `committed_reasons` -- the single source: the guard parses the texts `contradiction_a`, `carbon_test` and test (b) write (`isoguard.facts_of`) and computes nothing again. It binds on three of them (`isoguard.contradiction`):
+
+| fact | the levels' test | binds when |
+|---|---|---|
+| the 13C carbon count | (c) `carbon_test` on `levels.context.carbon_counts`: a file counts where the line's predicted S/N >= `iso_checks.C_MIN_SNR13` (10) and >= `C_KDL` (5) x the edge | the count differs from the formula's C by more than max(`C_TOL_ABS` 1.5, `C_TOL_REL` 0.25 x nC, `C_TOL_SE` 3 x se) (`levels.lines.C_TOL_*`) |
+| a required 34S / 37Cl line | (a) `contradiction_a` on the reading's own line (detectable at 3x the gate and, with the server S/N, a predicted S/N >= `levels.lines.DET_SNR` 10; a file under it cannot refute) | the outcome is `absent` |
+| an unexplained 34S / 37Cl line | (b): a line at the spacing, in band for a candidate carrying the element, the reading predicting nothing comparable; another committed reading's closer M0 owns the line (`_line_is_neighbour`) | the reading carries no S (34S) / no Cl (37Cl) |
+
+Every other contradiction of the scale (18O, 15N, 2x13C, 81Br, the labelled reagent's 14N line, a line `too low` / `too high`) stays a level fact (5b), not a tier gate. Outcome: tier **Candidate** and the tier_reason note `isotope contradiction: <fact>`; reading, level and claim unchanged; a row that is not Assigned is not touched.
+
+Three call sites: per file, the stage `isotope_guard` right after `evidence` (the facts of the file levelled alone, `evidence.apply_levels(pairs_out=)`) and before `timeseries` -- the last per-file tier word, so the batch's vote and its sideband hold (MERGE.md 4d) read the guarded tiers; `stats["isotope_guard"]` = tested / demoted / by_fact / rows (first 50). A file its own core could not calibrate is not levelled by that stage (no window: no facts); the batch's pooled calibration re-levels it in `calpool.apply_pool` (step 4), which keeps that level's pair facts and runs `guard_ledger` on them (step 5), before the batch folds the file into its vote -- every calibration given through `apply_pool` takes the guard; the file's stats then carry the record of that re-level, `isotope_guard.source` = the calibration's own source (`Pool.source` where the pool names one -- a lent calibration's -- else `pooled`, the batch pool's), the same word as the file's `tier_calibration`. On a batch, `isoguard.guard_merged` after the pooled levels (MERGE.md 6e) reads the pooled facts. An uncalibrated file (no level) has no facts and is not guarded.
+
 ---
 
 ## 6. Batch Pipeline (assign_batch.py + sampling.py)

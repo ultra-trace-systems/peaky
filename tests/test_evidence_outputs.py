@@ -83,7 +83,9 @@ def test_the_stage_sits_after_every_tier_stage_and_before_timeseries():
     i = names.index("evidence")
     for earlier in ("degeneracy", "tiers", "plausibility", "reflist_rescue", "iso_env_final"):
         assert names.index(earlier) < i, (earlier, names)
-    assert names.index("timeseries") == i + 1
+    # the isotope-contradiction guard reads the facts this stage computed: it sits between it and timeseries
+    assert names.index("isotope_guard") == i + 1
+    assert names.index("timeseries") == i + 2
     stage = A._STAGES[i]
     assert stage.safe is False and stage.store is True
 

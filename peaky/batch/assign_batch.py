@@ -65,9 +65,14 @@ from peaky.batch import iso_checks as _IC
 from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sideband as _SB
+from peaky.batch import unidentified as _UN
+from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.12.1"  # + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
+__version__ = "0.12.2"  # + the vote-drop recorder (tables/vote_drops.csv), the merged isotope-contradiction
+                        #   guard (isoguard.guard_merged, merge_gates["isotope_guard"]) and the bright unidentified
+                        #   lines (tables/unidentified.csv, batch_summary["unidentified"]; batch/unidentified.py)
+                        # 0.12.1: + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
                         #   tables/sideband_holds.csv, merge_gates["sideband"])
                         # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
                         # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
@@ -2976,6 +2981,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # run takes it: before later stages rewrote rows)
                 st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
             pool_state["files"][r["sid"]] = st_["tier_pool"]
+            if res_p.get("isotope_guard") is not None:
+                # the per-file isotope guard ran on the pooled re-level (calpool.apply_pool step 5)
+                st_["isotope_guard"] = res_p["isotope_guard"]
 
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
         """Assign `ids` -- the TAIL of `sample_ids`, which already holds them, so
@@ -3125,6 +3133,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         (0.2-0.3 ppm scatter) both sit on the tolerance floor and nothing moves
         either; a TOF (3-4 ppm) merges at up to 2x the tolerance."""
         nonlocal scale, rwater
+        # the vote-drop recorder (unidentified.DropLog): the merged rows the gates below
+        # remove after the vote -- this call's own record, returned with it (the last call is the run's)
+        drop_log = _UN.DropLog()
         if scale is None:
             seeds = [pd.to_numeric(df["mz"], errors="coerce").to_numpy(dtype=float)
                      * (1.0 - float(offsets.get(sid, 0.0) or 0.0) / 1e6)
@@ -3140,7 +3151,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # they otherwise dominate the 'assigned' signal. Belt-and-braces with the
         # per-file reagent lock/reclaim (older per-file ledgers predate that fix).
         if _rgk:
+            _m_before = merged
             merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
+            drop_log.note(_m_before, merged, "reagent-cluster strip")
         # The reagent-water ladder (C15, batch/reagent_water.py): the rungs
         # core.(H2O)n of the profile's water cores that this batch's own time series
         # shows -- core and lower rungs present in half an acquisition segment's
@@ -3153,8 +3166,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log, resolution=rp)
         # after the TOF test a row leaves only when a file carrying its winning reading
         # (jitter) lies in a segment where its rung passed (segment_of; None otherwise)
+        _m_before = merged
         merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log,
                                                   jitter=jitter, segment_of=rwater.get("segment_of"))
+        drop_log.note(_m_before, merged, "reagent-water rung")
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
         # it): a re-read can leave the merged formula different from EVERY per-file
@@ -3250,9 +3265,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             if identified_aux:
                 _ia = pd.concat(identified_aux, ignore_index=True)
                 _rg = _ia[_ia["role"].astype(str) == "reagent"] if "role" in _ia.columns else None
+            _m_before = merged
             merged, iso_rows, merge_gates["isotopologue"] = _IC.satellite_rows(
                 merged, ts_peaks, resolution=rp, mass_scale=scale, klass=cfg.instrument_class, prof=prof,
                 reagents=_rg, per_file=level_frames, exempt=curated, log=log)
+            drop_log.note(_m_before, merged, "isotopologue strip")
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
@@ -3269,7 +3286,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
                "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
-               "isotopologue": iso_rows, "sideband": sb_rows}
+               "isotopologue": iso_rows, "sideband": sb_rows, "drop_log": drop_log}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -3457,8 +3474,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # Orbitrap-class) is the batch's own refutation of the element: the reading
     # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
     # a curated formula and a known-species decision stay
+    drop_log = res_m["drop_log"]
+    _m_before = merged
     merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(
         merged, iso_table, exempt=curated, klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
+    drop_log.note(_m_before, merged, "element-signature removal")
+    # the vote-drop list: every per-file M0 row with no merged row left at its m/z, and the
+    # gate that removed it (unidentified.vote_drops) -- read before the per-file rewrite
+    # below turns the stripped readings' rows into iso_child / unexplained rows
+    try:
+        vote_drop_table = _UN.vote_drops(full_ledgers, per_file, merged, drop_log,
+                                         tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
+                                         jitter=jitter)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING the vote-drop list was not built: {type(e).__name__}: {e}")
+        vote_drop_table = _UN.empty_drops()
     # ... a row the isotopologue gate stripped as the satellite of a reading that
     # has just left is no longer that reading's satellite (iso_checks.parent_removed:
     # verdict 'parent removed', no SAT veto) ...
@@ -3618,6 +3648,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     levels = EV.level_batch(level_ledgers, run_inputs=run_inputs, partners=partners or None)
     merged = EV.stamp_merged(merged, levels)
     EV.for_output(levels).to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    # the isotope-contradiction guard on the merged ledger (isoguard.guard_merged): an
+    # Assigned row whose POOLED pair the levels' own isotope facts contradict (13C count,
+    # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) is Candidate with
+    # the note. The per-file guard (stage isotope_guard) already held the files' tiers
+    # before the vote; this reads the facts of every file together
+    _ig_noted = _IG.merged_notes(merged, full_ledgers, log=log)
+    merge_gates["isotope_guard"] = _IG.guard_merged(merged, levels, log=log)
+    merge_gates["isotope_guard"]["rows"] = merge_gates["isotope_guard"]["rows"][:50]
+    merge_gates["isotope_guard"]["per_file_noted"] = int(_ig_noted)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",
@@ -3691,6 +3730,23 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         klass=_MO.instrument_class(resolution=rp, instrument_types=[(s_ or {}).get("instrument_type")
                                                                     for s_ in scorings.values()]),
         threshold=_MO.flag_mz(_cfg), halogen=level_summary["reagent_halogen"], resolution=rp, log=log)
+    # the bright lines no batch output explains (unidentified.build): every per-file row
+    # bright in its file that ends unexplained, an isotope child / artifact whose parent
+    # the merged ledger does not hold Assigned, or an M0 row the vote dropped -- binned by
+    # m/z, with why; written for every run (header only when none)
+    try:
+        unident = _UN.build(full_ledgers, per_stats, merged, drops=vote_drop_table, ts=ts_annot,
+                            tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
+                            axis_info=axis_info, resolution=rp)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING tables/unidentified.csv not built: {type(e).__name__}: {e}")
+        unident = _UN.empty_table()
+    unident_path = _UN.write(unident, TAB)
+    vote_drop_table.to_csv(os.path.join(TAB, "vote_drops.csv"), index=False)
+    unident_summary = _UN.summary(unident, vote_drop_table)
+    log(f"[assign_batch] unidentified bright lines: {unident_summary['rows']} "
+        f"({unident_summary['by_why']}); vote drops {unident_summary['vote_drops']} -> "
+        f"tables/{os.path.basename(unident_path)}, tables/vote_drops.csv")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the reagent-water rungs and the merged readings they displaced (always written:
@@ -3873,6 +3929,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # what the reagent-N pass and the ammonium/amine gate each did, so the
         # counts are on record and not only in the log
         "merge_gates": merge_gates,
+        # the bright unidentified lines (tables/unidentified.csv): `unidentified_bright` the row
+        # count (a later drop to 0 shows), `unidentified` by why + the vote-drop counts
+        "unidentified_bright": int(unident_summary["rows"]),
+        "unidentified": unident_summary,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
         # the evidence levels (docs/EVIDENCE_LEVELS.md): pooled = one count per

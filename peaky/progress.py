@@ -42,7 +42,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-__version__ = "0.1.1"   # + the solvent_clusters stage in NOMINAL_STAGES
+__version__ = "0.1.2"   # + the isotope_guard stage in NOMINAL_STAGES; 0.1.1 + the solvent_clusters stage
 
 # Stage count for the within-sample bar before a first sample has finished. The
 # real number is LEARNED from the first completed sample (stages are gated by
@@ -55,7 +55,7 @@ __version__ = "0.1.1"   # + the solvent_clusters stage in NOMINAL_STAGES
 # the bar at 56% for any run that never got to learn the real number -- i.e.
 # every `peaky assign` run. tests/test_progress.py pins this against the real
 # stage table, so adding a timed stage fails a test rather than skewing the bar.
-NOMINAL_STAGES = 22
+NOMINAL_STAGES = 23
 
 # Every phase the window can show, in run order (`assign` is the long pole; the
 # rest are the tail). A phase with no entry here falls back to its bare name, so
