@@ -460,6 +460,9 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
                "output": {"merged_ledger_sha1": PV.sha1_file(str(run / "merged_ledger.csv")),
                           "counts": {"merged_claims": {"tentative": 999}, "merged_M0": 999, "n_samples": 4}}},
               open(run / "run_manifest.json", "w"))
+    sb = json.load(open(run / "batch_summary.json"))
+    sb["claims"] = dict(sb.get("claims") or {}, merged={"tentative": 999})      # stale: must be re-counted
+    json.dump(sb, open(run / "batch_summary.json", "w"))
     before = {f: os.path.getmtime(run / f) for f in os.listdir(run) if os.path.isfile(run / f)}
     rec = _json(tmp_path, "r.json")
     out = CF.relevel_run(str(run), rec, out_dir=str(tmp_path / "rl"), log=lambda *a: None)
