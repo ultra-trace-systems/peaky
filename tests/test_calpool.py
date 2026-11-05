@@ -459,7 +459,7 @@ class _InProcessPool:
 
 
 def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=False, refs=None,
-               staged=False, n_jobs=1, keeps=None, skeleton=None, reagent="Br"):
+               staged=False, n_jobs=1, keeps=None, skeleton=None, reagent="Br", guard_record=False):
     """`calibrated`: True = every file calibrates alone; a set = the files (in the order they are
     assigned) that do; False = none. `refs`: a list the uncalibrated files' PoolInputs are weakly
     referenced into. `staged`: the two-stage batch (_staged_table: cover a0, a1; residual z1, z2), else
@@ -491,6 +491,10 @@ def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=Fal
                                 height_gate_cps=10.0, degeneracy_cal=None)
         EV.apply_levels(led, run_inputs=ri)
         skel = {} if skeleton is None else {"nox_skeleton_gate": dict(skeleton)}
+        if guard_record:
+            # the per-file isotope_guard stage's own record (no facts on an uncalibrated file: nothing demoted)
+            skel["isotope_guard"] = {"tested": int((led["tier"] == "Assigned").sum()), "demoted": 0,
+                                     "by_fact": {"13C": 0, "absent": 0, "unexplained": 0}, "rows": []}
         if calibrated is True or (calibrated and k in calibrated):
             return {"ledger": led, "plausibility_audit": [], "summaries": {}, "problems": [],
                     "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
@@ -839,8 +843,77 @@ def test_the_pooled_re_level_runs_the_per_file_isotope_guard():
 
 
 def test_the_batch_records_the_pooled_files_guard(tmp_path, monkeypatch):
-    _run_batch(tmp_path, monkeypatch)
+    """Every pooled file's stats carry the guard record of its pooled re-level -- replacing the
+    stage's empty one -- naming the file's calibration source, `tested` = its Assigned M0 rows at the
+    guard (those the written ledger still holds Assigned + the guard's demotions)."""
+    _run_batch(tmp_path, monkeypatch, guard_record=True)
     summ = json.load(open(tmp_path / "batch_summary.json"))
     for p in summ["per_file"]:
-        assert p["tier_calibration"] == "pooled"
-        assert p["isotope_guard"]["source"] == "pooled" and p["isotope_guard"]["tested"] >= 1
+        g = p["isotope_guard"]
+        assert p["tier_calibration"] == "pooled" and g["source"] == p["tier_calibration"]
+        led = pd.read_csv(tmp_path / "per_file" / f"{p['sample_id']}_ledger.csv")
+        n_ass = int(((led["role"] == "M0") & (led["tier"] == "Assigned")).sum())
+        assert g["tested"] == n_ass + g["demoted"] and g["tested"] >= 1
+
+
+def test_a_rejected_pool_keeps_the_stages_guard_record(tmp_path, monkeypatch):
+    _run_batch(tmp_path, monkeypatch, iso_files=1, guard_record=True)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert summ["tier_calibration"]["pool"]["used"] is False
+    for p in summ["per_file"]:
+        g = p["isotope_guard"]
+        assert "source" not in g and g["demoted"] == 0 and g["tested"] >= 1
+
+
+def _detached(c13):
+    """The guard test's C10 file with its 13C line left unexplained (not the reading's confirmed child)."""
+    from tests.test_isoguard import _ledger as _guard_ledger
+    led = _guard_ledger(c13_count=c13, snr13=40.0)
+    i = led.index[led["peak_id"] == "B"][0]
+    led.loc[i, ["role", "parent_peak_id", "iso_label", "parent_neutral_formula", "parent_adduct"]] = \
+        ["unexplained", pd.NA, pd.NA, pd.NA, pd.NA]
+    led.loc[led["role"] == "M0", "isotopologues"] = None
+    return led
+
+
+def test_the_pooled_guard_has_the_last_tier_word_after_the_re_tier():
+    """The uncalibrated tier stage left the C10 reading Candidate (5 plausible formulas in its wide
+    window); the pooled window re-tiers it Assigned -- and the guard, after the re-tier, takes it back
+    to Candidate on its own 13C line."""
+    pool = CP.pool_calibration(_batch())
+    led = _detached(6.0)
+    at = led.copy(deep=True)
+    at["tier"] = pd.NA
+    for c in ("degeneracy_density", "degeneracy_note"):
+        at[c] = pd.Series([pd.NA] * len(at), dtype=object)
+    at.loc[at["role"] == "M0", "degeneracy_density"] = 5
+    base = T.compute_tiers(at, cal=None)
+    assert base["tier"].iloc[0] == "Candidate"
+    led.loc[led["role"] == "M0", ["tier", "tier_reason"]] = [base["tier"].iloc[0], base["tier_reason"].iloc[0]]
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    row = led[led["role"] == "M0"].iloc[0]
+    assert out["tiers"]["promoted"] == 1 and out["isotope_guard"]["demoted"] == 1
+    assert row["tier"] == "Candidate" and "isotope contradiction: 13C reads " in str(row["tier_reason"])
+
+
+def test_the_pooled_guard_reads_the_finished_ledgers_facts():
+    """The tier-time copy's 13C line read C10; the finished ledger's reads C6: the guard reads the
+    finished ledger's re-level."""
+    from tests.test_isoguard import _ledger as _guard_ledger
+    pool = CP.pool_calibration(_batch())
+    led = _guard_ledger(c13_count=6.0, snr13=40.0)
+    at = _guard_ledger(c13_count=10.0, snr13=40.0)
+    at["tier"] = pd.NA
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    assert out["isotope_guard"]["demoted"] == 1 and led[led["role"] == "M0"].iloc[0]["tier"] == "Candidate"
+
+
+def test_the_guard_record_names_the_pools_source():
+    from tests.test_isoguard import _ledger as _guard_ledger
+    pool = CP.pool_calibration(_batch())
+    pool.source = "campaign"                          # a lent calibration's source
+    led = _guard_ledger(c13_count=6.0, snr13=40.0)
+    at = led.copy(deep=True)
+    at["tier"] = pd.NA
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    assert out["isotope_guard"]["source"] == "campaign"

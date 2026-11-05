@@ -3735,7 +3735,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     try:
         unident = _UN.build(full_ledgers, per_stats, merged, drops=vote_drop_table, ts=ts_annot,
                             tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
-                            axis_info=axis_info)
+                            axis_info=axis_info, resolution=rp)
     except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
         log(f"[assign_batch] WARNING tables/unidentified.csv not built: {type(e).__name__}: {e}")
         unident = _UN.empty_table()

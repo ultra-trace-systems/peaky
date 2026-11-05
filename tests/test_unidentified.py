@@ -16,6 +16,7 @@ from peaky.batch import assign_batch as AB
 from peaky.batch import unidentified as UN
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.chem.resolution import Resolution
 from peaky.io import io_mascope as IO
 
 EDGE = 4.0
@@ -410,6 +411,7 @@ def test_the_hold_and_the_binning_windows_are_the_merge_window():
 
 
 # --------------------------------------------------------------------------- F-M1-1: lines the merge absorbed
+R120 = Resolution.coerce(120_000.0)        # HWHM = 4.17 ppm at every m/z
 X_ = ("C10H16O4", "[M-H]-")
 Y_ = ("C9H12O5", "[M-H]-")                    # another ion; placed 5 ppm above X_'s merged row
 
@@ -421,7 +423,7 @@ def test_a_line_resolved_from_a_merged_row_in_its_own_file_is_absorbed_by_merge(
     # one only: the vote's cluster took both as X_, the line gets its own row with the merged row as partner
     leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"), ("y", ym, 3e3, "M0", *Y_, "Candidate")]),
             "f2": _rows_ledger("f2", [("y", ym, 3e3, "M0", *Y_, "Candidate")])}
-    t = UN.build(leds, STATS, merged, tol_ppm=6.0)
+    t = UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=R120)
     assert len(t) == 1
     r = t.iloc[0]
     assert r["why"] == "absorbed_by_merge" and r["roles"] == "M0:2" and r["mz"] == pytest.approx(ym, abs=1e-5)
@@ -431,19 +433,19 @@ def test_a_line_resolved_from_a_merged_row_in_its_own_file_is_absorbed_by_merge(
         f"absorbed by the merge: the vote kept Assigned {X_[0]} {X_[1]} +5.0 ppm")
     # an unexplained line beside the merged ion's peak in the same file: the same
     leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"), ("u", ym, 3e3, "unexplained", None, None, None)])}
-    t = UN.build(leds, STATS, merged, tol_ppm=6.0)
+    t = UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=R120)
     assert list(t["why"]) == ["absorbed_by_merge"] and t.iloc[0]["roles"] == "unexplained:1"
     # no file holds both peaks: the line is the merged ion by the merge window -- held, no row
     leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned")]),
             "f2": _rows_ledger("f2", [("u", ym, 3e3, "unexplained", None, None, None)])}
-    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0)) == 0
+    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=R120)) == 0
     # a vote loser on the merged ion's own peak (another reading, one pick): not absorbed
     leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned")]),
             "f2": _rows_ledger("f2", [("y", xm, 3e3, "M0", *Y_, "Candidate")])}
-    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0)) == 0
+    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=R120)) == 0
     # the same ion read another way beside it is the merged ion: not absorbed
     leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"), ("y", ym, 3e3, "M0", *X_, "Candidate")])}
-    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0)) == 0
+    assert len(UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=R120)) == 0
 
 
 # --------------------------------------------------------------------------- inside a batch: the wiring
@@ -495,3 +497,161 @@ def test_the_batch_writes_the_per_file_guards_note_on_the_merged_row(tmp_path, m
     r = merged[merged["neutral_formula"] == PAR[0]].iloc[0]
     assert r["tier"] == "Candidate" and f"isotope contradiction in 3 of 3 file(s): {fact}" in str(r["tier_reason"])
     assert summ["merge_gates"]["isotope_guard"]["per_file_noted"] == 1
+
+
+# =========================================================================== final fixes (second refute)
+def _absorbed(leds, merged, **kw):
+    return UN.build(leds, STATS, merged, tol_ppm=6.0, resolution=kw.pop("resolution", R120), **kw)
+
+
+@pytest.mark.parametrize("dppm, listed", [(0.5, False), (3.0, False), (7.0 * 4.17 / 6.0, True), (5.0, True)])
+def test_two_picks_count_as_resolved_lines_only_one_hwhm_apart(dppm, listed):
+    """One file holds the merged ion's pick and an unexplained pick dppm above it: a split centroid
+    (0.12 / 0.72 HWHM at R 120 000) is the merged line, a pair >= 1 HWHM apart is a line of its own."""
+    xm = PMZ
+    leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                      ("u", _ppm(xm, dppm), 3e3, "unexplained", None, None, None)])}
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")))
+    assert (list(t["why"]) == ["absorbed_by_merge"]) is listed and (len(t) == 0) is (not listed)
+    assert UN.ABSORB_MIN_HWHM == 1.0
+    # no width model: no separation test, nothing read as absorbed
+    assert len(UN.build(leds, STATS, _merged((xm, *X_, "Assigned")), tol_ppm=6.0)) == 0
+
+
+def test_the_separation_is_the_width_models_not_a_fixed_ppm_bar():
+    """At R 300 000 (HWHM 1.67 ppm) a pair 2.5 ppm apart is two lines; at R 120 000 (4.17 ppm) it is not."""
+    xm = PMZ
+    leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                      ("u", _ppm(xm, 2.5), 3e3, "unexplained", None, None, None)])}
+    merged = _merged((xm, *X_, "Assigned"))
+    assert list(_absorbed(leds, merged, resolution=Resolution.coerce(300_000.0))["why"]) == ["absorbed_by_merge"]
+    assert len(_absorbed(leds, merged)) == 0
+
+
+def test_the_other_pick_is_a_line_and_nearer_the_merged_row():
+    xm, ym = PMZ, _ppm(PMZ, 5.0)
+    merged = _merged((xm, *X_, "Assigned"))
+    # the nearer pick is an artifact (a lobe): no resolved pair
+    leds = {"f1": _rows_ledger("f1", [("a", xm, 2e3, "unexplained", None, None, None),
+                                      ("u", ym, 3e3, "unexplained", None, None, None)])}
+    i = leds["f1"].index[leds["f1"]["peak_id"] == "a"][0]
+    leds["f1"].at[i, "role"] = "artifact"
+    assert len(_absorbed(leds, merged)) == 0
+    # ... an unexplained pick there resolves (it need not be an M0 row)
+    leds["f1"].at[i, "role"] = "unexplained"
+    t = _absorbed(leds, merged)
+    assert list(t["why"]) == ["absorbed_by_merge"] and t.iloc[0]["mz"] == pytest.approx(ym, abs=1e-5)
+    # a pick FARTHER from the merged row resolves nothing: only the far line (whose nearer neighbour
+    # is the first) gets a row
+    zm = _ppm(xm, -5.5)
+    leds = {"f1": _rows_ledger("f1", [("u", _ppm(xm, 2.0), 3e3, "unexplained", None, None, None),
+                                      ("z", zm, 3e3, "unexplained", None, None, None)])}
+    t = _absorbed(leds, merged)
+    assert len(t) == 1 and t.iloc[0]["mz"] == pytest.approx(zm, abs=1e-5)
+
+
+def test_an_absorbed_row_is_built_from_the_resolved_side_only():
+    """f1 resolves a line 5 ppm above the merged row; two files hold the merged line unread: the row
+    reports the resolved line, not the bin's median."""
+    xm, ym = PMZ, _ppm(PMZ, 5.0)
+    leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                      ("u", ym, 3e3, "unexplained", None, None, None)])}
+    for k in (2, 3):
+        leds[f"f{k}"] = _rows_ledger(f"f{k}", [(f"u{k}", _ppm(xm, 0.1 * k), 3e3, "unexplained", None, None, None)])
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")))
+    assert len(t) == 1
+    r = t.iloc[0]
+    assert r["why"] == "absorbed_by_merge" and r["roles"] == "unexplained:1"
+    assert r["mz"] == pytest.approx(ym, abs=1e-5) and r["partner_mz"] == pytest.approx(xm, abs=1e-5)
+
+
+def test_absorbed_outranks_an_orphan_and_an_unheld_absorbed_bin_needs_a_resolving_file():
+    xm, ym = PMZ, _ppm(PMZ, 5.0)
+    # an orphan child 5 ppm above a merged row, its file holding the merged ion's pick: absorbed_by_merge
+    leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                      ("c", ym, 3e3, "iso_child", None, None, None, {"parent": "gone"})])}
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")))
+    assert list(t["why"]) == ["absorbed_by_merge"] and t.iloc[0]["roles"] == "iso_child:1"
+    # two vote losers of another ion between two merged rows 12.1 ppm apart (each within the window of
+    # one of them, their bin's median of neither): with no file resolving them, no row
+    x2 = _ppm(xm, 12.1)
+    merged = _merged((xm, *X_, "Assigned"), (x2, "C9H12O5", "[M+CH2O2-H]-", "Assigned"))
+    leds = {"f1": _rows_ledger("f1", [("y", _ppm(xm, 5.9), 3e3, "M0", "C11H20O3", "[M-H]-", "Candidate")]),
+            "f2": _rows_ledger("f2", [("y", _ppm(xm, 6.2), 3e3, "M0", "C11H20O3", "[M-H]-", "Candidate")])}
+    assert len(_absorbed(leds, merged)) == 0
+
+
+def test_the_absorbed_rule_reads_the_offset_corrected_axis():
+    """f1 runs 8 ppm high (its offset): its Y pick is 13 ppm above the merged row raw, 5 ppm corrected,
+    beside f1's own X pick (8 ppm raw, 0 corrected): a resolved line on the corrected axis."""
+    xm = PMZ
+    leds = {"f1": _rows_ledger("f1", [("x", _ppm(xm, 8.0), 2e5, "M0", *X_, "Assigned"),
+                                      ("y", _ppm(xm, 13.0), 3e3, "M0", *Y_, "Candidate")])}
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")), offsets={"f1": 8.0})
+    assert list(t["why"]) == ["absorbed_by_merge"]
+
+
+def test_absorbed_losers_never_lengthen_a_chain():
+    """Vote losers of another ion sit 0.6 ppm under a merged row, an orphan isotope line 6.4 ppm under
+    it (5.8 ppm from the losers): the orphan keeps its own row (the losers no longer chain it onto the
+    merged row's median)."""
+    xm = PMZ
+    leds = {f"f{k}": _rows_ledger(f"f{k}", [("y", _ppm(xm, -0.6), 3e3, "M0", *Y_, "Candidate")]) for k in (1, 2)}
+    leds["f3"] = _rows_ledger("f3", [("c", _ppm(xm, -6.4), 3e3, "iso_child", None, None, None, {"parent": "gone"})])
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")))
+    assert list(t["why"]) == ["orphan_iso_child"] and t.iloc[0]["mz"] == pytest.approx(_ppm(xm, -6.4), abs=1e-5)
+
+
+# ---- the per-call drop log (adopted from the second refute's harness): a reading stripped by the COVER
+# merge only is not a drop; one stripped by the residual merge is listed once -- serial and on the worker path
+@pytest.mark.parametrize("n_jobs", [1, 2])
+@pytest.mark.parametrize("strip_on", [(1,), (2,), (1, 2)])
+def test_drop_log_is_the_last_merge_calls(tmp_path, monkeypatch, n_jobs, strip_on):
+    from tests import test_calpool as TC
+    from peaky.batch import reagent_water as RW
+    orig = RW.strip_rung_rows
+    calls = {"n": 0}
+    target = TC.NEUTRALS[3]
+
+    def strip(merged, rungs, **kw):
+        calls["n"] += 1
+        out, st = orig(merged, rungs, **kw)
+        if calls["n"] in strip_on:
+            out = out[out["neutral_formula"].astype(str) != target].copy()
+        return out, st
+    monkeypatch.setattr(RW, "strip_rung_rows", strip)
+    TC._run_batch(tmp_path, monkeypatch, staged=True, n_jobs=n_jobs)
+    assert calls["n"] == 2, calls                       # cover merge + residual merge
+    d = pd.read_csv(tmp_path / "tables" / "vote_drops.csv")
+    mine = d[d["neutral_formula"].astype(str) == target]
+    assert not mine.duplicated(["file", "peak_id"]).any()
+    if 2 in strip_on:
+        assert len(mine) >= 1 and set(mine["reason"]) == {f"reagent-water rung ({target} {TC.AD})"}
+    else:
+        assert len(mine) == 0
+
+
+def test_the_batch_reads_absorbed_lines_with_its_width_model(tmp_path, monkeypatch):
+    """Through assign_batch.run (width model R 120 000): a file holding the merged ion's pick and a bright
+    unexplained line 5 ppm above it writes an absorbed_by_merge row at the line's m/z."""
+    xm, ym = PMZ, _ppm(PMZ, 5.0)
+    leds = {"u00": _rows_ledger("u00", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                        ("u", ym, 3e3, "unexplained", None, None, None)]),
+            "u01": _rows_ledger("u01", [("x", xm, 2e5, "M0", *X_, "Assigned")]),
+            "u02": _rows_ledger("u02", [("x", xm, 2e5, "M0", *X_, "Assigned")])}
+    _run(tmp_path, monkeypatch, leds)
+    t = pd.read_csv(tmp_path / "tables" / "unidentified.csv")
+    a = t[t["why"] == "absorbed_by_merge"]
+    assert len(a) == 1 and a.iloc[0]["mz"] == pytest.approx(ym, abs=1e-4)
+
+
+def test_one_absorbed_line_is_one_row():
+    """The line beside the merged row is unexplained in one file and a vote loser of another ion in two:
+    the two bins (regular, losers) released beside the same merged row are one row."""
+    xm, ym = PMZ, _ppm(PMZ, 5.0)
+    leds = {"f1": _rows_ledger("f1", [("x", xm, 2e5, "M0", *X_, "Assigned"),
+                                      ("u", ym, 3e3, "unexplained", None, None, None)]),
+            "f2": _rows_ledger("f2", [("x", xm, 2e5, "M0", *X_, "Assigned"), ("y", ym, 3e3, "M0", *Y_, "Candidate")]),
+            "f3": _rows_ledger("f3", [("y", _ppm(ym, 0.2), 3e3, "M0", *Y_, "Candidate")])}
+    t = _absorbed(leds, _merged((xm, *X_, "Assigned")))
+    assert len(t) == 1 and t.iloc[0]["why"] == "absorbed_by_merge" and t.iloc[0]["roles"] == "M0:2;unexplained:1"

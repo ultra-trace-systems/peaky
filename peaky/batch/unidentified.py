@@ -66,6 +66,11 @@ LINE_DET_X = 3.0
 NO_FIT_GATES = ("no candidate in box", "no candidate scored", "not admitted", "score<min_raw", "no ppm",
                 "pass4:score", "confidence Reject", "labeled:score", "released")
 
+#: two picks of one file count as two resolved lines (a line the merge absorbed beside a merged
+#: row's peak) only when they are at least this many HWHM apart by the batch's width model:
+#: closer maxima of one line are a split centroid or a shoulder, not two ions
+ABSORB_MIN_HWHM = 1.0
+
 WHY_ORDER = ("vote_dropped", "absorbed_by_merge", "orphan_iso_child", "orphan_artifact", "all_blocked", "no_formula")
 
 TABLE_COLUMNS = ("mz", "mz_corrected", "n_files_present", "n_files_selected", "h_max", "x_edge_max", "roles",
@@ -394,14 +399,21 @@ def _parent_of(f: _File, j: int) -> int:
 
 def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.DataFrame | None = None,
           ts=None, tol_ppm: float, offsets: dict | None = None, axis_info: dict | None = None,
-          bright_x: float = BRIGHT_X) -> pd.DataFrame:
+          bright_x: float = BRIGHT_X, resolution=None) -> pd.DataFrame:
     """The unidentified table (module note). ``per_stats``: the files' stats
     (each with ``sample_id`` and ``noise_edge_cps``) or {sid: stats};
     ``merged``: the final merged ledger; ``drops``: `vote_drops`; ``ts``: the
     batch series (sample_item_id, mz, height, datetime_utc) for first / last
     seen; ``axis_info``: batch_summary['mass_axis'] (``mz`` on the server's
-    axis, ``mz_corrected`` the ledgers' when it applied). Brightest first."""
+    axis, ``mz_corrected`` the ledgers' when it applied); ``resolution``: the
+    batch's width model (chem.resolution.Resolution or its dict) -- without one
+    no line is read as absorbed by the merge (no separation test). Brightest
+    first."""
     offsets = offsets or {}
+    _rp = resolution
+    if isinstance(_rp, dict):
+        from peaky.chem.resolution import Resolution
+        _rp = Resolution.from_dict(_rp) if _rp.get("coef") else None
     if isinstance(per_stats, dict):
         stats = {str(k): v for k, v in per_stats.items()}
     else:
@@ -425,23 +437,44 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
     else:
         M_mz, M_ion, M_txt = np.array([]), [], []
 
-    def _merged_at(f, j) -> int:
-        k = _near(M_mz, f.mz[j], tol_ppm)
-        return k if k >= 0 else _near(M_mz, f.adj[j], tol_ppm)
+    def _hwhm(mz) -> float:
+        if _rp is None:
+            return float("nan")
+        try:
+            return float(_rp.fwhm(float(mz))) / 2.0
+        except Exception:  # noqa: BLE001 -- a width model that cannot read the mass: no separation test
+            return float("nan")
 
-    def _resolved(f, j) -> int:
-        """The merged row (its index in M_mz) the row j of file f sits beside as a RESOLVED line: within
-        the window of it, while the same file holds another peak q nearer that merged row (the merged
-        ion's own pick there); -1 when none."""
-        k = _merged_at(f, j)
+    def _merged_at(f, j):
+        """(k, axis): the merged row (its index in M_mz) within the window of row j of file f -- on the
+        raw m/z first, else on the offset-corrected one -- and the file's m/z array on that axis;
+        (-1, None) when none."""
+        k = _near(M_mz, f.mz[j], tol_ppm)
+        if k >= 0:
+            return k, f.mz
+        k = _near(M_mz, f.adj[j], tol_ppm)
+        return (k, f.adj) if k >= 0 else (-1, None)
+
+    def _resolved(f, j):
+        """(k, q): row j of file f sits beside merged row k as a RESOLVED line -- j within the window of
+        k, and the same file holds another pick q (not an artifact row) nearer k, at least
+        ABSORB_MIN_HWHM HWHM (the width model at j) from j: two picks of one spectrum that the width
+        model separates; (-1, -1) when not."""
+        k, ax = _merged_at(f, j)
         if k < 0:
-            return -1
+            return -1, -1
         x = M_mz[k]
-        lo, hi = f.window(x, x * tol_ppm * 1e-6)
+        hw = _hwhm(ax[j])
+        if not (np.isfinite(hw) and hw > 0):
+            return -1, -1
+        lo = int(np.searchsorted(ax, x - x * tol_ppm * 1e-6, "left"))
+        hi = int(np.searchsorted(ax, x + x * tol_ppm * 1e-6, "right"))
         for q in range(lo, hi):
-            if q != j and abs(f.mz[q] - x) < abs(f.mz[j] - x):
-                return k
-        return -1
+            if q == j or f.role[q] == "artifact":
+                continue
+            if abs(ax[q] - x) < abs(ax[j] - x) and abs(ax[j] - ax[q]) >= ABSORB_MIN_HWHM * hw:
+                return k, q
+        return -1, -1
     assigned = merged[merged["tier"].astype(str) == "Assigned"] if merged is not None and len(merged) else None
     ma = np.sort(pd.to_numeric(assigned["mz"], errors="coerce").dropna().to_numpy(float)) \
         if assigned is not None and len(assigned) else np.array([])
@@ -488,7 +521,7 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
             if r == "M0" and (str(sid), str(pids[j])) not in dropped:
                 # a vote loser of ANOTHER ion than its merged row: a candidate absorbed line (listed
                 # only when some file resolves it from the merged row's peak; see the bins below)
-                k = _merged_at(f, j)
+                k, _ax = _merged_at(f, j)
                 if k >= 0 and _ion_key(_s(led.at[f.idx[j], "neutral_formula"]),
                                        _s(led.at[f.idx[j], "adduct"])) != M_ion[k]:
                     kind = "absorbed"
@@ -502,11 +535,21 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
             parts.append((float(f.adj[j]), str(sid), j, kind, x, bool(epi[j]), str(pids[j])))
     if not parts:
         return empty_table()
-    parts.sort(key=lambda t: (t[0], t[1]))
-    ms = np.array([p[0] for p in parts])
-    cid = np.zeros(len(ms), dtype=np.int64)
-    if len(ms) > 1:
-        cid[1:] = np.cumsum(np.diff(ms) / ms[:-1] * 1e6 > float(tol_ppm))
+
+    def _bins(pp: list) -> list:
+        pp = sorted(pp, key=lambda t: (t[0], t[1]))
+        if not pp:
+            return []
+        ms_ = np.array([p_[0] for p_ in pp])
+        cid_ = np.zeros(len(ms_), dtype=np.int64)
+        if len(ms_) > 1:
+            cid_[1:] = np.cumsum(np.diff(ms_) / ms_[:-1] * 1e6 > float(tol_ppm))
+        return [[pp[k_] for k_ in np.where(cid_ == c_)[0]] for c_ in np.unique(cid_)]
+    # the bins: the regular parts alone and the absorbed parts (vote losers of another ion) alone, each
+    # by single linkage at the window -- an absorbed part never lengthens a regular chain (nor moves a
+    # regular bin's median onto a merged row), so it cannot hide a regular line
+    groups = (_bins([p_ for p_ in parts if p_[3] != "absorbed"])
+              + _bins([p_ for p_ in parts if p_[3] == "absorbed"]))
     ts_mz = ts_t = None
     if ts is not None and len(ts) and {"mz", "datetime_utc"} <= set(ts.columns):
         o = np.argsort(pd.to_numeric(ts["mz"], errors="coerce").to_numpy(float), kind="mergesort")
@@ -515,11 +558,11 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
     applied = bool((axis_info or {}).get("applied"))
     out = []
     n_sel = len(files)
-    for c in np.unique(cid):
-        grp = [parts[k] for k in np.where(cid == c)[0]]
-        bright = [g for g in grp if (np.isfinite(g[4]) and g[4] >= bright_x) or g[5]]
-        if not bright:
-            continue
+    # each bin decided: held by a merged row (skipped), released as a line the merge absorbed (kept, its
+    # members on the resolved side only), or a regular unidentified bin
+    decided = []
+    for grp in groups:
+        grp = sorted(grp, key=lambda t: (t[0], t[1]))
         raw = np.array([files[g[1]].mz[g[2]] for g in grp])
         med_raw = float(np.median(raw))
         med_adj = float(np.median([g[0] for g in grp]))
@@ -527,15 +570,42 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
         held = _near(mm_raw, med_raw, tol_ppm) >= 0 or _near(mm_raw, med_adj, tol_ppm) >= 0
         absorbed_by = -1
         if held or kinds <= {"absorbed"}:
-            # a merged row holds the line -- unless some file resolves the line from that merged row's
-            # peak (both picked in one spectrum): then the merge absorbed a line of its own
+            # a merged row holds the line -- unless some file resolves a line from that merged row's
+            # peak (two picks of one spectrum the width model separates): then the merge absorbed a line
+            # of its own, and the row is built from the bin's members on the resolved side only
+            # (beyond the midpoint of the resolving pair, on its side), not from the merged line's picks
             for g in grp:
-                absorbed_by = _resolved(files[g[1]], g[2])
+                absorbed_by, q = _resolved(files[g[1]], g[2])
                 if absorbed_by >= 0:
+                    fg = files[g[1]]
+                    mid = (fg.adj[g[2]] + fg.adj[q]) / 2.0
+                    side = 1.0 if fg.adj[g[2]] > fg.adj[q] else -1.0
+                    grp = [h_ for h_ in grp if (h_[0] - mid) * side > 0]
                     break
-            if absorbed_by < 0:
+            if absorbed_by < 0 or not grp:
                 continue
+        decided.append([grp, absorbed_by])
+    # one line the merge absorbed is one row: the released regular bin and the released bin of vote losers
+    # beside the same merged row, within the window of each other, are joined
+    rel = sorted((d_ for d_ in decided if d_[1] >= 0), key=lambda d_: (d_[1], float(np.median([g[0] for g in d_[0]]))))
+    joined = []
+    for d_ in rel:
+        if joined and joined[-1][1] == d_[1] and _near(np.array([float(np.median([g[0] for g in joined[-1][0]]))]),
+                                                       float(np.median([g[0] for g in d_[0]])), tol_ppm) >= 0:
+            joined[-1][0] = joined[-1][0] + d_[0]
+        else:
+            joined.append([list(d_[0]), d_[1]])
+    decided = [d_ for d_ in decided if d_[1] < 0] + joined
+    for grp, absorbed_by in decided:
+        grp = sorted(grp, key=lambda t: (t[0], t[1]))
+        if not any((np.isfinite(g[4]) and g[4] >= bright_x) or g[5] for g in grp):
+            continue
+        raw = np.array([files[g[1]].mz[g[2]] for g in grp])
+        med_raw = float(np.median(raw))
+        med_adj = float(np.median([g[0] for g in grp]))
+        kinds = {g[3] for g in grp}
         kinds = kinds - {"absorbed"} if absorbed_by < 0 else kinds
+        bright = [g for g in grp if (np.isfinite(g[4]) and g[4] >= bright_x) or g[5]]
         top = max(grp, key=lambda g: (files[g[1]].h[g[2]] if np.isfinite(files[g[1]].h[g[2]]) else -1, g[1]))
         ft, jt = files[top[1]], top[2]
         # roles: the files' roles at the bin (every row within the window), one count per row
@@ -561,7 +631,7 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
                     why_tried = True
                 d = _reading_dict(rd, gt)
             elif g[3] == "absorbed":
-                k = _merged_at(f, g[2])
+                k, _ax = _merged_at(f, g[2])
                 dppm = (f.mz[g[2]] - M_mz[k]) / M_mz[k] * 1e6 if k >= 0 else float("nan")
                 d = {"ion": _txt(led.at[i, "ion_formula"]) if "ion_formula" in led.columns else None,
                      "neutral": _txt(led.at[i, "neutral_formula"]), "adduct": _txt(led.at[i, "adduct"]),

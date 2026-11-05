@@ -434,7 +434,9 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
         from peaky.assignment import isoguard as IG
         g = IG.guard_ledger(ledger, pairs[-1] if pairs else None, log=log)
         g["rows"] = g["rows"][:IG.ROWS_KEPT]
-        out["isotope_guard"] = {**g, "source": T.CAL_SOURCE_POOLED}
+        # the record names the calibration the file was given: the pool's own source (pooled, or the
+        # source of a calibration lent through this function)
+        out["isotope_guard"] = {**g, "source": getattr(pool, "source", None) or T.CAL_SOURCE_POOLED}
     t = out["tiers"]
     log(f"[calpool]   window {cal[0]:+.3f} ± {cal[1]:.3f} ppm (centre: the {centre}'s; "
         f"width: the {out['cal']['width']}'s); "
