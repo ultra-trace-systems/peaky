@@ -82,7 +82,9 @@ neutral -- where the line, the parent and the solvent ion share at least
 TRACK_MIN_N of the episode's spectra (fewer: nothing is read). Its tier is the
 parent's when the pair test passes -- the cluster tracks the product parent x
 solvent across those spectra (Pearson r >= TRACK_R) -- else the parent's capped
-at Candidate. The reagent-cluster strip of the merge spares a row read so.
+at Candidate. A merged reading of ANOTHER ion composition at that mass is re-read
+as the cluster only when the pair test passes (a same-ion reading is relabelled
+either way). The reagent-cluster strip of the merge spares a row read so.
 
 Pure: reads the merged ledger, the per-file ledgers and the batch series;
 mutates only the merged rows it judges or relabels; returns a table and a
@@ -849,6 +851,10 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                     continue                   # too few episode spectra to read a track: nothing is read
                 # the pair test: the cluster tracks the product of the pair, parent x solvent
                 passed = bool(np.isfinite(r) and r >= TRACK_R)
+                same_ion = _counts(merged.at[k, "neutral_formula"], merged.at[k, "adduct"]) == _counts(
+                    p["neutral_formula"], lab)
+                if not same_ion and not passed:
+                    continue                   # another ion at the mass is re-read only on the pair test
                 ptier = _s(p["tier"])
                 tier_out = ptier if passed else ("Candidate" if ptier == "Assigned" else ptier)
                 was = (_s(merged.at[k, "neutral_formula"]), _s(merged.at[k, "adduct"]))

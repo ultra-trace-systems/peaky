@@ -493,3 +493,15 @@ def test_the_track_is_read_on_the_episodes_spectra_only():                      
     tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
     assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Candidate"
     assert tab["n_track"].iloc[0] == 10 and tab["track_r"].iloc[0] < 0.7
+
+
+def test_another_ion_at_the_cluster_mass_is_re_read_only_on_the_pair_test():                    # same ion or track
+    # a merged reading of a different composition 0.5 ppm from parent + NMP: kept when the line does not
+    # track parent x solvent, re-read as the cluster when it does
+    for track, relabelled in ((False, 0), (True, 1)):
+        merged, ts = _cluster_series(track=track)
+        merged.loc[1, ["neutral_formula", "adduct"]] = ["C16H30FN4O5", "[M+H]+"]      # another ion, 0.5 ppm away
+        assert abs(C.ion_mz("C16H30FN4O5", "[M+H]+") - merged.loc[1, "mz"]) / merged.loc[1, "mz"] * 1e6 < 3
+        _t, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+        assert s["relabelled"] == relabelled
+        assert merged.iloc[1]["neutral_formula"] == ("C16H22O4" if relabelled else "C16H30FN4O5")

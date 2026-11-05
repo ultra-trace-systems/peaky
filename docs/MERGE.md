@@ -380,7 +380,8 @@ selected sample_ids (SAMPLING.md)
    in every spectrum still has its episodes). Its tier is the parent's when the pair
    test passes -- the line tracks parent x solvent across those episode spectra
    (Pearson r >= 0.7, `TRACK_R`; co-occurrence alone is no track) -- else the
-   parent's capped at Candidate. The reagent-cluster strip below spares such a
+   parent's capped at Candidate. A merged reading of ANOTHER ion composition at that
+   mass is re-read as the cluster only when the pair test passes. The reagent-cluster strip below spares such a
    row (a 12-ppm match to a urea cluster is no reason to drop a line the pair test
    reads as the parent's cluster). `tables/solvent_clusters.csv`,
    `merge_gates["solvent_clusters"]`.
