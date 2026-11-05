@@ -362,16 +362,15 @@ selected sample_ids (SAMPLING.md)
    `solvent_clusters.episode_solvents`: NMP C5H9NO, DMSO C2H6OS) every persistent
    ion can gain a cluster line at its m/z + the solvent's neutral mass. A merged
    row within 3 ppm of a persistent Assigned ion (its line in >= 50 % of the
-   batch's spectra) + the solvent, whose elevated spectra (>= 3x the spectrum's
-   noise edge, `CLUSTER_X`; for a line present in most spectra also >= 5x its
-   median there, `SOLVENT_LIFT`) lie >= 90 % inside the solvent's episode -- the
+   batch's spectra) + the solvent, whose presence (the spectra holding the line)
+   lies >= 90 % inside the solvent's episode -- the
    spectra where one of the solvent's own ion forms (its reagent-profile forms and
-   its proton-bound dimer) is elevated the same way at >= 5x the edge, in <= 50 %
-   of the batch's spectra (`SOLVENT_MAX_FRAC`; a solvent background in every
-   spectrum is fine, its episodes are what count) -- and that is elevated in <= 50 %
-   of the batch's spectra,
-   and that tracks parent x solvent across the spectra (Pearson r >= 0.7 on >= 4
-   spectra holding all three lines; co-occurrence alone reads nothing), is read as
+   its proton-bound dimer) stands at >= 5x the edge and, for a form present in most
+   spectra, >= 5x its median there (`SOLVENT_LIFT`), in <= 50 % of the batch's
+   spectra (`SOLVENT_MAX_FRAC`; a solvent background in every spectrum is fine, its
+   episodes are what count) -- and that is in <= 50 % of the batch's spectra,
+   and that tracks parent x solvent across the episode's spectra (Pearson r >= 0.7
+   on >= 4 of them holding all three lines; co-occurrence alone reads nothing), is read as
    that ion's cluster: the parent's neutral, the adduct naming the solvent
    (`[M+(C5H9NO)H]+`, `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift` resolves
    such a label in any process), `solvent_cluster_of` = `<parent> + <solvent>`, the

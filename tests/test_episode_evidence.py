@@ -374,8 +374,7 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
             rows.append(dict(sample_item_id=sid, mz=km, height=hk))
             if pair:
                 rows.append(dict(sample_item_id=sid, mz=k2, height=0.3 * hk))
-        elif background and track:              # the cluster of the solvent background: faint, everywhere
-            rows.append(dict(sample_item_id=sid, mz=km, height=0.02 * hp * hs / 1e6 + 50.0))
+
         rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
     ts = pd.DataFrame(rows)
     merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
@@ -398,7 +397,10 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
     (dict(bright=tuple(range(10))), True, "Candidate"),                 # ... in 10 of 20: an episode
     (dict(bright=tuple(range(10)), cluster_at=tuple(range(10)), pair=True), True, "Assigned"),
     (dict(background=True), True, "Candidate"),                         # a solvent background everywhere + an episode
+    (dict(background=True, cluster_at=(5, 6, 7, 8, 9, 12)), False, None),    # 12: the background, not the episode
 ])
+
+
 def test_the_cluster_rules(kw, relabelled, tier):
     merged, ts = _cluster_series(**kw)
     tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
@@ -409,7 +411,7 @@ def test_the_cluster_rules(kw, relabelled, tier):
     else:
         assert merged.iloc[1]["neutral_formula"] == "C21H31NO5"
     assert (EE.SOLVENT_X, EE.SOLVENT_MAX_FRAC, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R,
-            EE.TRACK_MIN_N, EE.SOLVENT_LIFT, EE.CLUSTER_X) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4, 5.0, 3.0)
+            EE.TRACK_MIN_N, EE.SOLVENT_LIFT) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4, 5.0)
 
 
 def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
@@ -457,3 +459,11 @@ def test_the_14n_twin_excludes_a_rival_with_another_label_count():              
     assert EE._excluded(_facts(9.0, {"twin": f}, snr=1e4), me, rival) is not None     # the twin is there
     assert EE._excluded(_facts(9.0, {"twin": 0.0}, snr=1e4), me, rival) is None       # absent: the rival stays
     assert EE._excluded(_facts(9.0, {"twin": f}, snr=100.0), me, rival) is None       # untestable
+
+
+def test_one_spike_does_not_make_a_track():                                                       # the episode's spectra
+    # over a solvent background the cluster in the 5 episode spectra does not follow parent x solvent
+    # there: co-occurrence in the episode is no track
+    merged, ts = _cluster_series(background=True, track=False)
+    _t, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+    assert s["relabelled"] == 0

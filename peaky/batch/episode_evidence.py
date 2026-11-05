@@ -64,8 +64,8 @@ to an ion-only reading.
 (`read_solvent_clusters`).** During an industrial-solvent episode
 (solvent_clusters.episode_solvents: NMP, DMSO) every persistent ion can gain a
 cluster line at its own m/z + the solvent's neutral mass. A merged row there
-whose elevated spectra (>= CLUSTER_X x the edge; for a line present in most
-spectra also >= SOLVENT_LIFT x its median) lie inside the solvent's episode --
+whose presence is confined to the solvent's episode (>= CONFINED_FRAC of its
+spectra, in at most CLUSTER_MAX_FRAC of the batch's) --
 the spectra where one of the solvent's own ion forms (its reagent-profile ion
 forms and its proton-bound dimer) is elevated the same way at >= SOLVENT_X x the
 edge, in at most SOLVENT_MAX_FRAC of the batch's spectra (a solvent background
@@ -74,7 +74,8 @@ Assigned ion (in >= PERSIST_FRAC of the batch's spectra), is read as that ion's
 cluster: the
 parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
 neutral -- when, and only when, the cluster tracks the product parent x
-solvent across the spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N spectra):
+solvent across the episode's spectra (Pearson r >= TRACK_R on >= TRACK_MIN_N of
+them):
 co-occurrence alone reads nothing. Its tier is the parent's when the pair test
 passes (the same solvent cluster of the parent's neutral under another reagent
 ion form in the cluster's spectra, >= PAIR_X x the edge), else the parent's
@@ -160,8 +161,6 @@ SOLVENT_MAX_FRAC = 0.5
 #: a line present in most spectra (a background) is ELEVATED only at >= this multiple of its median
 #: height there (the episode stage's lift): the solvent's episode and the cluster's spectra are read so
 SOLVENT_LIFT = 5.0
-#: the cluster line counts in a spectrum at >= this multiple of the spectrum's noise edge
-CLUSTER_X = 3.0
 #: a cluster line sits within this many ppm of parent + solvent
 CLUSTER_PPM = 3.0
 #: a parent is persistent when its line is in at least this share of the batch's spectra
@@ -832,14 +831,16 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
             for k in hit:
                 ks = line(_num(merged.at[k, "mz"]))
                 ks = ks[ks > 0]
-                kel = _elevated(ks, edge, n_spec, CLUSTER_X)
-                if not kel or len(kel) > CLUSTER_MAX_FRAC * n_spec:
+                # its PRESENCE is confined to the episode (a line seen elsewhere is no plume cluster)
+                if not len(ks) or len(ks) > CLUSTER_MAX_FRAC * n_spec:
                     continue
-                n_in = int(sum(1 for x in kel if x in bright))
-                if n_in < CONFINED_FRAC * len(kel):
+                n_in = int(sum(1 for x in ks.index if x in bright))
+                if n_in < CONFINED_FRAC * len(ks):
                     continue
+                kel = ks.index
+                # the pair test reads the episode's own spectra: parent x solvent there, never one spike
                 j3 = pd.concat([ks.rename("k"), ps.rename("p"), hs.rename("s")], axis=1, join="inner").dropna()
-                j3 = j3[(j3 > 0).all(axis=1)]
+                j3 = j3[(j3 > 0).all(axis=1) & j3.index.isin(list(bright))]
                 r = (float(np.corrcoef(j3["k"], j3["p"] * j3["s"])[0, 1]) if len(j3) >= 2
                      and j3["k"].std() > 0 and (j3["p"] * j3["s"]).std() > 0 else float("nan"))
                 tracks = bool(len(j3) >= TRACK_MIN_N and np.isfinite(r) and r >= TRACK_R)
@@ -876,7 +877,7 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                     merged.at[k, "alternatives"] = f"{was[0]} {was[1]} (the covalent reading)" + (
                         f"; {prev}" if prev else "")
                 _note(merged, k, (f"{CLUSTER_MARK}: the {solv.formula} ({solv.name}) cluster of the persistent "
-                                  f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): elevated in "
+                                  f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): present in "
                                   f"{len(kel)} spectra, {n_in} of them in the solvent's episode; "
                                   + f"tracks parent x solvent (r {r:.2f} on {len(j3)} spectra); "
                                   + (f"the pair test passed ({pair_txt}): the parent's tier" if passed else
