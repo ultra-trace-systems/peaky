@@ -510,12 +510,24 @@ def test_cluster_confinement_reads_the_lines_presence():                        
 
 
 def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
-    # a 12-spectrum episode in 24 and the cluster in it (12 = half): reads; in 13 (all 13 inside a 13-spectrum
-    # episode) it is in more than half the batch: no plume cluster
-    m1, ts1, _d = _cseries(ep=tuple(range(4, 16)))
+    # a 12-spectrum episode in 24 (half) and the cluster in it: reads; the cluster in those 12 + 1 more
+    # (12 of 13 = 0.92 inside: confined) is in more than half the batch: no plume cluster
+    ep = tuple(range(4, 16))
+    m1, ts1, _d = _cseries(ep=ep)
     assert _read(m1, ts1)[1]["relabelled"] == 1
-    m2, ts2, _d = _cseries(ep=tuple(range(4, 17)))
+    m2, ts2, _d = _cseries(ep=ep, cluster_at=ep + (20,))
     assert _read(m2, ts2)[1]["relabelled"] == 0
+
+
+def test_the_track_is_read_on_the_episodes_spectra_only():                                       # the episode's spectra
+    # a parent of amplitude 0.44 tracks specifically over the 10 episode spectra (gain 0.29); the cluster is
+    # also present once outside the episode, over the solvent's background, at parent x solvent there: read
+    # over every spectrum that point would take the gain to 0.19 (not specific)
+    merged, ts, _d = _cseries(a=0.44, background=True, cluster_at=EP + (15,))
+    sel = (ts["sample_item_id"] == "s15") & ((ts["mz"] - KM).abs() < 1e-6)
+    ts.loc[sel, "height"] = 0.02 * _hp(15, 0.44) * 1e3 / 1e6
+    tab, s = _read(merged, ts)
+    assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Assigned" and tab["n_track"].iloc[0] == 10
 
 
 def test_a_dim_solvent_is_no_episode():                                                           # SOLVENT_X
