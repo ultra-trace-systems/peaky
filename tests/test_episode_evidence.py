@@ -455,3 +455,31 @@ def test_co_occurrence_over_a_solvent_background_is_capped():                   
     merged, ts = _cluster_series(background=True, track=False)
     _t, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
     assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Candidate"
+
+
+def test_the_track_is_read_on_the_episodes_spectra_only():                                       # the episode's spectra
+    # 24 spectra: NMP.urea at a background everywhere and in an episode in spectra 0-9; the cluster flat
+    # (2e3) through the episode -- no track -- and once outside it, at 20 cps where parent x solvent is
+    # at its background too. Over every spectrum that one low pair would carry r; the episode alone does not
+    pm = C.ion_mz("C16H22O4", "[M+H]+")
+    sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
+    km = pm + C.neutral_mass("C5H9NO")
+    rows = []
+    for k in range(24):
+        sid = f"s{k:02d}"
+        hs = 1e6 * (1 + 0.5 * np.cos(k)) if k < 10 else 1e3
+        rows += [dict(sample_item_id=sid, mz=pm, height=1e5 * (1 + 0.3 * np.sin(k))),
+                 dict(sample_item_id=sid, mz=sm, height=hs)]
+        if k < 10:
+            rows.append(dict(sample_item_id=sid, mz=km, height=2e3 * (1 + 0.01 * (k % 2))))
+        elif k == 10:
+            rows.append(dict(sample_item_id=sid, mz=km, height=20.0))
+        rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=10.0) for j in range(20)]
+    ts = pd.DataFrame(rows)
+    merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier="Assigned", episode=False,
+                                alternatives="", tier_reason=""),
+                           dict(mz=km, neutral_formula="C21H31NO5", adduct="[M+H]+", tier="Assigned", episode=True,
+                                alternatives="", tier_reason="")])
+    tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+    assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Candidate"
+    assert tab["n_track"].iloc[0] == 10 and tab["track_r"].iloc[0] < 0.7
