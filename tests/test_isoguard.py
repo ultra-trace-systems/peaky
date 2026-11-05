@@ -231,3 +231,68 @@ def test_the_batch_merge_holds_a_reading_its_pooled_facts_contradict(tmp_path, m
     assert "isotope contradiction: 13C reads " in str(r["tier_reason"].iloc[0])
     g = summ["merge_gates"]["isotope_guard"]
     assert g["demoted"] == 1 and g["by_fact"]["13C"] == 1 and g["rows"][0]["neutral_formula"] == "C10H16O4"
+
+
+# =========================================================================== repair after refute (2026-11-05)
+def test_the_13c_count_binds_from_the_levels_snr_10():
+    # predicted 13C line S/N 15 (>= the levels' 10): tested, contradicted -> Candidate
+    row, s, _p = _guarded(_ledger(c13_count=6.0, snr13=15.0))
+    assert row["tier"] == "Candidate" and s["by_fact"]["13C"] == 1
+    # S/N 9: untestable -> untouched
+    row, s, _p = _guarded(_ledger(c13_count=6.0, snr13=9.0))
+    assert row["tier"] == "Assigned" and s["demoted"] == 0
+
+
+def test_a_chlorine_reading_whose_37cl_line_is_absent_is_candidate():
+    n = "C8H13ClO4"
+    nc = EV.count_element(n, "C")
+    row, s, pairs = _guarded(_ledger(n, c13_count=8.0, snr13=40.0))
+    assert row["tier"] == "Candidate" and s["by_fact"]["absent"] == 1
+    assert "isotope contradiction: 37Cl (" in str(row["tier_reason"]) and " absent in 1/1 files" in str(row["tier_reason"])
+    assert IG.contradiction("37Cl (0.32x) absent in 2/2 files", {"C": 8, "Cl": 1}) == ["37Cl (0.32x) absent in 2/2 files"]
+    assert nc == 8
+
+
+def test_two_facts_of_one_reading_both_bind():
+    """A cell of two facts (the levels join them with ' | '): an S reading whose 13C line reads ~C5 for C9 AND
+    whose 34S line is absent at S/N 15 carries both in the note."""
+    n = "C9H14O4S"
+    nc = EV.count_element(n, "C")
+    snr13 = 15.0 / 0.0447 * nc * IC.R13C
+    row, s, pairs = _guarded(_ledger(n, c13_count=5.0, snr13=snr13))
+    reasons = pairs["committed_reasons"].iloc[0]
+    assert " | " in reasons
+    t = str(row["tier_reason"])
+    assert row["tier"] == "Candidate" and "34S (" in t and "13C reads " in t, t
+
+
+def test_the_guard_reads_m0_rows_only():
+    led = _ledger(c13_count=6.0, snr13=40.0)
+    out = []
+    EV.apply_levels(led, run_inputs=_inputs(), pairs_out=out)
+    i = led.index[led["peak_id"] == "B"][0]           # the 13C child, given the reading and an Assigned tier
+    led.at[i, "neutral_formula"], led.at[i, "adduct"], led.at[i, "tier"] = "C10H16O4", "[M-H]-", "Assigned"
+    s = IG.guard_ledger(led, out[-1], log=lambda *a: None)
+    assert s["demoted"] == 1 and led.at[i, "tier"] == "Assigned"
+
+
+def test_the_evidence_stage_hands_the_guard_its_facts():
+    """The real stage functions in order on one file: `_stage_evidence` keeps the file's pair facts
+    (st.level_pairs) and `_stage_isotope_guard` demotes on them."""
+    led = _ledger(c13_count=6.0, snr13=40.0)
+    st = types.SimpleNamespace(led=led, cfg=types.SimpleNamespace(height_cutoff=GATE, noise_edge_cps=None),
+                               reagent_profile="NO3", adducts=["[M-H]-"], sample_id="s1", profile=None,
+                               resolving_power=ORBI, reflists_active=None, degeneracy_cal=CAL,
+                               reflists_context=None, reagent_halogen=EV.DETECT_HALOGEN, log=lambda *a: None)
+    A._stage_evidence(st)
+    assert len(st.level_pairs) == 1
+    s = A._stage_isotope_guard(st)
+    assert s["demoted"] == 1 and led.loc[led["peak_id"] == "A", "tier"].iloc[0] == "Candidate"
+
+
+def test_an_offline_run_records_the_guard_in_its_stats():
+    from tests.test_blocked import _run
+    res = _run("isoguard-stats")
+    g = res["stats"]["isotope_guard"]
+    assert isinstance(g, dict) and set(g) >= {"tested", "demoted", "by_fact", "rows"}
+    assert g == res["summaries"]["isotope_guard"] and g["tested"] >= 1

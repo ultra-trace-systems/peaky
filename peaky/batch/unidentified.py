@@ -66,7 +66,7 @@ LINE_DET_X = 3.0
 NO_FIT_GATES = ("no candidate in box", "no candidate scored", "not admitted", "score<min_raw", "no ppm",
                 "pass4:score", "confidence Reject", "labeled:score", "released")
 
-WHY_ORDER = ("vote_dropped", "orphan_iso_child", "orphan_artifact", "all_blocked", "no_formula")
+WHY_ORDER = ("vote_dropped", "absorbed_by_merge", "orphan_iso_child", "orphan_artifact", "all_blocked", "no_formula")
 
 TABLE_COLUMNS = ("mz", "mz_corrected", "n_files_present", "n_files_selected", "h_max", "x_edge_max", "roles",
                  "c13_count", "s34_line", "cl37_line", "readings_tried", "partner_mz", "partner_role", "why",
@@ -408,6 +408,40 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
         stats = {str(s.get("sample_id")): s for s in (per_stats or []) if isinstance(s, dict)}
     mm_raw = np.sort(pd.to_numeric(merged["mz"], errors="coerce").dropna().to_numpy(float)) \
         if merged is not None and len(merged) else np.array([])
+    # the merged rows with their ION (assign_batch._ion_key, the vote's key) and text, m/z-sorted: a
+    # per-file row inside a merged row's window is "absorbed" when it reads another ion and its own
+    # file holds the merged ion's peak beside it (two picks in one spectrum: resolved lines)
+    from peaky.batch.assign_batch import _ion_key, _s
+    if merged is not None and len(merged):
+        _mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(float)
+        _ok = np.isfinite(_mz)
+        _o = np.argsort(_mz[_ok], kind="mergesort")
+        _mm = merged[_ok].iloc[_o]
+        M_mz = _mz[_ok][_o]
+        _nf = _mm["neutral_formula"] if "neutral_formula" in _mm.columns else pd.Series([None] * len(_mm))
+        _ad = _mm["adduct"] if "adduct" in _mm.columns else pd.Series([None] * len(_mm))
+        M_ion = [_ion_key(_s(n), _s(a)) for n, a in zip(_nf, _ad)]
+        M_txt = [f"{_s(t)} {_s(n)} {_s(a)}".strip() for t, n, a in zip(_mm["tier"], _nf, _ad)]
+    else:
+        M_mz, M_ion, M_txt = np.array([]), [], []
+
+    def _merged_at(f, j) -> int:
+        k = _near(M_mz, f.mz[j], tol_ppm)
+        return k if k >= 0 else _near(M_mz, f.adj[j], tol_ppm)
+
+    def _resolved(f, j) -> int:
+        """The merged row (its index in M_mz) the row j of file f sits beside as a RESOLVED line: within
+        the window of it, while the same file holds another peak q nearer that merged row (the merged
+        ion's own pick there); -1 when none."""
+        k = _merged_at(f, j)
+        if k < 0:
+            return -1
+        x = M_mz[k]
+        lo, hi = f.window(x, x * tol_ppm * 1e-6)
+        for q in range(lo, hi):
+            if q != j and abs(f.mz[q] - x) < abs(f.mz[j] - x):
+                return k
+        return -1
     assigned = merged[merged["tier"].astype(str) == "Assigned"] if merged is not None and len(merged) else None
     ma = np.sort(pd.to_numeric(assigned["mz"], errors="coerce").dropna().to_numpy(float)) \
         if assigned is not None and len(assigned) else np.array([])
@@ -451,6 +485,13 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
                         explained = False
                 if not explained:
                     kind = "orphan_iso_child" if r == "iso_child" else "orphan_artifact"
+            if r == "M0" and (str(sid), str(pids[j])) not in dropped:
+                # a vote loser of ANOTHER ion than its merged row: a candidate absorbed line (listed
+                # only when some file resolves it from the merged row's peak; see the bins below)
+                k = _merged_at(f, j)
+                if k >= 0 and _ion_key(_s(led.at[f.idx[j], "neutral_formula"]),
+                                       _s(led.at[f.idx[j], "adduct"])) != M_ion[k]:
+                    kind = "absorbed"
             if (str(sid), str(pids[j])) in dropped and (r == "M0" or kind == "unexplained"):
                 # an M0 row the merge dropped -- still M0, or released to unexplained by the
                 # batch's per-file rewrite (an isotope child of an Assigned parent stays explained)
@@ -482,9 +523,19 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
         raw = np.array([files[g[1]].mz[g[2]] for g in grp])
         med_raw = float(np.median(raw))
         med_adj = float(np.median([g[0] for g in grp]))
-        if _near(mm_raw, med_raw, tol_ppm) >= 0 or _near(mm_raw, med_adj, tol_ppm) >= 0:
-            continue            # a merged row holds the line
         kinds = {g[3] for g in grp}
+        held = _near(mm_raw, med_raw, tol_ppm) >= 0 or _near(mm_raw, med_adj, tol_ppm) >= 0
+        absorbed_by = -1
+        if held or kinds <= {"absorbed"}:
+            # a merged row holds the line -- unless some file resolves the line from that merged row's
+            # peak (both picked in one spectrum): then the merge absorbed a line of its own
+            for g in grp:
+                absorbed_by = _resolved(files[g[1]], g[2])
+                if absorbed_by >= 0:
+                    break
+            if absorbed_by < 0:
+                continue
+        kinds = kinds - {"absorbed"} if absorbed_by < 0 else kinds
         top = max(grp, key=lambda g: (files[g[1]].h[g[2]] if np.isfinite(files[g[1]].h[g[2]]) else -1, g[1]))
         ft, jt = files[top[1]], top[2]
         # roles: the files' roles at the bin (every row within the window), one count per row
@@ -509,6 +560,13 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
                 if _gate_kind(gt, rd) == "tried":
                     why_tried = True
                 d = _reading_dict(rd, gt)
+            elif g[3] == "absorbed":
+                k = _merged_at(f, g[2])
+                dppm = (f.mz[g[2]] - M_mz[k]) / M_mz[k] * 1e6 if k >= 0 else float("nan")
+                d = {"ion": _txt(led.at[i, "ion_formula"]) if "ion_formula" in led.columns else None,
+                     "neutral": _txt(led.at[i, "neutral_formula"]), "adduct": _txt(led.at[i, "adduct"]),
+                     "blocked_by": (f"absorbed by the merge: the vote kept {M_txt[k]} {dppm:+.1f} ppm away"
+                                    if k >= 0 else "absorbed by the merge")}
             elif g[3] == "vote_dropped":
                 d = {"ion": _txt(led.at[i, "ion_formula"]) if "ion_formula" in led.columns else None,
                      "neutral": _txt(led.at[i, "neutral_formula"]), "adduct": _txt(led.at[i, "adduct"]),
@@ -531,6 +589,8 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
                                   str(d.get("blocked_by"))))
         if "vote_dropped" in kinds:
             why = "vote_dropped"
+        elif absorbed_by >= 0:
+            why = "absorbed_by_merge"
         elif "orphan_iso_child" in kinds:
             why = "orphan_iso_child"
         elif "orphan_artifact" in kinds:
@@ -545,6 +605,8 @@ def build(full_ledgers: dict, per_stats, merged: pd.DataFrame, *, drops: pd.Data
             p = _parent_of(files[go[1]], go[2])
             if p >= 0:
                 pmz, prole = float(files[go[1]].mz[p]), _row_text(files[go[1]], p)
+        if absorbed_by >= 0 and why == "absorbed_by_merge":
+            pmz, prole = float(M_mz[absorbed_by]), f"merged {M_txt[absorbed_by]}"
         if not prole:
             pmz, prole = _partner(ft, jt)
         cs = [c_ for c_ in (_c13_count(files[g[1]], g[2]) for g in bright) if np.isfinite(c_)]
@@ -629,6 +691,8 @@ def build_single(ledger: pd.DataFrame, noise_edge_cps, *, sample_id: str = "file
     led = ledger
     m0 = led[led["role"].astype(str) == "M0"] if len(led) else led
     merged = pd.DataFrame({"mz": pd.to_numeric(m0["mz"], errors="coerce").to_numpy(float) if len(m0) else [],
+                           "neutral_formula": m0["neutral_formula"].to_numpy() if len(m0) else [],
+                           "adduct": m0["adduct"].to_numpy() if len(m0) else [],
                            "tier": m0["tier"].astype(str).to_numpy() if len(m0) else []})
     return build({str(sample_id): led}, {str(sample_id): {"noise_edge_cps": noise_edge_cps}}, merged,
                  tol_ppm=tol_ppm)
