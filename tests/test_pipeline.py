@@ -145,17 +145,19 @@ try:
               == (False, 3, 800.0, 7.0),
               {k: v for k, v in _got["ab"].items() if k.startswith("residual")})
         # the episode stage's switch and budget reach assign_batch.run, defaults = sampling's
-        check("run_batch forwards the episode knobs (defaults = sampling.EPISODE_DEFAULT / the proportional budget)",
+        check("run_batch forwards the episode knobs (defaults = sampling.EPISODE_DEFAULT / no cap / EPISODE_MIN_X_EDGE)",
               _got["ab"]["episodes"] is _SS.EPISODE_DEFAULT
-              and _got["ab"]["k_episode_max"] is None,
+              and _got["ab"]["k_episode_max"] is None
+              and _got["ab"]["episode_min_x_edge"] == _SS.EPISODE_MIN_X_EDGE,
               {k: _got["ab"].get(k) for k in ("episodes", "k_episode_max")})
     with tempfile.TemporaryDirectory() as d:
         _got.clear()
         PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
                      when=WHEN, do_report=False, log=lambda *a: None,
-                     episodes=False, k_episode_max=3)
+                     episodes=False, k_episode_max=3, episode_min_x_edge=4.5)
         check("run_batch forwards explicit episode knobs unchanged",
-              (_got["ab"]["episodes"], _got["ab"]["k_episode_max"]) == (False, 3),
+              (_got["ab"]["episodes"], _got["ab"]["k_episode_max"], _got["ab"]["episode_min_x_edge"])
+              == (False, 3, 4.5),
               {k: _got["ab"].get(k) for k in ("episodes", "k_episode_max")})
     # ONE cfg per run: the gate knobs (gate_config) and the profile's multiple
     # (apply_height_cutoff_x_edge) are stamped on the SAME object, which is what

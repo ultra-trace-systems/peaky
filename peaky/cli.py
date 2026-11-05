@@ -433,7 +433,8 @@ def cmd_batch(args) -> None:
                            residual_min_x_edge=args.residual_min_x_edge,
                            residual_min_cps=args.residual_min_cps,
                            residual_k_max=args.residual_k_max,
-                           episodes=args.episodes, k_episode_max=args.k_episode_max,
+                           episodes=args.episodes, episode_min_x_edge=args.episode_min_x_edge,
+                           k_episode_max=args.k_episode_max,
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
@@ -2067,7 +2068,7 @@ def _add_selection_args(sp) -> None:
 
 
 def _add_episode_args(sp) -> None:
-    """The episode stage's switch and budget (sampling.py, THE EPISODE STAGE): `batch`
+    """The episode stage's switch, coverage threshold and optional cap (sampling.py, THE EPISODE STAGE): `batch`
     only (the pooled path assigns the pool's own selection)."""
     from peaky.batch import sampling as SS
 
@@ -2075,19 +2076,22 @@ def _add_episode_args(sp) -> None:
                     default=SS.EPISODE_DEFAULT,
                     help="right after the cover, give every short bright EPISODE of the batch "
                          "(bins present in 3 to max(19, 1%% of the samples) samples, "
-                         f"lift >= {SS.EPISODE_MIN_LIFT:g}, peak >= {SS.EPISODE_MIN_X_EDGE:g}x the "
-                         "sample's noise edge, grouped by time overlap) its peak sample and up to "
+                         f"lift >= {SS.EPISODE_MIN_LIFT:g}, peak >= {SS.EPISODE_BRIGHT_X_EDGE:g}x the "
+                         "sample's noise edge, grouped by time overlap) that holds a bin peaking at >= "
+                         "--episode-min-x-edge its peak sample, that bin's own peak sample and up to "
                          f"{SS.EPISODE_NEIGHBOURS} neighbours, assigned with the cover's files "
                          "(tables/episodes.csv; per-file rows flagged `episode`). "
                          f"{'ON' if SS.EPISODE_DEFAULT else 'OFF'} by default; --no-episodes "
                          "reproduces the run without the stage exactly.")
-    sp.add_argument("--k-episode-max", type=int, default=None, metavar="N",
-                    help="budget of the episode stage as an absolute number of files beyond the "
-                         "cover's. Default: sized by the batch, clamp(floor("
-                         f"{SS.K_EPISODE_FRAC:g} x the cover's files), {SS.K_EPISODE_MIN}, "
-                         f"{SS.K_EPISODE_MAX}) -- about {SS.K_EPISODE_FRAC * 100:g}%% more files, so the "
-                         "batch's wall clock grows by about that share. A stage that leaves a wanted "
-                         "file out is flagged in batch_summary.json['selection']['episodes']")
+    sp.add_argument("--episode-min-x-edge", type=float, default=SS.EPISODE_MIN_X_EDGE, metavar="X",
+                    help="the episode stage's coverage rule: every episodic bin whose peak reaches "
+                         f"X times that sample's noise edge (default {SS.EPISODE_MIN_X_EDGE:g}) has its "
+                         "peak spectrum assigned, with its episode's peak file and up to "
+                         f"{SS.EPISODE_NEIGHBOURS} neighbours; no budget (fainter bins may be lost)")
+    sp.add_argument("--k-episode-max", type=int, default=SS.K_EPISODE_MAX, metavar="N",
+                    help="optional safety cap on the files the episode stage adds (default: none). "
+                         "A cap that leaves a wanted file out breaks the coverage rule and is flagged "
+                         "in batch_summary.json['selection']['episodes']")
 
 
 def _auto_or_float(v: str):

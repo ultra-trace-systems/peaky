@@ -63,20 +63,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   claim or other column moves (an offline run with the recorder off is byte-identical minus the
   two columns); only `would_lift` on those no-level rows changes.
 
-- **Short bright episodes get their own files: the episode stage of the sample selection** (`batch/sampling.py`,
-  docs/SAMPLING.md §3c). The presence cover counts an episode's bins once, so a plume over a few spectra was
-  assigned from whichever single spectrum the cover took (often its flank) and a plume whose bins another file
-  covered got none. Right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples whose
-  maximum is >= 5x its baseline and >= 3x that sample's noise edge is episodic; bins whose runs in time overlap
-  (one gap allowed) form an episode, and each episode gets its peak sample and up to 2 neighbours holding >= 50 %
-  of its bins at >= 3x edge, from a separate budget sized by the batch -- clamp(floor(0.15 x the cover's files),
-  1, 8), so a batch's wall clock grows by about 15 % at most (peak samples first, by
-  descending brightness; a wanted file left out is flagged as `k_max` is) outside the cover's `k_max` /
-  `min_gain`. The files are assigned with the cover's (`selected_samples.csv` role `episode`); the record is
-  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]`, and every per-file ledger of a batch
-  with an episode file carries `episode` (True on an episode file's rows on an episodic bin) for the merge-side
-  readers. On by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the
-  previous selection and merged ledger byte for byte. `--k-episode-max N` sets an absolute budget instead.
+- **Every short bright episode line is assigned where it peaks: the episode stage of the sample selection**
+  (`batch/sampling.py`, docs/SAMPLING.md §3c). The presence cover counts an episode's bins once, so a plume over a
+  few spectra was assigned from whichever single spectrum the cover took (often its flank) and a plume whose bins
+  another file covered got none. Right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples
+  whose maximum is >= 5x its baseline (the median over every sample of its height, the sample's noise edge where
+  it is absent: on a batch of more than 38 samples, the batch's edge level) and >= 3x that sample's noise edge is
+  episodic; bins whose runs in time overlap (one gap allowed) form an episode. THE COVERAGE RULE: every episodic
+  bin whose peak reaches 5x that sample's noise edge (`--episode-min-x-edge X`) has its own peak spectrum
+  assigned, and its episode its peak sample and up to 2 neighbours holding >= 50 % of its bins at >= 3x edge.
+  There is no budget: the stage guarantees that coverage, not a cost bound (fainter bins may be lost);
+  `--k-episode-max N` is an optional safety cap, flagged when it binds. The files are outside the cover's
+  `k_max` / `min_gain` and are assigned with the cover's (`selected_samples.csv` role `episode`); the record is
+  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]` (the threshold, the qualifying bins,
+  the files added and, for information, the estimated extra wall time), the stage's files are counted apart in
+  `batch_summary.json["n_files_by_stage"]["episode"]`, and every per-file ledger of a batch with an episode file
+  carries `episode` (True on an episode file's rows on an episodic bin; per-file only, nothing reads it yet). On
+  by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the previous selection
+  and merged ledger byte for byte.
 
 - **A short episode's readings are judged on the episode's own spectra** (`batch/episode_evidence.py`, docs/MERGE.md
   step 6g). The episode stage's row flag now reaches the merged ledger (`episode`, any file's row of the bin
