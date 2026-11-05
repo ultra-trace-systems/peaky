@@ -337,15 +337,19 @@ ledu = pd.DataFrame([
     dict(peak_id="n1", neutral_formula="C5H9NO", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
     dict(peak_id="cho", neutral_formula="C10H16O3", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
     dict(peak_id="si", neutral_formula="C8H24N2OSi2", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+    # a Candidate row gets the note too: the note says which neutral the ion may be, whatever its tier (deliberate:
+    # the cap it replaced read Assigned rows only, but a note changes no tier and the split is as open on a Candidate)
+    dict(peak_id="hcc", neutral_formula="C9H16", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Candidate", tier_reason=""),
 ])
 outu = CU.note_implausible_urea_adducts(ledu, log=lambda *a: None)
 _tu = dict(zip(ledu.peak_id, ledu.tier))
 _nu = {p: CU.SPLIT_OPEN_NOTE in str(t) for p, t in zip(ledu.peak_id, ledu.tier_reason)}
 check("urea note: hydrocarbon and N2 neutrals noted (split open), every tier kept; N1 amide, CHO and Si untouched",
-      _tu == {"hc": "Assigned", "n2": "Assigned", "n1": "Assigned", "cho": "Assigned", "si": "Assigned"}
-      and _nu == {"hc": True, "n2": True, "n1": False, "cho": False, "si": False}
+      _tu == {"hc": "Assigned", "n2": "Assigned", "n1": "Assigned", "cho": "Assigned", "si": "Assigned",
+              "hcc": "Candidate"}
+      and _nu == {"hc": True, "n2": True, "n1": False, "cho": False, "si": False, "hcc": True}
       and "protonated C8H14+CH4N2O" in str(ledu.loc[0, "tier_reason"])
-      and outu == {"noted": 2}, (_tu, _nu, outu))
+      and outu == {"noted": 3}, (_tu, _nu, outu))
 
 # ---------- demote_unconfirmed_fluorine (F-monster curb) ----------
 ledf = pd.DataFrame([

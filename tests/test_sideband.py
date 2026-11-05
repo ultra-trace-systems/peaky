@@ -74,6 +74,15 @@ def _get(merged, nf, ad):
     return r.iloc[0]
 
 
+def test_the_satellite_window_is_two_sided():                                 # SAT_DMDA, the lower side
+    # the partner 3.85 mDa ABOVE the row (the U-mode side bands sit on both sides of their parent)
+    led = _sat_ledgers(dmz=-3.85e-3)
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _series(smz=PMZ - 3.85e-3), **NOLOG)
+    assert summ["satellite_noted"] == 1 and _get(merged, *SAT)["tier"] == "Assigned"
+    assert (tab["d_mDa"].between(-3.9, -3.8)).all()
+
+
 def test_a_tracking_satellite_of_a_20x_brighter_line_is_noted_and_its_tier_kept():
     led = _sat_ledgers()
     merged = _merged(led)
@@ -188,6 +197,22 @@ def test_a_13c_line_of_a_brighter_row_at_1_1x_its_prediction_is_held():     # IS
     assert summ["held"] == 1 and set(tab["rule"]) == {"isotopologue 13C"} and set(tab["action"]) == {"held"}
     merged2, _t, _s = _hold(_iso_ledgers(row_h=2.0 * PRED13))                # brighter than the line can be
     assert _get(merged2, *IROW)["tier"] == "Assigned"
+
+
+def test_an_isotopologue_row_beside_a_satellite_partner_too_is_held():       # the hold before the note
+    # each file holds both a brighter Assigned parent whose 13C line the row is and a >= 10x line
+    # 3.85 mDa below the row that it tracks: the isotopologue clause decides -- held, not merely noted
+    led = _iso_ledgers()
+    rmz = IPMZ + ISO.D_13C
+    for sid, f in led.items():
+        led[sid] = pd.concat([f, pd.DataFrame([_row(f"{sid}b", rmz - 3.85e-3, 12 * 1.1 * PRED13,
+                                                   role="unexplained", tier=None)])], ignore_index=True)
+    assert all(len(SB._bright_near(f, f[f.peak_id.str.endswith("r")].iloc[0])) for f in led.values())
+    merged, tab, summ = _hold(led)
+    r = _get(merged, *IROW)
+    assert r["tier"] == "Candidate" and SB.HOLD_MARK in r["tier_reason"] and summ["held"] == 1
+    assert summ["satellite_noted"] == 0 and set(tab["action"]) == {"held"}
+    assert set(tab["rule"]) == {"isotopologue 13C"}
 
 
 def test_a_row_5_ppm_off_the_spacing_is_not_the_line():                      # ISO_PPM

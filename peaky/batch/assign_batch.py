@@ -3466,8 +3466,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                                         merge_gates["element_signature"].get("pairs"), log=log)
     if isinstance(merge_gates.get("isotopologue"), dict):
         merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
-    # rule K's refutation also caps the TIER (label_twins.demote_vetoed): a reading the
-    # twins refute is 5b and no longer the vote's Assigned
+    # rule K's refutation on the merged tier (label_twins.demote_vetoed): a refutation that
+    # names another ion (a 13C shadow, an [Y+^NO3]- reading with no 14N twin) caps an Assigned
+    # reading Candidate; an [X+NO3]- line "cluster or organonitrate undecided" is the same ion
+    # as the organonitrate, so the row keeps the vote's tier with a note (the pair stays 5b)
     merge_gates["label_veto"] = _LT.demote_vetoed(merged, twins_table, exempt=curated, log=log)
     # ... and the per-file ledgers RECORD the decision (iso_checks.reconcile_per_file):
     # a stripped reading's M0 row in a file becomes the parent's iso_child where that

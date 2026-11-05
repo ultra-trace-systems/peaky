@@ -197,3 +197,37 @@ class TestFluorineCeiling:
         rej, _o11 = LLG.rejections({"f_ladder_lift": True}, {})
         assert rej == [DC.FLUORINE_LADDER_REASON] and LLG.lowconf_alone(rej)
         assert LLG.ceiling_why(rej) == DC.FLUORINE_CEILING_WHY
+
+    def test_every_non_full_lift_note_carries_the_mark_and_any_file_sets_the_pair_fact(self):
+        """Both lift notes of a ladder that is not full -- fewer than 3 committed members, and
+        enough members but an untested 15N alias -- carry fluorine.LIFT_HELD_MARK (a full ladder's
+        does not), and the pair fact f_ladder_lift is set when ANY file's row carries one."""
+        import pandas as pd
+        from peaky.assignment import evidence as EV
+        from peaky.assignment import fluorine as FL
+        from peaky.chem import chemistry as C
+        steps = ((-1, True), (1, True), (2, False))
+        alias = FL.Ladder(4, 3, steps, None, "its 14N twin would read under the floor")
+        short = FL.Ladder(3, 1, ((-1, False), (1, False)), None, None)
+        full = FL.Ladder(4, 3, steps, None, None)
+        assert alias.lift and not alias.full and short.lift and not short.full and full.full
+        assert "while its 15N alias" in FL.lift_note(alias) and "until 3 members" in FL.lift_note(short)
+        assert FL.LIFT_HELD_MARK in FL.lift_note(alias) and FL.LIFT_HELD_MARK in FL.lift_note(short)
+        assert FL.LIFT_HELD_MARK not in FL.lift_note(full)
+        nf, ad = "C8H5F11O2", "[M-H]-"
+
+        def row(pid, sid, why):
+            return dict(role="M0", peak_id=pid, neutral_formula=nf, adduct=ad, ion_formula="C8H4F11O2-",
+                        mz=C.ion_mz(nf, ad), height=1e4, tier="Candidate", tier_reason=why, method="x",
+                        confidence="Good", __file=sid)
+        for lad in (alias, short):
+            frame = pd.DataFrame([row("a", "s01", "partially-fluorinated reading: " + FL.lift_note(lad)),
+                                  row("b", "s02", "")])
+            facts = EV._measure(EV.trim(frame.drop(columns="__file")).assign(__file=["s01", "s02"]),
+                                halogen=None).set_index("neutral_formula")
+            assert bool(facts.loc[nf, "f_ladder_lift"])                      # one file of the two is enough
+        frame = pd.DataFrame([row("a", "s01", "partially-fluorinated reading: " + FL.lift_note(full)),
+                              row("b", "s02", "")])
+        facts = EV._measure(EV.trim(frame.drop(columns="__file")).assign(__file=["s01", "s02"]),
+                            halogen=None).set_index("neutral_formula")
+        assert not bool(facts.loc[nf, "f_ladder_lift"])
