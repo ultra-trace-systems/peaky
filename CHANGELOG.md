@@ -49,15 +49,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   docs/SAMPLING.md §3c). The presence cover counts an episode's bins once, so a plume over a few spectra was
   assigned from whichever single spectrum the cover took (often its flank) and a plume whose bins another file
   covered got none. Right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples whose
-  maximum is >= 5x its baseline and >= 3x that sample's noise edge is episodic; bins whose runs in time overlap
+  maximum is >= 5x its baseline (the median over every sample of its height, the sample's noise edge where it
+  is absent: on a batch of more than 38 samples, the batch's edge level) and >= 3x that sample's noise edge is
+  episodic; bins whose runs in time overlap
   (one gap allowed) form an episode, and each episode gets its peak sample and up to 2 neighbours holding >= 50 %
   of its bins at >= 3x edge, from a separate budget sized by the batch -- clamp(floor(0.15 x the cover's files),
-  1, 8), so a batch's wall clock grows by about 15 % at most (peak samples first, by
+  1, 8): about 15 % more files on average, at least one (peak samples first, by
   descending brightness; a wanted file left out is flagged as `k_max` is) outside the cover's `k_max` /
   `min_gain`. The files are assigned with the cover's (`selected_samples.csv` role `episode`); the record is
-  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]`, and every per-file ledger of a batch
-  with an episode file carries `episode` (True on an episode file's rows on an episodic bin) for the merge-side
-  readers. On by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the
+  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]`, the stage's files are counted apart
+  in `batch_summary.json["n_files_by_stage"]["episode"]`, and every per-file ledger of a batch with an episode
+  file carries `episode` (True on an episode file's rows on an episodic bin; per-file only, nothing reads it yet). On by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the
   previous selection and merged ledger byte for byte. `--k-episode-max N` sets an absolute budget instead.
 
 - **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's

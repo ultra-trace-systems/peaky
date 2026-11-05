@@ -932,7 +932,10 @@ def cover(ctx, pdf):
     _res_k = int((bsel.get("residual") or {}).get("k") or 0)
     _by_stage = (ctx.get("batch") or {}).get("n_files_by_stage") or {}
     _n_res = int(_by_stage.get("residual", _res_k)) if _res_k else 0
-    files_txt = f"{nf} files ({nf - _n_res} cover + {_n_res} residual)" if _n_res else f"{nf} files"
+    _n_ep = int(_by_stage.get("episode") or 0)
+    _parts = [f"{nf - _n_res - _n_ep} cover"] + ([f"{_n_ep} episode"] if _n_ep else []) \
+        + ([f"{_n_res} residual"] if _n_res else [])
+    files_txt = f"{nf} files ({' + '.join(_parts)})" if len(_parts) > 1 else f"{nf} files"
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
     elif bsel.get("method") == "presence-cover":

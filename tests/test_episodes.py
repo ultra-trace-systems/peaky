@@ -89,13 +89,16 @@ def test_the_episode_is_the_plume(fx):
 T0 = pd.Timestamp("2031-01-01", tz="UTC")
 
 
-def _table(n, lines, *, noise=20, edge=100.0):
+def _table(n, lines, *, noise=20, edge=100.0, flat=False, edges=None):
     """n spectra of `noise` unique noise picks at `edge`..2x`edge` cps (the noise edge is
-    then ~`edge`), plus `lines` = [(mz, {spectrum index: height})]."""
+    then ~`edge`; `flat`: every pick at `edge`, so the edge is exactly `edge`; `edges` =
+    {spectrum index: its own flat edge}), plus `lines` = [(mz, {spectrum index: height})]."""
     rows = []
     for i in range(n):
+        e = (edges or {}).get(i, edge)
         for k in range(noise):
-            rows.append((f"s{i:03d}", 50.0 + 11.0 * k + 0.013 * i, edge * (1 + k / noise)))
+            rows.append((f"s{i:03d}", 50.0 + 11.0 * k + 0.013 * i,
+                         e if (flat or (edges and i in edges)) else e * (1 + k / noise)))
     for mz, hs in lines:
         for i, h in hs.items():
             rows.append((f"s{i:03d}", mz, float(h)))
@@ -125,6 +128,41 @@ def test_presence_bound_grows_with_one_percent_of_the_samples():  # EPISODE_MAX_
     assert mzs == [320.0] and u.attrs["episode_meta"]["n_max"] == 21
 
 
+def test_the_one_percent_bound_rounds_down():                    # floor(EPISODE_MAX_FRAC x samples)
+    # 2180 samples: 1 % = 21.8 -> 21 (a ceil, or 1.01 %, would give 22)
+    lines = [(320.0, {i: 5e3 for i in range(5, 26)}),            # 21: in
+             (330.0, {i: 5e3 for i in range(5, 27)})]            # 22: out
+    mzs, u = _episodic_mz(_table(2180, lines, noise=3))
+    assert mzs == [320.0] and u.attrs["episode_meta"]["n_max"] == 21
+
+
+def test_the_lift_and_edge_bounds_are_inclusive():               # >= EPISODE_MIN_LIFT, >= EPISODE_MIN_X_EDGE
+    # every pick at 100 cps: the edge and the baseline are exactly 100; the line at exactly 5x
+    mzs, u = _episodic_mz(_table(40, [(300.0, {7: 500.0, 8: 500.0, 9: 500.0})], flat=True))
+    assert mzs == [300.0] and float(u["lift"].iloc[0]) == 5.0
+    # the peak sample's own edge is 200 (the others 100): the peak at exactly 3x it, lift 6
+    t = _table(40, [(300.0, {7: 300.0, 8: 600.0, 9: 300.0})], flat=True, edges={8: 200.0})
+    mzs, u = _episodic_mz(t)
+    assert mzs == [300.0] and float(u["max_x_edge"].iloc[0]) == 3.0 and float(u["lift"].iloc[0]) == 6.0
+
+
+def test_a_tie_at_the_maximum_goes_to_the_earliest_sample():
+    _, u = _episodic_mz(_table(40, [(300.0, {10: 5e3, 11: 4e3, 12: 5e3})]))
+    assert list(u["peak_sample"]) == ["s010"]
+
+
+def test_samples_are_ordered_by_time_not_by_id():                # sample_table's time order
+    # ids that do not sort in time order: time position i carries id s{7i mod 40}
+    t = _table(40, [(300.0, {10: 2e3, 11: 5e3, 12: 4e3, 13: 2e3})])
+    pid = {f"s{i:03d}": f"s{(7 * i) % 40:03d}" for i in range(40)}
+    t["sample_item_id"] = t["sample_item_id"].map(pid)
+    _, u = _episodic_mz(t)
+    (e,) = u.attrs["episodes"]
+    at = {i: pid[f"s{i:03d}"] for i in (10, 11, 12, 13)}
+    assert (e["start"], e["end"], e["peak_sample"], e["n_spectra"]) == (at[10], at[13], at[11], 4)
+    assert e["wanted"] == [at[11], at[12], at[10]]
+
+
 def test_lift_over_the_baseline():                               # EPISODE_MIN_LIFT, the baseline
     # present in 19 of 30 samples: the baseline is the median of its own heights there
     flat = {i: 1e3 for i in range(19)}
@@ -148,6 +186,14 @@ def test_the_peak_against_its_own_samples_edge():                # EPISODE_MIN_X
     t.loc[(t["sample_item_id"] == "s008") & (t["mz"] == 300.0), "height"] = 3.1e3
     mzs, _ = _episodic_mz(t)
     assert mzs == [300.0]
+
+
+def test_a_run_inside_a_longer_one_does_not_cut_the_episode():
+    a = (300.0, {i: 5e3 for i in range(10, 21)})                 # run 10-20
+    b = (310.0, {12: 5e3, 13: 5e3, 14: 5e3})                    # inside a's run
+    c = (320.0, {22: 5e3, 23: 5e3, 24: 5e3})                    # touches a's end (one gap)
+    _, u = _episodic_mz(_table(40, [a, b, c]))
+    assert [(e["start"], e["end"], e["n_bins"]) for e in u.attrs["episodes"]] == [("s010", "s024", 3)]
 
 
 def test_runs_allow_one_gap_and_episodes_join_by_overlap():      # EPISODE_GAP
@@ -254,6 +300,17 @@ def test_a_file_the_cover_took_is_free(fx):
 
 
 # --------------------------------------------------------------------------- the row flag
+def test_the_flag_is_only_on_episodic_bins():
+    """A line present in 10 spectra at 1.5x edge (in the presence range, lift < 5) beside an
+    episodic one in the same file: only the episodic line's row is flagged."""
+    t = _table(40, [(300.0, {9: 2e3, 10: 5e3, 11: 2e3}), (310.0, {i: 150.0 for i in range(5, 15)})])
+    u = SS.episode_universe(t)
+    assert u.attrs["episode_meta"]["n_bins_in_range"] == 2 and len(u) == 1
+    led = t[t["sample_item_id"] == "s010"][["peak_id", "mz", "height"]].reset_index(drop=True)
+    f = SS.episode_row_flags(led, "s010", u, ["s010"])
+    assert list(led.loc[f, "mz"]) == [300.0]
+
+
 def test_row_flags_by_peak_id_then_by_mz_for_a_row_without_one(fx):
     t, _ = fx
     u = SS.episode_universe(t)
@@ -262,6 +319,9 @@ def test_row_flags_by_peak_id_then_by_mz_for_a_row_without_one(fx):
     syn = pd.DataFrame([{"peak_id": None, "mz": float(pk.loc[pk["key"] == "E1", "mz"].iloc[0]) + 1e-4,
                          "height": 1.0, "key": "syn"},
                         {"peak_id": None, "mz": 250.0, "height": 1.0, "key": "syn2"},
+                        # a row without an id 10 ppm off an episodic bin: outside the tolerance (6 ppm)
+                        {"peak_id": None, "mz": float(pk.loc[pk["key"] == "E1", "mz"].iloc[0]) * (1 + 10e-6),
+                         "height": 1.0, "key": "syn10ppm"},
                         # a row WITH a peak id the series does not list on an episodic bin: by id, not m/z
                         {"peak_id": "other-1", "mz": float(pk.loc[pk["key"] == "S1", "mz"].iloc[0]) + 1e-4,
                          "height": 1.0, "key": "idrow"}])
@@ -294,6 +354,7 @@ def test_the_default_budget_of_a_seven_file_cover_is_one_file(tmp_path, monkeypa
     assert e["budget"] == {"k_max": 1, "source": "proportional", "n_files": 7, "frac": 0.15, "min": 1, "cap": 8}
     assert e["k_max"] == 1 and e["sample_ids"] == ["ep21"] and e["stop_reason"] == SS.STOP_KMAX
     assert e["episodes"][0]["over_budget"] == ["ep22"]
+    assert summ["n_files_by_stage"] == {"cover": 7, "episode": 1, "residual": 0}
     sel = pd.read_csv(tmp_path / "tables" / "selected_samples.csv")
     assert list(sel.loc[sel["role"] == SS.ROLE_EPISODE, "sample_item_id"]) == ["ep21"]
     text = " ".join(s for _k, s in PR._selection_lines({"n_files": 8, "batch": summ}))
@@ -315,7 +376,8 @@ def test_the_batch_assigns_the_episode_files_and_writes_the_record(plume_run):
     assert e["k"] == 2 and e["stop_reason"] == SS.STOP_EXHAUSTED and e["sample_ids"] == ["ep21", "ep22"]
     assert e["budget"]["source"] == "override" and e["k_max"] == 8
     assert e["episodes"][0]["picked"] == ["ep21", "ep22"] and "bins" not in e["episodes"][0]
-    assert summ["n_files_by_stage"]["cover"] == 9
+    # the stage's yield is counted apart from the cover's (summary only; its ions read stage = cover)
+    assert summ["n_files_by_stage"] == {"cover": 7, "episode": 2, "residual": 0}
 
 
 def test_the_batch_flags_the_plume_rows(plume_run):
@@ -371,6 +433,7 @@ def test_golden_selection_and_merged_ledger_byte_identical(variant, tmp_path, mo
         e = summ["selection"]["episodes"]
         assert e["n_episodes"] == 0 and e["k"] == 0 and e["stop_reason"] == SS.STOP_EMPTY
         assert len(pd.read_csv(tmp_path / "tables" / "episodes.csv")) == 0
+        assert summ["n_files_by_stage"] == {"cover": 6, "residual": 0}    # no episode key without a file
     else:
         assert "episodes" not in summ["selection"]
         assert not (tmp_path / "tables" / "episodes.csv").exists()

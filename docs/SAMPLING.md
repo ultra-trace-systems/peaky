@@ -242,9 +242,17 @@ and the residual stage's noise edge (`EDGE_Q` of each sample's heights):
    `EPISODE_MIN_N` (3) ≤ n ≤ max(`EPISODE_MAX_N` (19), ⌊`EPISODE_MAX_FRAC` (1 %)
    × samples⌋) samples; its maximum height ≥ `EPISODE_MIN_LIFT` (5) × its
    **baseline** -- the median over *every* sample of the bin's height there or,
-   where it is absent, that sample's noise edge (the median of the heights where
-   present when the bin is in most samples, the batch's edge level when it is
-   absent elsewhere); and that maximum ≥ `EPISODE_MIN_X_EDGE` (3) × the edge of
+   where it is absent, that sample's noise edge. An episodic bin is in at most
+   max(19, 1 %) samples, so in any batch of more than 38 samples this median is
+   the edge level: the lift is the maximum over the batch's typical edge, and
+   the bin's own heights where present set the baseline only in a small batch.
+   This one rule replaces the episode spec's two branches ("the median of the
+   bin where present, or the batch's bin baseline when absent elsewhere"),
+   which read literally give fewer episodes: on 36 field batches 235 episodic
+   bins in 66 episodes against this rule's 736 in 140, and at the default
+   budget 20 of 229 bright episode lines of a reviewed truth set in no
+   selected file against this rule's 18 (a plume that recurs at a similar
+   height counts as an episode here, not there); and that maximum ≥ `EPISODE_MIN_X_EDGE` (3) × the edge of
    the sample holding it (ties: the earliest sample).
 2. **Episode**: by time overlap. A bin's **run** is the stretch of time-ordered
    samples (`sample_table` order) around its maximum in which it is present, one
@@ -258,10 +266,14 @@ and the residual stage's noise edge (`EDGE_Q` of each sample's heights):
    edge, nearest the peak first (then more such bins, then brighter). A wanted
    file the cover already took is free; new files come from a budget sized by
    the batch (`episode_budget`): clamp(⌊`K_EPISODE_FRAC` (0.15) × the cover's
-   files⌋, `K_EPISODE_MIN` (1), `K_EPISODE_MAX` (8)). An extra file costs what a
-   cover file costs, so the batch's wall clock grows by about 15 % at most (an
-   offline replay of 36 field batches: 35 extra files, +3.6 % overall, no batch
-   above +8.3 %);
+   files⌋, `K_EPISODE_MIN` (1), `K_EPISODE_MAX` (8)). It is a share of the
+   files, not of the time: about 15 % more files on average, at least one, so
+   more than 15 % on a cover of ≤ 6 files. On the 2-worker pool one extra file
+   adds between nothing and one per-file time to the batch's wall clock,
+   depending on how the cover's last two files end (an offline replay of 36
+   field batches, extra files × half the median per-file time: 35 extra files,
+   +3.6 % overall, no batch above +8.3 %; a model of the pool's finish puts
+   single zero-air batches up to +19 %);
    `--k-episode-max N` (`k_episode_max=`) sets an absolute number instead, for a
    campaign that wants every episode served. The new files are served by
    descending `max_x_edge`, **every
@@ -279,9 +291,15 @@ and the residual stage's noise edge (`EDGE_Q` of each sample's heights):
    tolerance for a row without one -- carry `episode = True`; all other rows of
    the batch's per-file ledgers `False`. The column is written only when the
    batch has such a file, so a batch without an episode writes the ledgers it
-   always wrote. It is the hook the merge-side readers key on (the unidentified-
-   lines table counts a flagged row as bright; the episode evidence of the merge
-   reads it); this stage reads nothing back.
+   always wrote. On this release the flag is **per-file only**: nothing reads it
+   yet, the merged ledger does not carry it (`_M0_COLS` is a fixed list), and
+   carrying it to the merged reading is left to the merge's episode evidence,
+   which is not built yet.
+
+The stage's yield is counted apart in `batch_summary.json['n_files_by_stage']`
+(`{cover, episode, residual}`; the `episode` key only when the stage added a
+file). Its files go through the cover's per-file path, so the merged rows they
+bring read `stage` = cover in `merged_by_stage`.
 
 Outputs: `tables/episodes.csv` (one row per episode: `episode`, `start`, `end`,
 `start_time`, `end_time`, `n_spectra`, `peak_sample`, `n_bins`, `max_x_edge`,

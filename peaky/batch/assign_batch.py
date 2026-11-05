@@ -2416,8 +2416,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     right after the cover (sampling.py, THE EPISODE STAGE): the batch's short
     bright episodes get their peak file and up to two neighbours, at most
     `sampling.episode_budget` files beyond the cover's -- clamp(floor(0.15 x
-    the cover's files), 1, 8), so the batch's wall clock grows by about 15 % at
-    most; `k_episode_max` = an absolute number instead -- assigned with the cover's files
+    the cover's files), 1, 8): about 15 % more files on average, at least one;
+    `k_episode_max` = an absolute number instead -- assigned with the cover's files
     (tables/selected_samples.csv role 'episode'); the record is
     batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
     of an episode's files on an episodic bin carry `episode = True` in the
@@ -2559,6 +2559,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     sel = None                 # our own cover table (None on the sample_ids= path)
     episode_univ = None        # the episode stage's universe (sampling.episode_universe), when it ran
     episode_flag_files: list = []   # the files whose episodic rows carry `episode = True`
+    n_episode_files = None     # files the episode stage added (None: the stage did not run)
     trace_sample = None
     # The peak-width model, resolved ONCE for the batch (chem.resolution) and
     # handed to every per-file run: it sizes trace-first's dedup cell and, on
@@ -2681,6 +2682,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             emeta["episodes"] = [{k: v for k, v in e.items() if k not in ("bins", "n_bright")}
                                  for e in emeta.get("episodes") or []]
             selection["episodes"] = emeta
+            n_episode_files = int(len(esel))
             if len(esel):
                 esel = esel.copy()
                 esel.attrs = {}
@@ -3983,10 +3985,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "elapsed_s": round(time.time() - t_start, 1),
         "n_jobs": n_jobs,
     }
+    n_ep = int(n_episode_files or 0)
+    if residual or n_ep:
+        # files per stage, and the ions each stage brought in (`stage` column). The
+        # episode stage's files are assigned with the cover's (their ions read `stage`
+        # = cover) but counted apart here, so its yield is readable; the key is there
+        # only when the stage added a file (a batch without one keeps its summary)
+        summary["n_files_by_stage"] = {STAGE_COVER: int(n_cover - n_ep),
+                                       **({SS.ROLE_EPISODE: n_ep} if n_ep else {}),
+                                       **({STAGE_RESIDUAL: int(len(sample_ids) - n_cover)} if residual else {})}
     if residual:
-        # files per stage, and the ions each stage brought in (`stage` column)
-        summary["n_files_by_stage"] = {STAGE_COVER: int(n_cover),
-                                       STAGE_RESIDUAL: int(len(sample_ids) - n_cover)}
         summary["merged_by_stage"] = (merged["stage"].value_counts().to_dict()
                                       if len(merged) and "stage" in merged.columns else {})
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:

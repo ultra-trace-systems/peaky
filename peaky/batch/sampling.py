@@ -79,9 +79,15 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
     (19), `EPISODE_MAX_FRAC` (1 %) of the samples) samples, with a LIFT >=
     `EPISODE_MIN_LIFT` (5) -- its maximum over the bin's baseline, the median
     over EVERY sample of the bin's height there or, where it is absent, that
-    sample's noise edge (so the median of the heights where present when the bin
-    is in most samples, the batch's edge level when it is absent elsewhere) --
-    and a peak height >= `EPISODE_MIN_X_EDGE` (3) x that sample's noise edge
+    sample's noise edge. An episodic bin is in at most max(19, 1 %) samples, so
+    in a batch of more than 38 samples this median is the batch's edge level and
+    the lift is the maximum over the typical edge (the bin's own heights where
+    present never set it there; they do only in a small batch). This one rule
+    stands for the two of the episode spec ("the median where present, or the
+    batch baseline where absent elsewhere"): read literally, that gives 235
+    episodic bins in 66 episodes on 36 field batches against this rule's 736 in
+    140 (a plume recurring at a similar height counts here, not there) -- and
+    a peak height >= `EPISODE_MIN_X_EDGE` (3) x that sample's noise edge
     (`EDGE_Q`, as the residual stage reads it).
   * EPISODE: time overlap. Each episodic bin's RUN is the stretch of
     time-ordered samples around its peak sample in which it is present, one
@@ -94,8 +100,11 @@ cover, on the same bins (`timeseries.bin_ids` at the batch tolerance):
     (50 %) of its bins still stand at >= 3x edge, nearest the peak first -- under
     a budget sized by the batch (`episode_budget`): clamp(floor(`K_EPISODE_FRAC`
     (0.15) x the cover's files), `K_EPISODE_MIN` (1), `K_EPISODE_MAX` (8)) new
-    files, so one batch's wall clock grows by about 15 % at most (an extra file
-    costs what a cover file costs); an absolute `k_episode_max` overrides it. The
+    files -- a file-count share: about 15 % more files on average, at least
+    one, so more than 15 % on a cover of <= 6 files. On the 2-worker pool one
+    extra file adds between nothing and one per-file time to the batch's wall
+    clock, depending on how the cover's last two files end. An absolute
+    `k_episode_max` overrides it. The
     cover's files are free. The
     episodes are served by descending max_x_edge, every peak sample before any
     neighbour (so the budget reaches as many episodes as it can before it buys a

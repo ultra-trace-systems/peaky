@@ -2026,8 +2026,9 @@ def _add_episode_args(sp) -> None:
                     help="budget of the episode stage as an absolute number of files beyond the "
                          "cover's. Default: sized by the batch, clamp(floor("
                          f"{SS.K_EPISODE_FRAC:g} x the cover's files), {SS.K_EPISODE_MIN}, "
-                         f"{SS.K_EPISODE_MAX}) -- about {SS.K_EPISODE_FRAC * 100:g}%% more files, so the "
-                         "batch's wall clock grows by about that share. A stage that leaves a wanted "
+                         f"{SS.K_EPISODE_MAX}) -- about {SS.K_EPISODE_FRAC * 100:g}%% more files on average, "
+                         "at least one (on 2 workers one extra file adds 0 to one per-file time to the "
+                         "batch's wall clock). A stage that leaves a wanted "
                          "file out is flagged in batch_summary.json['selection']['episodes']")
 
 
