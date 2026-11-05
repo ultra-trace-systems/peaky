@@ -91,6 +91,7 @@ peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|B
 peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
 peaky batch ... --tof-flag-mz 350                     # TOF: the m/z where the mass-only flag says "saturated"
 peaky batch ... --trace-first --resolving-power 6500  # EXPERIMENTAL: one synthetic sample of centred traces
+peaky batch ... --tier-calibration cal.json           # small window no file / batch pool calibrates: lend a json (`peaky calibration pool <run dirs> --out cal.json`; `peaky relevel <run> --tier-calibration cal.json --out <dir>` offline, levels only: no tier stage)
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \

@@ -144,6 +144,62 @@ selected sample_ids (SAMPLING.md)
    decided once, from the ledgers of the first stage that returns an
    uncalibrated file (and the stages before it).
 
+   **1b. The calibration file** (`--tier-calibration CAL.JSON`,
+   `assignment/calfile.py`). Only when the batch's pool lends nothing (it fell
+   short, or the batch is TOF-class), a file still uncalibrated is lent the
+   window of a calibration json -- a core pooled over finished runs by `peaky
+   calibration pool` -- exactly as step 1a lends the pool's (`calpool.apply_pool`
+   about the file's own centre; the json's width is the run sigma of its runs'
+   files that calibrated alone, else its pooled sigma). A file that calibrates
+   alone, and every file of a batch whose pool calibrates, is untouched: its
+   tables are byte-identical to a run without the flag. The batch reads the json
+   once (`calfile.choose`) against its own reagent profile, polarity, instrument
+   class, scan range and days (read off the batch series: the median lowest peak
+   m/z, the highest peak m/z, the UTC dates): `campaign` when reagent, polarity
+   and scan range match; `lent` when the reagent and polarity match and the scan
+   range does not, or -- only with `--tier-calibration-lent` -- when the reagent
+   differs on the same polarity and instrument class over overlapping days (within
+   one day). A lent window then passes a mass-accuracy transfer check
+   (`calfile.transfer`): the batch's own unfloored core scatter (the campaign-rule
+   core rows of its uncalibrated files about each file's own centre, >= 40 rows of
+   >= 8 distinct ions in >= 2 files, `calfile.receiving_scatter`) must be at most
+   1.5x the lending files' median unfloored scatter (`width.per_file_raw_sigma`,
+   stored in the json; the floored per-file sigmas sit on the 0.15-ppm floor and
+   cannot tell modes apart). A more precise receiver passes. The receiving side
+   excludes what the lender side excludes (reagent identity and library lines, the
+   alias-series hold, a 13C-shadow line of the run's label-twin table -- offline
+   only: a batch decides its lending before its label-twin table exists). The check
+   asks whether the lender's mass accuracy transfers to this batch; it is no
+   control of over-grading, which does not move with the window's width. A
+   campaign json -- one method's, the batch's own mode -- is not checked; a json
+   pooled over mixed scan ranges (`scan_mixed`, `--allow-mixed`) is never read as
+   `campaign`, only as `lent`, and is checked. A campaign or lent window's
+   mass-error (z-tail) test floors its sigma at 0.03 mDa (`masscal.sigma_at`), as a
+   fitted trend's is: the file ran no mass-error test of its own; the z-tail reason
+   quotes the floored sigma where the floor bound. A polarity, class, reagent or transfer check that refuses leaves the
+   files `none`; the log says why as a WARNING and `levels_calibration.file.reason`
+   records it, and when the batch levelled nothing `levels_not_assessed_reason`
+   adds it too. `peaky calibration pool` refuses runs whose scan ranges differ
+   unless `--allow-mixed` (the json then records their union, `scan_mixed`). The files' stats read
+   `tier_calibration: campaign | lent` and their lent window as `degeneracy_cal`;
+   `batch_summary['levels_calibration']` records the batch's weakest file source
+   in one word (`per_file` / `pooled` / `campaign` / `lent` / `none`), the files
+   per source and the json (sha256, path, its source runs and width, how it was
+   read and why not, the files lent to); `run_manifest.json` records the json's
+   sha256 under `input.tier_calibration` and its descriptor in the fingerprinted
+   `config`. `peaky relevel <run dir> --tier-calibration CAL.JSON --out DIR` makes
+   the same choice offline on a finished run and re-levels it (levels only: a
+   finished run keeps no tier-time ledger, so nothing is re-tiered -- no z-tail,
+   no degeneracy cap and no isotope-contradiction guard, which a batch runs on a
+   lent file in `calpool.apply_pool`; the tiers of a re-levelled dir are the source
+   run's, never a batch's with that json). The new dir's
+   `run_manifest.json` is the run's own with the json's sha256 under
+   `input.tier_calibration`, the counts read off the merged ledger (`merged_M0`,
+   `merged_tiers`, `merged_claims`) re-counted, `output.merged_ledger_sha1` refreshed (the merged
+   ledger's level columns are re-stamped, every other byte is the run's) and a
+   `relevel` record (the source dir, the sha1 of its manifest and merged ledger,
+   whether the ledger changed, the json's sha256, the re-levelling code).
+
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the
    reported masses stay raw.

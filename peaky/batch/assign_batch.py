@@ -1243,14 +1243,31 @@ def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
 def _tier_cal_source(per_stats: list) -> str | None:
     """The batch's tier calibration in one word (batch_summary
     `tier_calibration.source`): the weakest of its files' `tier_calibration` --
-    'none' when any file stayed uncalibrated, else 'pooled' when any file was lent
-    the batch's pooled core (assignment/calpool.py), else 'per_file'; None when no
-    file records one (a run made before the key existed)."""
+    'none' when any file stayed uncalibrated, else 'lent' / 'campaign' when any
+    file was lent a calibration file's window (assignment/calfile.py), else
+    'pooled' when any file was lent the batch's pooled core
+    (assignment/calpool.py), else 'per_file'; None when no file records one (a
+    run made before the key existed)."""
     seen = {x.get("tier_calibration") for x in per_stats} - {None}
-    for word in ("none", "pooled", "per_file"):
+    for word in ("none", "lent", "campaign", "pooled", "per_file"):
         if word in seen:
             return word
     return None
+
+
+def _levels_calibration(per_stats: list, record, file_state: dict, cfg) -> dict:
+    """batch_summary `levels_calibration` (calfile.levels_record) plus the files
+    the calibration file was lent to and the batch facts it was matched on."""
+    from peaky.assignment import calfile as _CF
+    out = _CF.levels_record(per_stats, record or None, used_as=file_state.get("as"),
+                            reason=file_state.get("reason"),
+                            lent_flag=bool(getattr(cfg, "tier_calibration_lent", False)))
+    if out["file"] is not None:
+        out["file"]["decided"] = bool(file_state.get("decided"))
+        out["file"]["batch_facts"] = file_state.get("facts")
+        out["file"]["lent_files"] = dict(file_state.get("files") or {})
+        out["file"]["transfer"] = file_state.get("transfer")
+    return out
 
 
 def _physical_cores() -> int:
@@ -2821,13 +2838,55 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     pool_ledgers: dict = {}        # sid -> the per-file stages' ledgers, as their runs returned them
     pool_cals: dict = {}           # sid -> (mu, sigma) of each file that calibrated alone
     pool_state: dict = {"pool": None, "files": {}}   # the Pool; sid -> what apply_pool did
+    # the calibration file (--tier-calibration, assignment/calfile.py): read only for
+    # a file neither its own core nor the batch's pool calibrates; decided once
+    # (`_file_pool`): the Pool it lends as campaign / lent, or why it lends nothing
+    file_state: dict = {"decided": False, "pool": None, "as": None, "reason": None, "files": {}}
+    _cal_record = getattr(cfg, "tier_calibration", None)
+
+    def _file_pool(need_ledgers: dict):
+        """The calibration file's Pool (source campaign / lent) or None, decided
+        once against the batch's reagent, polarity, instrument class, scan range
+        and days (calfile.choose; lending across reagents only with
+        `tier_calibration_lent`; a lent window only when the mass-accuracy transfer
+        check passes on `need_ledgers`, the uncalibrated files' own core scatter,
+        calfile.receiving_scatter); the reason it lends nothing is logged once."""
+        if file_state["decided"]:
+            return file_state["pool"]
+        file_state["decided"] = True
+        if not _cal_record:
+            return None
+        from peaky.assignment import calfile as _CF
+        from peaky.assignment import tiers as _TP
+        facts = _CF.series_facts(ts_peaks if ts_peaks is not None else peaks)
+        recv = _CF.receiving_scatter(need_ledgers, reagent=prof.name,
+                                     polarity="positive" if prof.polarity == "+" else "negative",
+                                     carry=axis_info.get("edge_carry"))
+        det: dict = {}
+        src_, why_ = _CF.choose(_cal_record, reagent=prof.name, polarity=prof.polarity,
+                                instrument_class=cfg.instrument_class, scan_range=facts["scan_range"],
+                                days=facts["days"], lent_ok=bool(getattr(cfg, "tier_calibration_lent", False)),
+                                recv=recv, detail=det)
+        file_state.update(**{"as": src_, "reason": why_, "facts": facts, "transfer": det or None})
+        if src_ is None:
+            log(f"[calpool] WARNING: the calibration file is not lent: {why_}")
+            return None
+        file_state["pool"] = _CF.as_pool(_cal_record, src_, abs_floor_mda=_TP._abs_floor(cfg))
+        w_ = _cal_record["width"]
+        log(f"[calpool] the calibration file {str(_cal_record.get('_sha256'))[:12]} is read as {src_}: "
+            f"{float(w_['mu']):+.3f} ± {float(w_['sigma']):.3f} ppm (basis {w_.get('basis')}; reagent "
+            f"{_cal_record.get('reagent')}, scan range {_cal_record.get('scan_range')}; the batch "
+            f"{prof.name}, {facts['scan_range']})")
+        return file_state["pool"]
 
     def _keep_pool_inputs() -> bool:
         """Whether a per-file run keeps what the pooled calibration re-applies
         (assign.run keep_pool_inputs: an uncalibrated file's tier-time ledger
-        copy): until the batch's pool is decided, and after only when it has a
-        calibration to lend."""
-        return pool_state["pool"] is None or pool_state["pool"].cal is not None
+        copy): until the batch's pool is decided, and after only when it, or the
+        calibration file, has a calibration to lend."""
+        if pool_state["pool"] is None or pool_state["pool"].cal is not None:
+            return True
+        return bool(_cal_record) and (not file_state["decided"] or file_state["pool"] is not None)
 
     def _vote_class(led, stats):
         """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
@@ -2958,7 +3017,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 f"pool is not used: {pool_state['pool'].reason}")
         pool = pool_state["pool"]
         if pool.cal is None:
-            return
+            # neither the files' own cores nor the batch's pool: the calibration
+            # file, when one was given and the batch reads it (calfile.choose)
+            pool = _file_pool({r["sid"]: r["ledger"] for r in need})
+            if pool is None:
+                return
         for r in need:
             res_p = (_CP.apply_pool(r["ledger"], pool, r["pool_inputs"], audit=r["plaus"],
                                     log=lambda m, _s=r["sid"]: log(m.replace("[calpool]  ", f"[calpool]   {_s}:", 1)))
@@ -2969,7 +3032,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             st_ = r["stats"]
             # the window the file was lent: the lent width about its own centre
             st_["degeneracy_cal"] = {"mu": res_p["cal"]["mu"], "sigma": res_p["cal"]["sigma"]}
-            st_["tier_calibration"] = _TP.CAL_SOURCE_POOLED
+            st_["tier_calibration"] = pool.source
             st_["tier_pool"] = {"centre": res_p["cal"]["centre"], "width": res_p["cal"]["width"],
                                 "retiered": res_p["tiers"]["retiered"], "demoted": res_p["tiers"]["demoted"],
                                 "kept": res_p["tiers"]["kept"], "below": res_p["below"],
@@ -2980,9 +3043,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # the skeleton cap as the pooled tier stage left it (taken where the
                 # run takes it: before later stages rewrote rows)
                 st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
-            pool_state["files"][r["sid"]] = st_["tier_pool"]
+            (pool_state if pool is pool_state["pool"] else file_state)["files"][r["sid"]] = st_["tier_pool"]
             if res_p.get("isotope_guard") is not None:
-                # the per-file isotope guard ran on the pooled re-level (calpool.apply_pool step 5)
+                # the per-file isotope guard ran on the pooled / lent re-level (calpool.apply_pool step 5)
                 st_["isotope_guard"] = res_p["isotope_guard"]
 
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
@@ -3693,6 +3756,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # ... and the batch-pooled core (calpool) could not stand in: say why
         levels_na_reason += (" A core pooled over the batch's files was tried and not used: "
                              f"{pool_state['pool'].reason}.")
+    if levels_na_reason and file_state["reason"]:
+        # ... nor the calibration file (--tier-calibration): say why
+        levels_na_reason += f" A calibration file was given and not used: {file_state['reason']}."
     if levels_na_reason:
         log(f"[assign_batch] WARNING: {levels_na_reason}")
     # the claim each level supports, tallied beside the tier (never read off it)
@@ -3952,9 +4018,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "tier_calibration": {
             "source": _tier_cal_source(per_stats),
             "files": {k: sum(1 for x in per_stats if x.get("tier_calibration") == k)
-                      for k in ("per_file", "pooled", "none")},
+                      for k in ("per_file", "pooled", "none")
+                      + (("campaign", "lent") if _cal_record else ())},
             "pool": (dict(pool_state["pool"].record(), retiered_files=dict(pool_state["files"]))
                      if pool_state["pool"] is not None else None)},
+        # where the evidence levels' windows came from (assignment/calfile.py): the
+        # batch's weakest file source in one word (per_file / pooled / campaign /
+        # lent / none), the files per source, and the calibration file given with
+        # --tier-calibration (sha256, source runs, width; how the batch read it and
+        # why not; the files it was lent to), null when none was given
+        "levels_calibration": _levels_calibration(per_stats, _cal_record, file_state, cfg),
         # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels

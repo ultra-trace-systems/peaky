@@ -32,8 +32,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same rule on the merged ledger, on the pooled facts) makes an Assigned reading Candidate, noted
   `isotope contradiction: <fact>`, where the evidence levels' own isotope facts contradict it: its 13C carbon
   count outside the levels' band, an absent own 34S / 37Cl line predicted at S/N >= 10, or a 34S / 37Cl line it
-  cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file the
-  batch's pooled calibration re-levels is guarded on that level's facts (`calpool.apply_pool`). A line a merged row
+  cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file
+  re-levelled on the batch's pooled calibration or on a calibration file's window (`--tier-calibration`) is
+  guarded on that level's facts (`calpool.apply_pool`; the record's `source` is the file's `tier_calibration`:
+  `pooled` / `campaign` / `lent`). `peaky relevel` runs no tier stage and so no guard. A line a merged row
   of another ion absorbed is a row of its own (`why = absorbed_by_merge`) where some file holds it as a separate pick
   at least 1 HWHM (the batch's width model) from the merged row's own pick.
 
@@ -173,6 +175,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   holding both). On uronium field batches such partners sit at a constant +3.9 mDa, a formula spacing
   (C5 vs N2O2), so whether they are side bands is left open. A row with its own 13C line at its own
   carbon count's share in every such file is neither held nor noted.
+
+- **The tier calibration as a file input: `peaky calibration pool | show | compare`, `--tier-calibration
+  CAL.JSON` on `peaky batch` / `peaky pool`, and `peaky relevel`** (`assignment/calfile.py`, MERGE.md §3
+  step 1b, EVIDENCE_LEVELS §5.1). A small scan window whose files neither calibrate alone nor on the batch's
+  pooled core (a 15N-nitrate 40-600 window, an NO+ 40-160 window) levelled nothing; pooling across batches
+  inside a run would make a batch depend on other batches. Now `peaky calibration pool <run dirs> --out
+  cal.json` pools the per-file ledgers of finished runs of one reagent and polarity (refused across reagents
+  unless `--allow-mixed`) with the batch pool's rules -- distinct ions isotope-backed in >= 2 files, >= 15 of
+  them over >= 0.25 of the committed range -- plus inorganic ions with their own 34S / 37Cl / 81Br line, and
+  never a reagent identity, a reagent-library line, an alias-series-held row or a 13C-shadow line; the json
+  (schema 1) records the reagent, polarity, scan range and days read off the runs' series, the source runs
+  (dir, commit, files), the core and the width (the run sigma of the files that calibrated alone, else the
+  pooled sigma; the lending files' unfloored core scatter); runs of different scan ranges are refused unless
+  `--allow-mixed` (the json then records their union and `scan_mixed`, and a batch reads it as `lent` at
+  most, never as its own `campaign`). `--tier-calibration` lends it ONLY to a file neither calibration
+  reached, as `campaign` (reagent, polarity and scan range match) or `lent` (another scan range; another
+  reagent of the same polarity and class over the same days only with `--tier-calibration-lent`). A lent
+  window passes a mass-accuracy transfer check -- the batch's own unfloored core scatter (>= 40 rows of >= 8
+  distinct ions in >= 2 files, about each file's centre) at most 1.5x the lending files' median -- or the
+  file stays `none`, the reason logged (and in `levels_not_assessed_reason` when nothing was levelled). The
+  check asks whether the lender's accuracy transfers; it does not control over-grading, which does not move
+  with the window's width. A campaign or lent window's mass-error test takes the 0.03 mDa absolute floor,
+  and its z-tail reason quotes the floored sigma. Files that calibrate per file or on the batch pool are
+  byte-identical with the flag. New: per-file `tier_calibration` values `campaign` / `lent` (stats, M0 rows,
+  merged rows; the reasons name the "campaign-pooled" / "lent" window), `batch_summary['levels_calibration']`,
+  the json's sha256 in `run_manifest.json` (`input.tier_calibration`; its descriptor in the fingerprinted config;
+  PassConfig `tier_calibration`, `tier_calibration_lent`). `peaky relevel <run dir> --tier-calibration
+  cal.json --out DIR` re-levels a finished run offline with the same choice (levels only: no re-tier, no
+  isotope-contradiction guard; a re-levelled dir's tiers are the source run's).
 
 ### Changed
 
