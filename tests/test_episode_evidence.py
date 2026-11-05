@@ -343,7 +343,8 @@ def test_the_cluster_label_names_the_solvent_and_resolves_in_a_fresh_lookup(addu
     assert label not in C.ADDUCT_SHIFTS or True     # resolved by chemistry.cluster_shift, registered or not
 
 
-def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6, 7, 8, 9), track=True):
+def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6, 7, 8, 9), track=True,
+                    parent_tier="Assigned"):
     """A batch series: a persistent parent, the NMP.urea ion bright in `bright`, the cluster in `cluster_at`."""
     pm = C.ion_mz("C16H22O4", "[M+H]+")
     sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
@@ -362,7 +363,7 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
             rows.append(dict(sample_item_id=sid, mz=km, height=hk))
         rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
     ts = pd.DataFrame(rows)
-    merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier="Assigned", episode=False,
+    merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
                                 alternatives="", tier_reason=""),
                            dict(mz=km, neutral_formula="C21H31NO5", adduct="[M+H]+", tier="Assigned", episode=True,
                                 alternatives="", tier_reason="")])
@@ -376,6 +377,7 @@ def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6
     (dict(cluster_at=(5, 6, 7)), True, "Candidate"),                    # TRACK_MIN_N: 3 spectra
     (dict(track=False), True, "Candidate"),                             # TRACK_R
     (dict(bright=tuple(range(20)), cluster_at=tuple(range(11))), False, None),   # CLUSTER_MAX_FRAC: 11 of 20
+    (dict(parent_tier="Candidate"), False, None),                       # a KNOWN (Assigned) persistent ion only
 ])
 def test_the_cluster_rules(kw, relabelled, tier):
     merged, ts = _cluster_series(**kw)
