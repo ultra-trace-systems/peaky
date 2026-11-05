@@ -3134,8 +3134,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         either; a TOF (3-4 ppm) merges at up to 2x the tolerance."""
         nonlocal scale, rwater
         # the vote-drop recorder (unidentified.DropLog): the merged rows the gates below
-        # remove after the vote; this call's record only (the last call is the run's)
-        drop_log.clear()
+        # remove after the vote -- this call's own record, returned with it (the last call is the run's)
+        drop_log = _UN.DropLog()
         if scale is None:
             seeds = [pd.to_numeric(df["mz"], errors="coerce").to_numpy(dtype=float)
                      * (1.0 - float(offsets.get(sid, 0.0) or 0.0) / 1e6)
@@ -3286,7 +3286,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
                "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
-               "isotopologue": iso_rows, "sideband": sb_rows}
+               "isotopologue": iso_rows, "sideband": sb_rows, "drop_log": drop_log}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -3331,7 +3331,6 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         return {"ts_annot": ts, "predicted_rows": dict(_stamp.attrs.get("predicted_satellites") or {}),
                 "predicted_tracks": _stats.get("predicted_tracks")}
 
-    drop_log = _UN.DropLog()
     res_m = _merge()
 
     # ---- the residual stage (module note) ---------------------------------------
@@ -3475,6 +3474,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # Orbitrap-class) is the batch's own refutation of the element: the reading
     # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
     # a curated formula and a known-species decision stay
+    drop_log = res_m["drop_log"]
     _m_before = merged
     merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(
         merged, iso_table, exempt=curated, klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
