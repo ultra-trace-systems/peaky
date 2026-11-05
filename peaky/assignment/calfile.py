@@ -32,7 +32,8 @@ calibration is an explicit, hashed INPUT instead:
     happens implicitly across reagents. A lent window passes a mass-accuracy
     transfer check (`transfer`): the receiving batch's own unfloored core
     scatter (its campaign-rule core rows about each file's own centre, >=
-    RECV_MIN_ROWS rows in >= RECV_MIN_FILES files) must be at most RECV_X times
+    RECV_MIN_ROWS rows of >= RECV_MIN_IONS distinct ions in >= RECV_MIN_FILES
+    files) must be at most RECV_X times
     the lending files' median unfloored scatter (the json stores it,
     `width.per_file_raw_sigma`); otherwise the file stays ``none`` and the
     reason is logged. The check asks whether the lender's mass accuracy
@@ -83,7 +84,9 @@ SOURCE_CAMPAIGN = T.CAL_SOURCE_CAMPAIGN
 #: core scatter must be at most this factor of the lending files' median unfloored scatter ...
 RECV_X = 1.5
 #: ... measured over at least this many core rows ...
-RECV_MIN_ROWS = 15
+RECV_MIN_ROWS = 40
+#: ... of at least this many distinct ions (rows of one bright ion repeated over files are not independent) ...
+RECV_MIN_IONS = 8
 #: ... in at least this many files
 RECV_MIN_FILES = 2
 #: two scan ranges' low edges match within this many Da ...
@@ -238,9 +241,12 @@ def receiving_scatter(ledgers: dict, *, reagent=None, polarity: str = "negative"
     Assigned M0 rows, each about its file's own centre (the median ppm error of
     those Assigned rows, as `calpool.lent_calibration` centres the lent window),
     on the carried scale; {sigma (the scaled MAD of the deviations about their
-    median), n_rows, n_files}; sigma None without rows."""
+    median), n_rows, n_ions (distinct ions among the rows), n_files}; sigma None
+    without rows. `exclude_mz`: the run's 13C-shadow lines (`_shadow_lines`), as
+    the lender side (`pool_runs`) excludes them; a batch decides its lending
+    before its label-twin table exists, so it has none to pass."""
     masses = _reagent_masses(reagent)
-    devs, nf = [], 0
+    devs, nf, ions = [], 0, set()
     for sid in sorted(ledgers, key=str):
         led = ledgers[sid]
         if led is None or not len(led) or not {"role", "tier", "ppm_error", "mz"} <= set(led.columns):
@@ -257,10 +263,12 @@ def receiving_scatter(ledgers: dict, *, reagent=None, polarity: str = "negative"
         if len(ppm.dropna()) < CP.CENTRE_MIN_ROWS or not len(rp):
             continue
         devs += list(rp - float(ppm.median()))
+        ions |= set(rows["ion"].astype(str))
         nf += 1
     dv = np.asarray(devs, dtype=float)
     sigma = float(1.4826 * np.median(np.abs(dv - np.median(dv)))) if len(dv) else None
-    return {"sigma": None if sigma is None else round(sigma, 4), "n_rows": int(len(dv)), "n_files": int(nf)}
+    return {"sigma": None if sigma is None else round(sigma, 4), "n_rows": int(len(dv)), "n_ions": int(len(ions)),
+            "n_files": int(nf)}
 
 
 def _shadow_lines(run_dir: str) -> list:
@@ -493,7 +501,8 @@ def descriptor(record: dict | None) -> dict | None:
     w = record.get("width") or {}
     return {"sha256": record.get("_sha256"), "path": record.get("_path"), "source": record.get("source"),
             "reagent": record.get("reagent"), "polarity": record.get("polarity"),
-            "scan_range": record.get("scan_range"), "instrument_class": record.get("instrument_class"),
+            "scan_range": record.get("scan_range"), "scan_mixed": bool(record.get("scan_mixed")),
+            "instrument_class": record.get("instrument_class"),
             "days": record.get("days"), "usable": record.get("usable"),
             "runs": [dict(r) for r in record.get("runs") or []],
             "n_ions": (record.get("core") or {}).get("n_ions"),
@@ -589,20 +598,24 @@ def transfer(record: dict, recv: dict | None) -> tuple[str | None, dict]:
     """The mass-accuracy transfer check of a lent window (module note): (why not
     | None, {lender_raw_median, recv_sigma, n_rows, n_files, ratio, max_ratio}).
     The receiving scatter `recv` (`receiving_scatter`) must be measured on >=
-    RECV_MIN_ROWS rows in >= RECV_MIN_FILES files and be at most RECV_X times
+    RECV_MIN_ROWS rows of >= RECV_MIN_IONS distinct ions in >= RECV_MIN_FILES
+    files and be at most RECV_X times
     the lending files' median unfloored scatter (`width.per_file_raw_sigma`).
     A more precise receiver passes (it is lent a conservatively wide window)."""
     w = record.get("width") or {}
     lend = (w.get("per_file_raw_sigma") or {}).get("median")
     recv = recv or {}
     det = {"lender_raw_median": lend, "recv_sigma": recv.get("sigma"), "n_rows": int(recv.get("n_rows") or 0),
-           "n_files": int(recv.get("n_files") or 0), "ratio": None, "max_ratio": RECV_X}
+           "n_ions": int(recv.get("n_ions") or 0), "n_files": int(recv.get("n_files") or 0), "ratio": None,
+           "max_ratio": RECV_X}
     if not lend:
         return ("the calibration json records no unfloored scatter of lending files (no file of its runs "
                 "calibrated alone), so the transfer of its mass accuracy cannot be checked"), det
-    if det["recv_sigma"] is None or det["n_rows"] < RECV_MIN_ROWS or det["n_files"] < RECV_MIN_FILES:
-        return (f"the batch's own core scatter is not measurable ({det['n_rows']} core rows in {det['n_files']} "
-                f"files; the transfer check needs >= {RECV_MIN_ROWS} rows in >= {RECV_MIN_FILES} files)"), det
+    if (det["recv_sigma"] is None or det["n_rows"] < RECV_MIN_ROWS or det["n_ions"] < RECV_MIN_IONS
+            or det["n_files"] < RECV_MIN_FILES):
+        return (f"the batch's own core scatter is not measurable ({det['n_rows']} core rows of {det['n_ions']} ions "
+                f"in {det['n_files']} files; the transfer check needs >= {RECV_MIN_ROWS} rows of >= {RECV_MIN_IONS} "
+                f"ions in >= {RECV_MIN_FILES} files)"), det
     det["ratio"] = round(float(det["recv_sigma"]) / float(lend), 3)
     if det["ratio"] > RECV_X:
         return (f"the batch's own core scatter {det['recv_sigma']:.3f} ppm ({det['n_rows']} rows, {det['n_files']} "
@@ -637,8 +650,11 @@ def choose(record: dict | None, *, reagent, polarity, instrument_class, scan_ran
             return None, f"{tag} ({what}) is not lent: {why}"
         return T.CAL_SOURCE_LENT, None
     if record.get("reagent") == reagent:
-        if scan_match(record.get("scan_range"), scan_range):
+        # a json pooled over several scan ranges (--allow-mixed) is no one method's: at most lent, transfer-checked
+        if scan_match(record.get("scan_range"), scan_range) and not record.get("scan_mixed"):
             return T.CAL_SOURCE_CAMPAIGN, None
+        if record.get("scan_mixed"):
+            return _lent(f"pooled over mixed scan ranges, union {record.get('scan_range')}")
         return _lent(f"scan range {record.get('scan_range')}, the batch {scan_range}")
     if not lent_ok:
         return None, (f"{tag} is of reagent {record.get('reagent')!r}, the batch {reagent!r}: lending across "
@@ -693,7 +709,8 @@ def lend_to_summary(summary: dict, per_file: dict, record: dict | None, *, lent_
              if "degeneracy_cal" in st and st["degeneracy_cal"] is None and st.get("sample_id") in per_file}
     recv = receiving_scatter(uncal, reagent=facts.get("reagent"),
                              polarity="positive" if facts.get("polarity") == "+" else "negative",
-                             carry=(summary.get("mass_axis") or {}).get("edge_carry")) if record else None
+                             carry=(summary.get("mass_axis") or {}).get("edge_carry"),
+                             exclude_mz=_shadow_lines(facts["path"]) if facts.get("path") else ()) if record else None
     det: dict = {}
     src, why = choose(record, lent_ok=lent_ok, recv=recv, detail=det,
                       **{k: facts.get(k) for k in ("reagent", "polarity", "instrument_class", "scan_range", "days")})
@@ -761,8 +778,16 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
           if len(levels) and {"evidence", "evidence_level"} <= set(levels.columns) else None)
     if na and why:
         na += f" A calibration file was given and not used: {why}."
+    merged_counts = {}
+    if merged is not None:
+        from peaky.batch.assign_batch import _claims_summary
+        claims = _claims_summary(merged, levels)
+        merged_counts = {"merged_M0": int(len(merged)),
+                         "merged_tiers": merged["tier"].value_counts().to_dict() if len(merged) else {},
+                         "merged_claims": claims["merged"]}
     rec = {"run_dir": run_dir, "calibration": descriptor(record), "lent_flag": bool(lent_ok), "read_as": used,
            "reason": why, "transfer": facts.get("transfer"), "centres": centres, "n_pairs": int(len(levels)),
+           "merged_counts": merged_counts,
            "peaky_version": __import__("peaky").__version__}
     summ = dict(summ)
     summ["levels_calibration"] = levels_record(summ.get("per_file") or [], record, used_as=used, reason=why,
@@ -776,6 +801,8 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
         ev["merged"] = EV.summarize(merged["evidence_level"]) if len(merged) else {}
     ev["n_pairs"] = int(len(levels))
     summ["evidence_levels"] = ev
+    if merged is not None:
+        summ["claims"] = claims
     summ["relevel"] = rec
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:
         json.dump(summ, fh, indent=2, default=str)
@@ -799,6 +826,11 @@ def _relevel_manifest(run_dir: str, out_dir: str, record: dict | None, rec: dict
     src_led = PV.sha1_file(os.path.join(run_dir, "merged_ledger.csv"))
     new_led = PV.sha1_file(os.path.join(out_dir, "merged_ledger.csv"))
     man.setdefault("output", {})["merged_ledger_sha1"] = new_led
+    # the counts read off the merged ledger, re-counted on the re-stamped one (the claims move with the levels;
+    # the tiers do not, and are re-counted all the same)
+    counts = man["output"].setdefault("counts", {})
+    for k, v in (rec.get("merged_counts") or {}).items():
+        counts[k] = v
     if record is not None:
         man.setdefault("input", {})["tier_calibration"] = {"path": record.get("_path"), "sha256": record.get("_sha256"),
                                                            "lent_flag": bool(rec.get("lent_flag"))}

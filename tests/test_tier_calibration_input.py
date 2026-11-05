@@ -167,14 +167,15 @@ def test_a_matching_json_is_lent_as_campaign_and_the_files_get_levels(tmp_path, 
 
 
 def test_a_json_of_another_scan_range_is_lent(tmp_path, monkeypatch):
-    """5 isotope-backed rows per file: the batch pool falls short, the files' own core scatter is measurable
-    (>= 15 rows in >= 2 files: 0.074 ppm against the lender's 0.07, ratio 1.06) and the window is lent."""
+    """14 isotope-backed rows per file: the batch pool falls short (14 ions), the files' own core scatter is
+    measurable (>= 40 rows of >= 8 ions in >= 2 files: 0.074 ppm against the lender's 0.07, ratio 1.06) and
+    the window is lent."""
     rec = _json(tmp_path / "..", "c2.json", scan_range=(40.0, 600.0))
-    summ = _run(tmp_path, monkeypatch, record=rec, iso_rows=5)
+    summ = _run(tmp_path, monkeypatch, record=rec, iso_rows=14)
     lc = summ["levels_calibration"]
     assert lc["source"] == "lent" and lc["files"]["lent"] == len(summ["per_file"]) and lc["file"]["read_as"] == "lent"
     tr = lc["file"]["transfer"]
-    assert tr["n_rows"] >= 15 and tr["n_files"] >= 2 and tr["lender_raw_median"] == 0.07
+    assert tr["n_rows"] >= 40 and tr["n_ions"] == 14 and tr["n_files"] >= 2 and tr["lender_raw_median"] == 0.07
     assert tr["recv_sigma"] == pytest.approx(1.4826 * 0.05, abs=1e-3) and tr["ratio"] <= 1.5
     assert summ["levels_not_assessed_reason"] is None
     off = _m0(tmp_path, summ["per_file"][-1]["sample_id"]).query("neutral_formula == 'C17H28O6'")
@@ -189,10 +190,10 @@ def test_another_reagent_is_lent_only_with_the_flag_and_only_over_the_same_days(
     assert "lending across reagents needs --tier-calibration-lent" in lc["file"]["reason"]
     assert "A calibration file was given and not used" in summ["levels_not_assessed_reason"]
     assert all(p["degeneracy_cal"] is None for p in summ["per_file"])
-    summ = _run(tmp_path / "b", monkeypatch, record=rec, lent=True, iso_rows=5)
+    summ = _run(tmp_path / "b", monkeypatch, record=rec, lent=True, iso_rows=14)
     assert summ["levels_calibration"]["source"] == "lent" and summ["levels_calibration"]["file"]["lent_flag"] is True
     far = _json(tmp_path / "..", "c4.json", reagent="NO3", days=("2024-01-01", "2024-01-05"))
-    summ = _run(tmp_path / "c", monkeypatch, record=far, lent=True, iso_rows=5)
+    summ = _run(tmp_path / "c", monkeypatch, record=far, lent=True, iso_rows=14)
     assert summ["levels_calibration"]["source"] == "none"
     assert "needs the same days" in summ["levels_calibration"]["file"]["reason"]
 
@@ -203,7 +204,7 @@ def test_a_lent_window_whose_mass_accuracy_does_not_transfer_is_refused(tmp_path
     no unfloored lender scatter -> 'none'; each reason also in levels_not_assessed_reason. The same tight
     json at the batch's own scan range (campaign) is not checked."""
     tight = _json(tmp_path / "..", "c5.json", scan_range=(40.0, 600.0), raw=0.02)
-    summ = _run(tmp_path / "a", monkeypatch, record=tight, iso_rows=5)
+    summ = _run(tmp_path / "a", monkeypatch, record=tight, iso_rows=14)
     lc = summ["levels_calibration"]
     assert lc["source"] == "none" and "the lender's mass accuracy does not transfer" in lc["file"]["reason"]
     assert lc["file"]["transfer"]["ratio"] == pytest.approx(1.4826 * 0.05 / 0.02, rel=0.02)
@@ -213,21 +214,23 @@ def test_a_lent_window_whose_mass_accuracy_does_not_transfer_is_refused(tmp_path
     assert summ["levels_calibration"]["source"] == "none"
     assert "is not measurable" in summ["levels_calibration"]["file"]["reason"]
     blind = _json(tmp_path / "..", "c6b.json", scan_range=(40.0, 600.0), raw=None)
-    summ = _run(tmp_path / "c", monkeypatch, record=blind, iso_rows=5)
+    summ = _run(tmp_path / "c", monkeypatch, record=blind, iso_rows=14)
     assert "records no unfloored scatter" in summ["levels_calibration"]["file"]["reason"]
     camp = _json(tmp_path / "..", "c6c.json", raw=0.001)
-    assert _run(tmp_path / "d", monkeypatch, record=camp, iso_rows=5)["levels_calibration"]["source"] == "campaign"
+    assert _run(tmp_path / "d", monkeypatch, record=camp, iso_rows=14)["levels_calibration"]["source"] == "campaign"
 
 
 def test_the_transfer_check_decides_on_the_ratio_and_the_row_counts():
-    """RECV_X = 1.5 decides: 1.48x lends, 1.52x and 2x do not; under 15 rows or 2 files nothing is lent;
-    a receiver more precise than the lender lends (no lower bound)."""
+    """RECV_X = 1.5 decides: 1.48x lends, 1.52x and 2x do not; under 40 rows, 8 ions or 2 files nothing is
+    lent (exactly 40 / 8 / 2 lends); a receiver more precise than the lender lends (no lower bound)."""
     rec = dict(_record(raw=0.1), _sha256="t" * 64)
     kw = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
-    cases = [(0.148, 20, 3, "lent"), (0.152, 20, 3, None), (0.2, 20, 3, None), (0.01, 20, 3, "lent"),
-             (0.1, 14, 3, None), (0.1, 30, 1, None)]
-    got = [CF.choose(rec, recv={"sigma": sig, "n_rows": n, "n_files": k}, **kw)[0] for sig, n, k, _w in cases]
-    assert got == [c[3] for c in cases]              # the decisions first: a mutant dies here, on the decision
+    cases = [(0.148, 50, 10, 3, "lent"), (0.152, 50, 10, 3, None), (0.2, 50, 10, 3, None), (0.01, 50, 10, 3, "lent"),
+             (0.1, 39, 10, 3, None), (0.1, 40, 10, 3, "lent"), (0.1, 60, 7, 3, None), (0.1, 60, 8, 3, "lent"),
+             (0.1, 60, 10, 1, None), (0.1, 60, 10, 2, "lent")]
+    got = [CF.choose(rec, recv={"sigma": sig, "n_rows": n, "n_ions": i, "n_files": k}, **kw)[0]
+           for sig, n, i, k, _w in cases]
+    assert got == [c[4] for c in cases]              # the decisions first: a mutant dies here, on the decision
     assert CF.choose(rec, recv=None, **kw)[0] is None
 
 
@@ -343,7 +346,7 @@ def _rows(n_cho=16, *, ppm=0.05):
 
 
 def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, shadow_mz=None, n_cho=16,
-             src="per_file", ts_lo=None):
+             src="per_file", ts_lo=None, ts_hi=None, ppm=0.05):
     """A finished run dir: per-file ledgers of 16 CHO [M-H]- readings with their 13C lines, `extra`
     rows [(neutral, adduct, iso label | None[, confidence, ppm])] each with that isotope line,
     batch_summary, manifest, a series parquet, a label-twin table with `shadow_mz` as a shadow line.
@@ -356,7 +359,7 @@ def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, 
     os.makedirs(os.path.join(path, "data"), exist_ok=True)
     ts = []
     for s in sids:
-        led = _file(s, _rows(n_cho))
+        led = _file(s, _rows(n_cho, ppm=ppm))
         for k, (nf, ad, lab, *opt) in enumerate(extra or []):
             conf, ppm_e = (opt + ["Good", 0.02][len(opt):])[:2]
             mz = C.ion_mz(nf, ad)
@@ -374,7 +377,7 @@ def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, 
             led.loc[i, "tier_reason"] = led.loc[i, "tier_reason"].astype(str) + f"; {SERIES_ALIAS_MARK} (alias)"
         led.to_csv(os.path.join(path, "per_file", f"{s}_ledger.csv"), index=False)
         ts += [{"sample_item_id": s, "mz": m, "datetime_utc": pd.Timestamp(f"{DAY} 12:00", tz="UTC")}
-               for m in pd.to_numeric(led["mz"]).tolist() + ([ts_lo] if ts_lo is not None else [])]
+               for m in pd.to_numeric(led["mz"]).tolist() + [x for x in (ts_lo, ts_hi) if x is not None]]
     pd.DataFrame(ts).to_parquet(os.path.join(path, "data", "X_ts.parquet"))
     if shadow_mz is not None:
         pd.DataFrame([{"mz": shadow_mz, "adduct": "[M+NO3]-", "line_verdict": "shadow"}]).to_csv(
@@ -454,7 +457,8 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     run = tmp_path / "run"
     _run(run, monkeypatch)
     json.dump({"code": {"git": {"commit": "c0ffee"}}, "input": {"batch_name": "b"},
-               "output": {"merged_ledger_sha1": PV.sha1_file(str(run / "merged_ledger.csv"))}},
+               "output": {"merged_ledger_sha1": PV.sha1_file(str(run / "merged_ledger.csv")),
+                          "counts": {"merged_claims": {"tentative": 999}, "merged_M0": 999, "n_samples": 4}}},
               open(run / "run_manifest.json", "w"))
     before = {f: os.path.getmtime(run / f) for f in os.listdir(run) if os.path.isfile(run / f)}
     rec = _json(tmp_path, "r.json")
@@ -477,6 +481,13 @@ def test_relevel_lends_the_json_offline_and_changes_nothing_without_one(tmp_path
     m = pd.read_csv(tmp_path / "rl" / "merged_ledger.csv", keep_default_na=False)
     assert m["evidence_level"].isin(["3c", "4a", "4b", "5a", "5b"]).any()
     CF.relevel_run(str(run), None, out_dir=str(tmp_path / "none"), log=lambda *a: None)
+    # the counts read off the merged ledger are the re-stamped ledger's (the claims moved with the levels)
+    mrl = pd.read_csv(tmp_path / "rl" / "merged_ledger.csv", keep_default_na=False)
+    assert man["output"]["counts"]["merged_claims"] == EV.summarize_claims(mrl["claim"])
+    assert man["output"]["counts"]["merged_M0"] == len(mrl) and man["output"]["counts"]["n_samples"] == 4
+    assert json.load(open(tmp_path / "rl" / "batch_summary.json"))["claims"]["merged"] == EV.summarize_claims(mrl["claim"])
+    CF.relevel_run(str(run), rec, out_dir=str(tmp_path / "rlf"), lent_ok=True, log=lambda *a: None)
+    assert json.load(open(tmp_path / "rlf" / "run_manifest.json"))["input"]["tier_calibration"]["lent_flag"] is True
     m0 = json.load(open(tmp_path / "none" / "run_manifest.json"))
     assert "tier_calibration" not in m0["input"] and m0["relevel"]["merged_ledger_changed"] is False
     # without a json the re-level reproduces the run's own level table and merged ledger byte for byte
@@ -555,14 +566,23 @@ def test_the_pool_records_the_lending_files_unfloored_scatter_and_only_theirs(tm
 
 
 def test_the_pool_refuses_mixed_scan_ranges_unless_asked_and_records_their_union(tmp_path):
-    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"])
+    """Low edges 103 / 45: refused; allowed, the json records the union of both edges (the first run's top,
+    the second's bottom) and scan_mixed. A pair one direction of scan_match accepts and the other does not
+    (tops 600 / 360: 0.6x one way, 1.67x the other) is mixed too."""
+    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"], ts_hi=400.0)
     r2 = _run_dir(tmp_path / "r2", ["b0", "b1"], ts_lo=45.0)
     with pytest.raises(CF.CalibrationError, match="mix scan ranges"):
         CF.pool_runs([r1, r2], log=lambda *a: None)
     rec = CF.pool_runs([r1, r2], allow_mixed=True, log=lambda *a: None)
-    assert rec["scan_mixed"] is True and rec["scan_range"][0] == pytest.approx(45.0)
-    same = CF.pool_runs([r1, _run_dir(tmp_path / "r3", ["c0", "c1"])], log=lambda *a: None)
+    assert rec["scan_mixed"] is True and rec["scan_range"] == [pytest.approx(45.0), pytest.approx(400.0)]
+    same = CF.pool_runs([_run_dir(tmp_path / "r3", ["c0", "c1"]), _run_dir(tmp_path / "r4", ["d0", "d1"])],
+                        log=lambda *a: None)
     assert same["scan_mixed"] is False
+    a, b = _run_dir(tmp_path / "r6", ["e0", "e1"], ts_hi=600.0), _run_dir(tmp_path / "r7", ["f0", "f1"], ts_hi=360.0)
+    assert CF.scan_match(CF.run_facts(a)["scan_range"], CF.run_facts(b)["scan_range"])
+    assert not CF.scan_match(CF.run_facts(b)["scan_range"], CF.run_facts(a)["scan_range"])
+    with pytest.raises(CF.CalibrationError, match="mix scan ranges"):
+        CF.pool_runs([a, b], log=lambda *a_: None)
 
 
 def test_a_file_in_two_runs_is_one_file(tmp_path):
@@ -645,4 +665,120 @@ def test_the_receiving_scatter_is_about_each_files_own_centre_and_skips_thin_fil
     assert all((L_["tier"] == "Assigned").sum() >= 10 for L_ in led.values())
     r = CF.receiving_scatter(led, reagent="Br", polarity="negative")
     assert (r["n_files"], r["n_rows"]) == (2, 12) and r["sigma"] == pytest.approx(1.4826 * 0.075, abs=1e-3)
+
+
+# --------------------------------------------------------------------------- final fixes (second refute)
+def test_a_json_pooled_over_mixed_scan_ranges_is_never_read_as_campaign(tmp_path):
+    """The refuter's reproduction in small: a 128-600-like and a 40-600-like run pooled with --allow-mixed
+    give a json whose union starts at the 40-600 batch's low edge. That batch must not read it as its own
+    mode (campaign, unchecked): it is lent at most, through the transfer check; the descriptor says so."""
+    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"], own=(0.0, 0.15), n_cho=22)
+    r2 = _run_dir(tmp_path / "r2", ["b0", "b1"], ts_lo=45.0)
+    p = str(tmp_path / "mixed.json")
+    CF.write(CF.pool_runs([r1, r2], allow_mixed=True, log=lambda *a: None), p)
+    rec = CF.load(p)
+    assert rec["scan_mixed"] is True and CF.descriptor(rec)["scan_mixed"] is True
+    batch = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=list(rec["scan_range"]),
+                 days=[DAY, DAY])
+    assert CF.scan_match(rec["scan_range"], batch["scan_range"])          # the union matches the batch
+    det = {}
+    assert CF.choose(rec, recv=None, detail=det, **batch) == (None, CF.choose(rec, recv=None, **batch)[1])
+    assert "not measurable" in CF.choose(rec, recv=None, **batch)[1] and det["max_ratio"] == 1.5
+    good = {"sigma": 0.05, "n_rows": 60, "n_ions": 12, "n_files": 3}
+    assert CF.choose(rec, recv=good, **batch)[0] == "lent"
+    one = dict(rec, scan_mixed=False)
+    assert CF.choose(one, recv=None, **batch)[0] == "campaign"           # the same json, one method: campaign
+
+
+def test_the_lenders_median_not_their_mean(tmp_path):
+    """Three lending files of unfloored scatter about 0.074 / 0.11 / 0.30: the json stores their MEDIAN, and
+    the transfer check divides by it -- a receiver at 0.17 ppm is refused against the median (1.5x 0.11 =
+    0.167) where the mean (0.16) would lend it."""
+    runs = [_run_dir(tmp_path / f"r{i}", [f"s{i}"], own=(0.0, 0.15), n_cho=22, ppm=pp)
+            for i, pp in enumerate((0.05, 0.075, 0.2))]
+    rec = CF.pool_runs(runs, log=lambda *a: None)
+    rw = rec["width"]["per_file_raw_sigma"]
+    vals = sorted(rw["files"].values())
+    assert len(vals) == 3 and rw["median"] == pytest.approx(vals[1]) and abs(rw["median"] - sum(vals) / 3) > 0.03
+    w = dict(rec["width"], per_file_raw_sigma=dict(rw))
+    r = dict(rec, usable=True, width=w, _sha256="m" * 64)
+    kw = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
+    recv = {"sigma": round(1.5 * vals[1] + 0.005, 4), "n_rows": 60, "n_ions": 12, "n_files": 3}
+    assert recv["sigma"] < 1.5 * sum(vals) / 3                              # the mean would lend it
+    assert CF.choose(r, recv=recv, **kw)[0] is None
+
+
+def test_the_floor_reads_the_windows_own_absolute_floor_and_the_reason_quotes_it():
+    from peaky.assignment import masscal as MC
+    lent2 = T._Cal(0.0, 0.15, source=T.CAL_SOURCE_LENT, abs_floor_mda=0.06)
+    assert T._cal_z(lent2, 0.48, 41.0386) == pytest.approx(0.48 / (0.06 * 1000.0 / 41.0386))
+    led = _file("w", [("C2H4O2", AD, 1.6, 1e5, False, "Good")]
+                + [(nf, AD, 0.0, 1e5, True, "Good") for nf in NEUTRALS[4:12]], tier=False)
+    t = T.compute_tiers(led, cal=T._Cal(0.0, 0.15, source=T.CAL_SOURCE_LENT)).set_index("peak_id")
+    floor59 = MC.ABS_FLOOR_MDA * 1000.0 / C.ion_mz("C2H4O2", AD)
+    assert t.at["w-0", "tier"] == T.TIER_CANDIDATE
+    assert f"±{floor59:.2f} ppm, the 0.03 mDa floor" in t.at["w-0", "tier_reason"]
+    own = T.compute_tiers(led, cal=T._Cal(0.0, 0.15)).set_index("peak_id")
+    assert "(+0.00±0.15 ppm)" in own.at["w-0", "tier_reason"]           # a file's own window: unchanged text
+
+
+def test_the_receiving_scatter_keeps_the_core_rules():
+    """Per file: 6 isotope-backed CHO rows, one of them alias-held (out), one on a reagent-library mass (out),
+    plus H2SO4 on its 34S line (in, the inorganic core): 5 rows a file."""
+    from peaky.assignment.fluorine import SERIES_ALIAS_MARK as MARK
+    leds = {}
+    for sid in ("a", "b"):
+        led = _file(sid, [(nf, AD, 0.05 * ((k % 5) - 2), 1e5 * (1 + k), k < 6, "Good")
+                          for k, nf in enumerate(MORE_NEUTRALS[:16])])
+        mz = C.ion_mz("H2SO4", AD)
+        led = pd.concat([led, L.new_ledger(pd.DataFrame([(f"{sid}-s", mz, 2e5), (f"{sid}-si", mz + 1.9958, 1e4)],
+                                                        columns=["peak_id", "mz", "height"]))], ignore_index=True)
+        L.commit_assignment(led, f"{sid}-s", neutral_formula="H2SO4", adduct=AD, ion_formula=_ion("H2SO4", AD),
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.0, pass_no=1, method="cheminfo+grid",
+                            confidence="Good", commentary="Pass 1")
+        L.attach_isotopologue(led, f"{sid}-si", f"{sid}-s", iso_label="34S", iso_match_score=0.9)
+        i = led.index[(led["role"] == "M0") & (led["neutral_formula"] == MORE_NEUTRALS[1])]
+        led.loc[i, "tier_reason"] = led.loc[i, "tier_reason"].astype(str) + f"; {MARK} (alias)"
+        leds[sid] = led
+    lib = C.ion_mz(MORE_NEUTRALS[2], AD)
+    import unittest.mock as um
+    with um.patch.object(CF, "_reagent_masses", lambda reagent: [lib]):
+        r = CF.receiving_scatter(leds, reagent="Br", polarity="negative")
+    assert (r["n_files"], r["n_rows"], r["n_ions"]) == (2, 10, 5)
+
+
+def test_the_offline_receiving_scatter_reads_only_the_uncalibrated_files():
+    """lend_to_summary measures the scatter on the files it would lend to, never on a file that calibrated
+    alone (whose rows are 1 ppm wide here)."""
+    def f(sid, w):
+        return _file(sid, [(nf, AD, w * ((k % 5) - 2), 1e5 * (1 + k), True, "Good")
+                           for k, nf in enumerate(MORE_NEUTRALS[:16])])
+    per_file = {"u1": f("u1", 0.05), "u2": f("u2", 0.05), "c": f("c", 1.0)}
+    summary = {"per_file": [{"sample_id": "u1", "degeneracy_cal": None}, {"sample_id": "u2", "degeneracy_cal": None},
+                            {"sample_id": "c", "degeneracy_cal": {"mu": 0.0, "sigma": 0.15}}]}
+    facts = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
+    rec = dict(_record(scan_range=(100.0, 139.0), raw=0.07), _sha256="o" * 64)
+    out, src, why, centres = CF.lend_to_summary(summary, per_file, rec, lent_ok=False, facts=facts)
+    assert facts["transfer"]["n_files"] == 2 and facts["transfer"]["n_rows"] == 32
+    assert facts["transfer"]["recv_sigma"] == pytest.approx(1.4826 * 0.05, abs=1e-3)
+    assert set(centres) == set() and src is None and "not measurable" in why      # 32 rows < 40
+
+
+def test_the_batch_measures_the_receiving_scatter_on_the_carried_scale(tmp_path, monkeypatch):
+    """The batch hands its axis model's edge carry to the receiving scatter, as the lender side reads it."""
+    from peaky.batch import assign_batch as AB
+    carry = {"reach_da": 30.0, "slack_ppm": 3.0, "below": {"mz": 101.0, "ppm": 0.2, "model_ppm": 0.2, "n_locks": 1},
+             "above": {"mz": 130.0, "ppm": -0.4, "model_ppm": -0.4, "n_locks": 1}}
+    monkeypatch.setattr(AB, "measure_axis", lambda ts, *a, **k: (ts, {"applied": False, "verdict": None,
+                                                                      "edge_carry": carry}, None))
+    seen = []
+    real = CF.receiving_scatter
+
+    def spy(ledgers, **kw):
+        seen.append(kw.get("carry"))
+        return real(ledgers, **kw)
+    monkeypatch.setattr(CF, "receiving_scatter", spy)
+    rec = _json(tmp_path / "..", "carry.json", scan_range=(40.0, 600.0))
+    _run(tmp_path, monkeypatch, record=rec, iso_rows=14)
+    assert seen == [carry]
 

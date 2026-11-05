@@ -161,16 +161,22 @@ selected sample_ids (SAMPLING.md)
    differs on the same polarity and instrument class over overlapping days (within
    one day). A lent window then passes a mass-accuracy transfer check
    (`calfile.transfer`): the batch's own unfloored core scatter (the campaign-rule
-   core rows of its uncalibrated files about each file's own centre, >= 15 rows in
-   >= 2 files, `calfile.receiving_scatter`) must be at most 1.5x the lending files'
-   median unfloored scatter (`width.per_file_raw_sigma`, stored in the json; the
-   floored per-file sigmas sit on the 0.15-ppm floor and cannot tell modes apart). A
-   more precise receiver passes. The check asks whether the lender's mass accuracy
-   transfers to this batch; it is no control of over-grading, which does not move
-   with the window's width. A campaign json is not checked (it is the batch's own
-   mode). A lent window's mass-error (z-tail) test floors its sigma at 0.03 mDa
-   (`masscal.sigma_at`), as a fitted trend's is: the file ran no mass-error test of
-   its own. A polarity, class, reagent or transfer check that refuses leaves the
+   core rows of its uncalibrated files about each file's own centre, >= 40 rows of
+   >= 8 distinct ions in >= 2 files, `calfile.receiving_scatter`) must be at most
+   1.5x the lending files' median unfloored scatter (`width.per_file_raw_sigma`,
+   stored in the json; the floored per-file sigmas sit on the 0.15-ppm floor and
+   cannot tell modes apart). A more precise receiver passes. The receiving side
+   excludes what the lender side excludes (reagent identity and library lines, the
+   alias-series hold, a 13C-shadow line of the run's label-twin table -- offline
+   only: a batch decides its lending before its label-twin table exists). The check
+   asks whether the lender's mass accuracy transfers to this batch; it is no
+   control of over-grading, which does not move with the window's width. A
+   campaign json -- one method's, the batch's own mode -- is not checked; a json
+   pooled over mixed scan ranges (`scan_mixed`, `--allow-mixed`) is never read as
+   `campaign`, only as `lent`, and is checked. A campaign or lent window's
+   mass-error (z-tail) test floors its sigma at 0.03 mDa (`masscal.sigma_at`), as a
+   fitted trend's is: the file ran no mass-error test of its own; the z-tail reason
+   quotes the floored sigma where the floor bound. A polarity, class, reagent or transfer check that refuses leaves the
    files `none`; the log says why as a WARNING and `levels_calibration.file.reason`
    records it, and when the batch levelled nothing `levels_not_assessed_reason`
    adds it too. `peaky calibration pool` refuses runs whose scan ranges differ
@@ -185,7 +191,8 @@ selected sample_ids (SAMPLING.md)
    the same choice offline on a finished run and re-levels it (levels only: a
    finished run keeps no tier-time ledger, so nothing is re-tiered). The new dir's
    `run_manifest.json` is the run's own with the json's sha256 under
-   `input.tier_calibration`, `output.merged_ledger_sha1` refreshed (the merged
+   `input.tier_calibration`, the counts read off the merged ledger (`merged_M0`,
+   `merged_tiers`, `merged_claims`) re-counted, `output.merged_ledger_sha1` refreshed (the merged
    ledger's level columns are re-stamped, every other byte is the run's) and a
    `relevel` record (the source dir, the sha1 of its manifest and merged ledger,
    whether the ledger changed, the json's sha256, the re-levelling code).

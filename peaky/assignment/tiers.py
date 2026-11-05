@@ -836,6 +836,20 @@ def _cal_z(cal, ppm, mz=None) -> float:
     return (float(ppm) - mu) / sigma
 
 
+def _window_text(cal, mz) -> str:
+    """The window a z-tail reason quotes: `mu±sigma ppm` as the calibration
+    states it; for a calibration-file window (FILE_SOURCES) the sigma the test
+    used at the line's m/z, with the absolute floor named when it bound
+    (`_cal_z`)."""
+    mu, sigma = cal[0], cal[1]
+    if _cal_source(cal) in FILE_SOURCES and getattr(cal, "b", None) is None and mz is not None and not pd.isna(mz):
+        used = MC.sigma_at(sigma, float(mz), getattr(cal, "abs_floor_mda", MC.ABS_FLOOR_MDA))
+        if used > sigma:
+            return (f"{mu:+.2f}±{used:.2f} ppm, the {getattr(cal, 'abs_floor_mda', MC.ABS_FLOOR_MDA):g} mDa floor "
+                    f"at m/z {float(mz):.1f} over the window's ±{sigma:.2f}")
+    return f"{mu:+.2f}±{sigma:.2f} ppm"
+
+
 def _abs_floor(cfg) -> float:
     """PassConfig.cal_abs_floor_mda, or its default when no cfg is given."""
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
@@ -1327,7 +1341,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
             tier = TIER_CANDIDATE
             reason = (f"mass error {float(r['ppm_error']):+.2f} ppm is {z:+.1f}"
                       f"σ off the {accuracy} instrument accuracy "
-                      f"({cal[0]:+.2f}±{cal[1]:.2f} ppm) with no isotope / "
+                      f"({_window_text(cal, r.get('mz'))}) with no isotope / "
                       "cross-channel / series corroboration "
                       "(mass-error-distribution test)")
         elif mass_degenerate and not corroborated:
