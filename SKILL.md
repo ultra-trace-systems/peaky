@@ -150,7 +150,14 @@ batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
 sample covering the most not-yet-covered bins, stop when the next pick would add
 < `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
 run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
-coverage is in `batch_summary.json['selection']`. A **residual stage** (on by
+coverage is in `batch_summary.json['selection']`. An **episode stage** (on by
+default; `--no-episodes` reproduces the run without it) follows the cover: every
+short bright episode (bins in 3 to max(19, 1 %) samples, ≥ 5× their baseline,
+≥ 3× the sample's edge, grouped by time overlap) gets its peak sample and up to 2
+neighbours, at most clamp(⌊0.15 × the cover's files⌋, 1, 8) files beyond the
+cover's (`--k-episode-max N`: an absolute number instead), assigned with
+them (role `episode`; `tables/episodes.csv`, `selection.episodes`; per-file rows
+on an episodic bin carry `episode = True`; `docs/SAMPLING.md` §3c). A **residual stage** (on by
 default; `--no-residual` reproduces the cover-only run) then targets the bins the
 cover left in no assigned file: those the whole-batch stamp does not explain and
 that reach `--residual-min-x-edge` (5×) their sample's noise edge somewhere (or

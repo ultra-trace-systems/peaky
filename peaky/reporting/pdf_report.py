@@ -2052,6 +2052,26 @@ def _selection_lines(ctx) -> list:
         out.append(("b", f"• WARNING: the k_max={b.get('k_max')} budget bound while the batch was "
                          f"still gaining ({b.get('next_gain', 0):.2%} of the bins per extra "
                          "sample) — coverage is incomplete; raise --k-max."))
+    e = b.get("episodes") or {}
+    if e:
+        u = e.get("universe") or {}
+        out.append(("b", f"• Episode stage: {e.get('n_episodes', 0)} short bright episode(s) "
+                         f"({u.get('n_episodic', 0)} bins present in {u.get('min_n', 3)}–"
+                         f"{u.get('n_max', 19)} samples at ≥{u.get('min_lift', 5):g}× their baseline "
+                         f"and ≥{u.get('min_x_edge', 3):g}× the sample's noise edge, grouped by time "
+                         f"overlap); each gets its peak sample and up to {u.get('n_neighbours', 2)} "
+                         f"neighbours: {e.get('n_wanted', 0)} wanted file(s), "
+                         f"{e.get('n_free', 0)} already selected, {e.get('k', 0)} added "
+                         f"(budget {e.get('k_max', '?')}"
+                         + (f" = {(e.get('budget') or {}).get('frac', 0.15):g} × the cover's "
+                            f"{(e.get('budget') or {}).get('n_files')} files"
+                            if (e.get("budget") or {}).get("source") == "proportional" else "")
+                         + f"), stopped on '{e.get('stop_reason', '?')}'. "
+                         "Episode files are assigned with the cover's (tables/episodes.csv)."))
+        if e.get("stop_reason") == "k_max":
+            out.append(("b", f"• WARNING: the episode budget k_episode_max={e.get('k_max')} left "
+                             f"{e.get('n_over_budget', 0)} wanted file(s) out; pass --k-episode-max N "
+                             "to assign them."))
     r = b.get("residual") or {}
     if r:
         out.append(("b", f"• Residual stage: of the {r.get('n_uncovered', 0)} universe bins in no "

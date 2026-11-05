@@ -433,6 +433,7 @@ def cmd_batch(args) -> None:
                            residual_min_x_edge=args.residual_min_x_edge,
                            residual_min_cps=args.residual_min_cps,
                            residual_k_max=args.residual_k_max,
+                           episodes=args.episodes, k_episode_max=args.k_episode_max,
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
@@ -2065,6 +2066,30 @@ def _add_selection_args(sp) -> None:
                          "gaining is recorded in batch_summary.json['selection']['residual']")
 
 
+def _add_episode_args(sp) -> None:
+    """The episode stage's switch and budget (sampling.py, THE EPISODE STAGE): `batch`
+    only (the pooled path assigns the pool's own selection)."""
+    from peaky.batch import sampling as SS
+
+    sp.add_argument("--episodes", action=argparse.BooleanOptionalAction,
+                    default=SS.EPISODE_DEFAULT,
+                    help="right after the cover, give every short bright EPISODE of the batch "
+                         "(bins present in 3 to max(19, 1%% of the samples) samples, "
+                         f"lift >= {SS.EPISODE_MIN_LIFT:g}, peak >= {SS.EPISODE_MIN_X_EDGE:g}x the "
+                         "sample's noise edge, grouped by time overlap) its peak sample and up to "
+                         f"{SS.EPISODE_NEIGHBOURS} neighbours, assigned with the cover's files "
+                         "(tables/episodes.csv; per-file rows flagged `episode`). "
+                         f"{'ON' if SS.EPISODE_DEFAULT else 'OFF'} by default; --no-episodes "
+                         "reproduces the run without the stage exactly.")
+    sp.add_argument("--k-episode-max", type=int, default=None, metavar="N",
+                    help="budget of the episode stage as an absolute number of files beyond the "
+                         "cover's. Default: sized by the batch, clamp(floor("
+                         f"{SS.K_EPISODE_FRAC:g} x the cover's files), {SS.K_EPISODE_MIN}, "
+                         f"{SS.K_EPISODE_MAX}) -- about {SS.K_EPISODE_FRAC * 100:g}%% more files, so the "
+                         "batch's wall clock grows by about that share. A stage that leaves a wanted "
+                         "file out is flagged in batch_summary.json['selection']['episodes']")
+
+
 def _auto_or_float(v: str):
     """argparse type for --occurrence-min: 'auto' or a number."""
     if str(v).strip().lower() == "auto":
@@ -2377,6 +2402,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
+    _add_episode_args(pb)
     _add_admission_args(pb)
     _add_side_channels_flag(pb)
     _add_rolling_flag(pb)
