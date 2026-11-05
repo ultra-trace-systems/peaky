@@ -162,8 +162,9 @@ def test_runs_allow_one_gap_and_episodes_join_by_overlap():      # EPISODE_GAP
 
 
 def test_the_peak_sample_holds_the_most_bins():
-    # bin 300 peaks in s010, but s012 holds all three bins at >= 3x edge
-    lines = [(300.0, {10: 9e3, 11: 2e3, 12: 400.0}),
+    # bin 300 peaks in s010 (200x edge: the largest summed multiple of any sample), but s011
+    # and s012 hold all three bins at >= 3x edge; s012 is the brighter of the two
+    lines = [(300.0, {10: 2e4, 11: 2e3, 12: 400.0}),
              (310.0, {10: 200.0, 11: 4e3, 12: 5e3}),
              (320.0, {11: 4e3, 12: 5e3, 13: 4e3})]
     _, u = _episodic_mz(_table(40, lines))
@@ -172,23 +173,25 @@ def test_the_peak_sample_holds_the_most_bins():
 
 
 def test_neighbours_need_half_the_bins_and_come_nearest_first():  # EPISODE_NEIGHBOUR_FRAC, _NEIGHBOURS
-    four = [(300.0 + 10 * j, {10: 5e3, 11: 5e3, 12: 5e3, 13: 5e3, 14: 5e3}) for j in range(4)]
-    # s010 holds 1 of 4 bins bright (25 %), s011 2 of 4 (50 %), s013 4, s014 4
+    # four bins in s010-s014 at 50x edge; the peak s012 (bin 300 at 200x). At >= 3x edge:
+    # s011 holds 1 of 4 (25 %), s013 2 of 4 (50 %), s010 and s014 all 4 (s014 brighter)
+    four = [(300.0 + 10 * j, {10: 5e3, 11: 5e3, 12: 5e3, 13: 5e3, 14: 6e3}) for j in range(4)]
     for j, (_m, hs) in enumerate(four):
         if j >= 1:
-            hs[10] = 150.0
-        if j >= 2:
             hs[11] = 150.0
-    four[0][1][12] = 9e3
-    _, u = _episodic_mz(_table(40, four))
+        if j >= 2:
+            hs[13] = 150.0
+    four[0][1][12] = 2e4
+    t = _table(40, four)
+    _, u = _episodic_mz(t)
     (e,) = u.attrs["episodes"]
     assert e["peak_sample"] == "s012"
-    assert e["wanted"] == ["s012", "s013", "s011"]        # distance 1 first (s013 holds more), never s010
-    _, u3 = _episodic_mz(_table(40, four), n_neighbours=3)
-    assert u3.attrs["episodes"][0]["wanted"] == ["s012", "s013", "s011", "s014"]
-    _, u0 = _episodic_mz(_table(40, four), neighbour_frac=0.26)
-    assert "s010" not in u0.attrs["episodes"][0]["wanted"][:3] and \
-        "s010" in _episodic_mz(_table(40, four), neighbour_frac=0.25, n_neighbours=4)[1].attrs["episodes"][0]["wanted"]
+    # nearest first even with fewer bins (s013 before s014 / s010); never s011 (25 %)
+    assert e["wanted"] == ["s012", "s013", "s014"]
+    _, u3 = _episodic_mz(t, n_neighbours=3)
+    assert u3.attrs["episodes"][0]["wanted"] == ["s012", "s013", "s014", "s010"]
+    _, u25 = _episodic_mz(t, neighbour_frac=0.25)
+    assert u25.attrs["episodes"][0]["wanted"] == ["s012", "s013", "s011"]
 
 
 # --------------------------------------------------------------------------- the budget
@@ -229,9 +232,10 @@ def test_the_budget_flags_only_when_a_wanted_file_is_left_out(fx):  # K_EPISODE_
 def test_a_file_the_cover_took_is_free(fx):
     t, _ = fx
     u = SS.episode_universe(t)
-    sel = SS.select_episode_samples(t, u, assigned=["ep21", "ep22", "ep20"], k_max=0)
+    sel = SS.select_episode_samples(t, u, assigned=["ep21", "ep22", "ep20"])
     m = sel.attrs["selection"]
-    assert len(sel) == 0 and m["n_free"] == 3 and m["stop_reason"] == SS.STOP_EXHAUSTED
+    assert len(sel) == 0 and m["n_free"] == 3 and m["k"] == 0 and m["stop_reason"] == SS.STOP_EXHAUSTED
+    assert m["episodes"][0]["files"] == ["ep21", "ep22", "ep20"] and m["episodes"][0]["picked"] == []
 
 
 # --------------------------------------------------------------------------- the row flag
@@ -242,7 +246,10 @@ def test_row_flags_by_peak_id_then_by_mz_for_a_row_without_one(fx):
     led = pk[["peak_id", "mz", "height", "key"]].copy()
     syn = pd.DataFrame([{"peak_id": None, "mz": float(pk.loc[pk["key"] == "E1", "mz"].iloc[0]) + 1e-4,
                          "height": 1.0, "key": "syn"},
-                        {"peak_id": None, "mz": 250.0, "height": 1.0, "key": "syn2"}])
+                        {"peak_id": None, "mz": 250.0, "height": 1.0, "key": "syn2"},
+                        # a row WITH a peak id the series does not list on an episodic bin: by id, not m/z
+                        {"peak_id": "other-1", "mz": float(pk.loc[pk["key"] == "S1", "mz"].iloc[0]) + 1e-4,
+                         "height": 1.0, "key": "idrow"}])
     led = pd.concat([led, syn], ignore_index=True)
     f = SS.episode_row_flags(led, "ep21", u, ["ep21"])
     assert set(led.loc[f, "key"]) == PLUME_KEYS | {"syn"}
@@ -345,3 +352,24 @@ def test_cli_flags():
     assert a.episodes is SS.EPISODE_DEFAULT and a.k_episode_max == SS.K_EPISODE_MAX
     a = p.parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "3"])
     assert a.episodes is False and a.k_episode_max == 3
+
+
+def test_cmd_batch_forwards_the_episode_knobs(monkeypatch):
+    from peaky import cli
+    from peaky import pipeline as PL
+    got = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_run_batch(**kw):
+        got.update(kw)
+        raise _Stop
+
+    monkeypatch.setattr(cli, "_require_creds", lambda: None)
+    monkeypatch.setattr(PL, "run_batch", fake_run_batch)
+    a = cli.build_parser().parse_args(["batch", "--batch", "B", "--no-episodes", "--k-episode-max", "5",
+                                       "--no-progress"])
+    with pytest.raises(_Stop):
+        cli.cmd_batch(a)
+    assert (got["episodes"], got["k_episode_max"]) == (False, 5)
