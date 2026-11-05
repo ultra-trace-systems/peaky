@@ -204,6 +204,17 @@ def test_the_merged_row_says_what_the_per_file_guard_held():
     t = str(merged.at[0, "tier_reason"])
     assert t.startswith("isotope contradiction in 1 of 2 file(s): 13C reads ") and merged.at[0, "tier"] == "Assigned"
     assert pd.isna(merged.at[1, "tier_reason"])
+    # the vote's key is the ION: a batch-level re-read of the same ion (C13H14O4 [M+NH4]+ in the file,
+    # C13H17NO4 [M+H]+ on the merged row) carries the file's note; another ion does not
+    fact = "13C reads 6.0 C for 13 (tol 3.2, per-file 13C, 1 files)"
+    pfl = pd.DataFrame([dict(mz=268.1180, role="M0", neutral_formula="C13H14O4", adduct="[M+NH4]+", tier="Candidate",
+                             tier_reason=f"isotope contradiction: {fact}")])
+    m4 = pd.DataFrame([dict(mz=268.1180, neutral_formula="C13H17NO4", adduct="[M+H]+", tier="Candidate",
+                            tier_reason=pd.NA, srcs="g1"),
+                       dict(mz=268.1180, neutral_formula="C14H17NO3", adduct="[M+H]+", tier="Candidate",
+                            tier_reason=pd.NA, srcs="g1")])
+    assert IG.merged_notes(m4, {"g1": pfl}, log=lambda *a: None) == 1
+    assert m4.at[0, "tier_reason"] == f"isotope contradiction in 1 of 1 file(s): {fact}" and pd.isna(m4.at[1, "tier_reason"])
 
 
 def test_the_batch_merge_holds_a_reading_its_pooled_facts_contradict(tmp_path, monkeypatch):

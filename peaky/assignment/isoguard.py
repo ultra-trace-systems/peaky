@@ -193,13 +193,15 @@ def guard_ledger(ledger: pd.DataFrame, pairs: pd.DataFrame | None, *, log=print)
 
 
 def merged_notes(merged: pd.DataFrame, ledgers: dict, *, log=print) -> int:
-    """Say the per-file guard on the merged row: a merged reading whose per-file
-    M0 rows (the files in its ``srcs``, the same neutral and adduct) carry the
-    guard's note in k of its n files gets ``isotope contradiction in k of n
-    file(s): <the first file's fact>`` -- the vote reads the guarded tiers but
-    carries no per-file note, so a reading every file's guard held would sit at
-    Candidate with no reason. A note only; returns the rows noted."""
+    """Say the per-file guard on the merged row: a merged row whose ION
+    (assign_batch._ion_key, the vote's key: a batch-level re-read of the same ion
+    counts) the guard's note marks on a per-file M0 row of k of the n files in its
+    ``srcs`` gets ``isotope contradiction in k of n file(s): <the first file's
+    fact>`` -- the vote reads the guarded tiers but carries no per-file note, so
+    a reading every file's guard held would sit at Candidate with no reason. A
+    note only; returns the rows noted."""
     from peaky.assignment import cleanup as CU
+    from peaky.batch.assign_batch import _ion_key, _s
     if merged is None or not len(merged) or not ledgers or "srcs" not in merged.columns:
         return 0
     if "tier_reason" not in merged.columns:
@@ -210,16 +212,16 @@ def merged_notes(merged: pd.DataFrame, ledgers: dict, *, log=print) -> int:
             continue
         m = led[(led["role"].astype(str) == "M0")
                 & led["tier_reason"].astype(str).str.contains(NOTE_MARK + ":", regex=False)]
-        for n, a, tr in zip(m["neutral_formula"].astype(str), m["adduct"].astype(str), m["tier_reason"].astype(str)):
+        for n, a, tr in zip(m["neutral_formula"], m["adduct"], m["tier_reason"].astype(str)):
             fact = tr[tr.index(NOTE_MARK + ":") + len(NOTE_MARK) + 2:].split(" | ")[0]
-            idx.setdefault((str(sid), n, a), fact)
+            idx.setdefault((str(sid), _ion_key(_s(n), _s(a))), fact)
     if not idx:
         return 0
     noted = 0
     for i in merged.index:
         srcs = [x for x in _txt(merged.at[i, "srcs"]).split(",") if x]
-        n, a = str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"])
-        facts = [idx[(s, n, a)] for s in srcs if (s, n, a) in idx]
+        k = _ion_key(_s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"]))
+        facts = [idx[(s, k)] for s in srcs if (s, k) in idx]
         if facts:
             CU._note(merged, i, f"{NOTE_MARK} in {len(facts)} of {len(srcs)} file(s): {facts[0]}")
             noted += 1
