@@ -366,9 +366,9 @@ selected sample_ids (SAMPLING.md)
    lies >= 90 % inside the solvent's episode -- the
    spectra where one of the solvent's own ion forms (its reagent-profile forms and
    its proton-bound dimer) stands at >= 5x the edge and, for a form present in most
-   spectra, >= 5x its median there (`SOLVENT_LIFT`), in <= 50 % of the batch's
-   spectra (`SOLVENT_MAX_FRAC`; a solvent background in every spectrum is fine, its
-   episodes are what count) -- and that is in <= 50 % of the batch's spectra,
+   spectra, >= 5x its median there (`SOLVENT_LIFT`; which also keeps the episode to
+   at most half the batch's spectra; a solvent background in every spectrum is
+   fine, its episodes are what count) -- and that is in <= 50 % of the batch's spectra,
    and that shares at least 4 of the episode's spectra with the parent and the
    solvent ion (fewer: nothing is read), is read as that ion's cluster: the
    parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`,
@@ -377,13 +377,20 @@ selected sample_ids (SAMPLING.md)
    first in `alternatives`, the note `solvent cluster: ...` -- the same ion
    composition, read as a cluster, not as a new neutral. The solvent's ion forms are
    read one by one and only the forms in an episode count (a form at its background
-   in every spectrum still has its episodes). Its tier is the parent's when the pair
-   test passes -- the line tracks parent x solvent across those episode spectra
-   (Pearson r >= 0.7, `TRACK_R`; co-occurrence alone is no track) -- else the
-   parent's capped at Candidate. A merged reading of ANOTHER ion composition at that
-   mass is re-read as the cluster only when the pair test passes. The reagent-cluster strip below spares such a
-   row (a 12-ppm match to a urea cluster is no reason to drop a line the pair test
-   reads as the parent's cluster). `tables/solvent_clusters.csv`,
+   in every spectrum still has its episodes). The reading rests on the composition
+   and on co-occurrence with the solvent episode, so its tier is capped at
+   Candidate with the note `solvent cluster of <parent>: co-occurs with the
+   solvent` unless the track is SPECIFIC (`pair_test`): r(line, parent x solvent)
+   >= 0.7 (`TRACK_R`), >= r(line, solvent alone) + 0.2 (`SPECIFIC_GAIN`), the
+   parent varying over the episode (CV >= 0.3, `PARENT_CV_MIN`), on >= 6 episode
+   spectra (`SPECIFIC_MIN_N`) -- then the parent's tier. A plain r >= 0.7 is not
+   enough: with a flat persistent parent, parent x solvent is the solvent's own
+   profile, and on two uronium batches of a field campaign 94-97 % of RANDOM
+   persistent parents passed it beside an episode-confined line. A merged reading
+   of ANOTHER ion composition at that mass is re-read as the cluster only on the
+   specific test. The reagent-cluster strip below spares such a
+   row (a 12-ppm match to a urea cluster is no reason to drop a line read as the
+   parent's cluster). `tables/solvent_clusters.csv`,
    `merge_gates["solvent_clusters"]`.
 
 4a. **The reagent-water ladder** (`batch/reagent_water.py`; right after the vote
@@ -663,16 +670,27 @@ selected sample_ids (SAMPLING.md)
    `satellite_held`) only when the per-spectrum satellite test
    (`assignment/satellites.satellite_verdict`) calls the row an artefact of its
    brightest partner: over the batch series' spectra holding both lines the
-   row's height is the partner's times one number -- a fit through the origin
-   with centred R^2 >= 0.9 (`SAT_FIT_R2`) on >= 5 spectra (`SAT_FIT_MIN_N`) --
+   row's height is the partner's times one number -- slope k = sum(ps)/sum(p^2)
+   through the origin, decided on R^2 = 1 - sum((s - k p)^2) / sum((s - mean s)^2)
+   >= 0.9 (`SAT_FIT_R2`; the origin fit's residual over the centred variance: it
+   demands proportionality and explained variation) on >= 5 spectra
+   (`SAT_FIT_MIN_N`) --
    and it has no 13C line of its own there (the median, over the spectra where
    its carbon count predicts the line at >= 3x the spectrum's edge, of the line's
    height over that prediction outside 0.5-2x; untestable counts as none). The
    test reads any partner within ±4.0 mDa at >= 2x the row (`SAT_HOLD_MIN_X`) in
    every file, not only the 10x satellites of the note: the side band's amplitude
-   is no fixed fraction of its parent. `sideband_holds.csv` carries the fit
-   (`fit_n`, `fit_slope`, `fit_r2`, `fit_r2_uncentred`, `own_13c_series`,
-   `satellite_test`).
+   is no fixed fraction of its parent. What the test proves: an explained line
+   follows its parent PROPORTIONALLY; a line that fails does not follow its parent
+   proportionally -- nothing more. A sub-linear artefact (height ~ parent^0.4, the
+   measured exponent of the uronium partners) or one driven by the trap's ion load
+   fails the same way, and the bar has little power even on true proportional
+   companions (27 % of a field campaign's 13C children pass it); the log-log
+   exponent and its R^2 are reported beside the fit. M0's decision kept the
+   satellite clause a note until such a per-spectrum test existed: it is now live,
+   and the clause holds only on its artefact verdict. `sideband_holds.csv` carries
+   the fit (`fit_n`, `fit_slope`, `fit_r2`, `fit_r2_uncentred`, `fit_loglog_slope`,
+   `fit_loglog_r2`, `own_13c_series`, `satellite_test`).
    A row with its own 13C line in every such file (a line at +1.00336 Da at
    0.5-2× the share its own carbon count predicts) is an M0 of its own: neither
    held nor noted. `tables/sideband_holds.csv` lists one row per held or noted
@@ -927,17 +945,25 @@ selected sample_ids (SAMPLING.md)
    file reading the ion. Co-occurrence with other episode lines is never
    evidence; partners in another reagent's batch in the same minutes are not
    available inside one batch and are not read. Promotion is open only to ions of
-   C H N O S Cl Br; a Candidate that passes is promoted. Otherwise the reading is
-   not Assigned from its episode: a Candidate stays one, a reading the vote made
-   Assigned keeps that tier (`DEMOTES = False`, the default: on a 12-ledger field
-   arm demoting cost two true episode lines whose 13C line is untestable at their
-   height; `True` makes them Candidate, a curated neutral excepted), the note names
-   the failed clauses, and where no
-   isotope line was testable the claim column `episode_claim` reads `single
-   episode, isotopes untestable` (the evidence level is untouched).
-   `tables/episode_evidence.csv` (one row per judged reading: the five clauses),
-   `merge_gates["episode_evidence"]` (judged, assigned, promoted, demoted,
-   kept_assigned, untestable, candidate).
+   C H N O S Cl Br (never a radical or ion-only reading); a Candidate that passes
+   is promoted. Otherwise the reading is not Assigned from its episode: a
+   Candidate stays one, and what a reading the vote made Assigned becomes is the
+   mode (`--episode-evidence`, `episode_evidence.MODE`): **measured** (the
+   default) -- Candidate when a MEASURED fact fails ((a); (b) read and
+   contradicting; (c) a rival left; (d) a hold; (e) no second fact), kept with the
+   note when its only failure is "(b) untestable" (a line too dim to test is no
+   evidence either way: on a 12-ledger field arm demoting those cost two true
+   episode lines); **promote-only** -- kept with the note; **strict** -- Candidate
+   on any failed clause. A curated neutral keeps the vote's tier in every mode.
+   The note names the failed clauses, and where no isotope line was testable the
+   claim column `episode_claim` reads `single episode, isotopes untestable` (the
+   evidence level is untouched). The step runs after the stamp and the levels: a
+   reading it promotes or demotes keeps its earlier tier in
+   `per_file/_batch_ts.parquet`'s stamp and in the level tables.
+   `tables/episode_evidence.csv` (one row per judged reading: the five clauses,
+   `measured_failure`, `mode`, `prior_reason` = the row's `tier_reason` before the
+   step), `merge_gates["episode_evidence"]` (judged, assigned, promoted, demoted,
+   kept_assigned, untestable, candidate, mode).
 
 6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before
    the merged ledger is written). Every per-file row bright in its file (>= 5x the
@@ -1052,7 +1078,7 @@ All in `peaky/batch/assign_batch.py`.
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `vote_class` (0 / 1 / 2: the vote class of that file's reading, the key the vote ranked ions by; not an evidence level) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge), with the isotopologue gate's decisions recorded (step 4c: a stripped reading's M0 row is the parent's `iso_child`, else `unexplained`) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `episode` / `residual`, `bins_new`, `coverage`; `episode` = the episode an episode pick was taken for, when the stage picked one) |
-| `tables/episodes.csv` | the episode stage's episodes ([`SAMPLING.md`](SAMPLING.md) §3c): window, peak sample, bins, the files wanted / selected / picked / over budget; written whenever the stage runs |
+| `tables/episodes.csv` | the episode stage's episodes ([`SAMPLING.md`](SAMPLING.md) §3c): window, peak sample, bins, the files wanted / selected / picked (and, only under the optional `--k-episode-max` cap, the wanted files it left out); written whenever the stage runs |
 | `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung (n = 0 for a passing reagent-only core) — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
 | `tables/isotopologue_rows.csv` | the isotopologue gate (step 4c): one row per merged row judged on a parent's isotope line — the row, its `verdict` (`isotopologue` / `mixed` / `exempt`) and `action` (`stripped` / `note`), the line `label` and `expected` share, the main parent and every parent read, the median area / height ratios over `n_both` spectra, `n_tail`, the per-file role votes; header only when nothing was found or the gate did not run ([OUTPUTS.md](OUTPUTS.md)) |
 | `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |

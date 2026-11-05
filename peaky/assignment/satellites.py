@@ -1454,10 +1454,18 @@ def own_line(mz: np.ndarray, h: np.ndarray, mz0: float, h0: float, ion_counts: d
 # uncentred R^2 of a through-origin fit is close to 1 for any two positive series of
 # similar shape; it is reported beside it). A line whose parent hardly varies cannot
 # be shown to follow it (its centred R^2 is low): it is not called an artefact.
+# What the test proves and what it does not. Explained = the line follows its parent
+# PROPORTIONALLY across the spectra; a line that fails does not follow its parent
+# proportionally -- that is all. A sub-linear artefact (height ~ parent^0.4, the
+# measured exponent of the +-3.85 mDa partners of a uronium Orbitrap campaign) or one
+# driven by the trap's ion load / injection time fails the same way, and the bar has
+# little power even on truly proportional companions (27 % of the 13C children of the
+# same campaign pass it, median R^2 0.73). The log-log exponent and its R^2 are
+# reported beside the fit for that reason.
 # Known limit: an artefact of a parent whose own 13C line carries a side band too
 # has a "13C line" at +1.00336 at the PARENT's carbon share; when the reading's
-# carbon count is near the parent's, that line passes as its own and the test calls
-# the artefact an ion (the conservative direction for a hold).
+# carbon count is near the parent's, that line passes as its own and the test does
+# not call the line an artefact (the conservative direction for a hold).
 #: the fit must explain at least this share of the satellite's variance (centred R^2)
 SAT_FIT_R2 = 0.9
 #: the fewest spectra holding both lines the fit is read on
@@ -1470,16 +1478,28 @@ SAT_OWN_13C_BAND = (0.5, 2.0)
 def satellite_fit(parent_h, sat_h) -> dict:
     """The fit through the origin of a candidate satellite's height on its
     parent's, over the spectra where both appear (both heights finite and > 0):
-    {n, slope, r2 (centred), r2_uncentred}; r2 NaN with fewer than 2 such
-    spectra or no variance."""
+    {n, slope k = sum(ps) / sum(p^2), r2 = 1 - sum((s - k p)^2) / sum((s - mean s)^2)
+    (the origin fit's residual over the centred variance: it demands proportionality
+    AND explained variation, and can be strongly negative), r2_uncentred (over
+    sum(s^2)), loglog_slope / loglog_r2 (s ~ p^gamma, reported, never decided on)};
+    NaN with fewer than 2 such spectra or no variance."""
     p = np.asarray(parent_h, dtype=float)
     s = np.asarray(sat_h, dtype=float)
     ok = np.isfinite(p) & np.isfinite(s) & (p > 0) & (s > 0)
     p, s = p[ok], s[ok]
     n = int(len(p))
-    out = {"n": n, "slope": float("nan"), "r2": float("nan"), "r2_uncentred": float("nan")}
+    out = {"n": n, "slope": float("nan"), "r2": float("nan"), "r2_uncentred": float("nan"),
+           "loglog_slope": float("nan"), "loglog_r2": float("nan")}
     if n < 2:
         return out
+    # beside it, the power law s ~ p^gamma (least squares on the logs): a proportional companion reads
+    # gamma ~ 1; the decision stays the through-origin fit's
+    lp, ls = np.log(p), np.log(s)
+    if lp.std() > 0:
+        g, c0 = np.polyfit(lp, ls, 1)
+        tot_l = float(((ls - ls.mean()) ** 2).sum())
+        out["loglog_slope"] = float(g)
+        out["loglog_r2"] = (1.0 - float(((ls - (g * lp + c0)) ** 2).sum()) / tot_l) if tot_l > 0 else float("nan")
     k = float((p * s).sum() / (p * p).sum())
     res = float(((s - k * p) ** 2).sum())
     tot_c = float(((s - s.mean()) ** 2).sum())
@@ -1530,13 +1550,15 @@ def satellite_verdict(parent_h, sat_h, *, own_13c: bool | None = None, r2_min: f
     if f["n"] < min_n:
         why = f"{f['n']} spectra hold both lines (< {min_n}): not testable"
     elif not explained:
-        why = (f"the parent does not explain it: R2 {f['r2']:.2f} < {r2_min:g} on {f['n']} spectra "
+        why = (f"it does not follow its parent proportionally: R2 {f['r2']:.2f} < {r2_min:g} on {f['n']} spectra "
                f"(slope {f['slope']:.3g})")
     elif own_13c is True:
         why = (f"explained by the parent (R2 {f['r2']:.2f}, slope {f['slope']:.3g}, {f['n']} spectra) "
-               "but it has a 13C line of its own: an ion")
+               "but it has a 13C line of its own: no artefact")
     else:
         why = (f"explained by the parent (R2 {f['r2']:.2f}, slope {f['slope']:.3g}, {f['n']} spectra) and "
                + ("no 13C line of its own" if own_13c is False else "its 13C line untestable")
                + ": an artefact")
+    if np.isfinite(f["loglog_slope"]):
+        why += f" [log-log exponent {f['loglog_slope']:.2f}, R2 {f['loglog_r2']:.2f}]"
     return {**f, "explained": explained, "own_13c": own_13c, "artefact": art, "why": why}

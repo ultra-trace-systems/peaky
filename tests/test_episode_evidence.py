@@ -131,15 +131,57 @@ def test_co_occurrence_alone_is_no_evidence(tmp_path, monkeypatch):
     assert summ["merge_gates"]["episode_evidence"]["untestable"] == 1
 
 
-def test_a_failing_reading_the_vote_assigned_keeps_its_tier_unless_demotion_is_on(tmp_path, monkeypatch):  # DEMOTES
-    assert EE.DEMOTES is False
-    summ, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
+@pytest.mark.parametrize("mode,dim_tier,single_tier", [
+    (None, "Assigned", "Candidate"),            # the default, "measured": an untestable line kept, (e) failed demoted
+    ("measured", "Assigned", "Candidate"),
+    ("promote-only", "Assigned", "Assigned"),   # every failing vote-Assigned row kept with the note
+    ("strict", "Candidate", "Candidate"),       # any failed clause demotes
+])
+def test_the_three_episode_evidence_modes(tmp_path, monkeypatch, mode, dim_tier, single_tier):     # MODE
+    assert EE.MODE == "measured" and EE.MODES == ("measured", "promote-only", "strict")
+    kw = {} if mode is None else {"episode_evidence": mode}
+    # the dim plume ion, Assigned by the files: its ONLY failure is "(b) untestable" (3 episode files: (e) holds)
+    summ, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8, **kw)
     r = _get(m, *DIM)
-    assert r["tier"] == "Assigned" and r["episode_claim"] == EE.UNTESTABLE_CLAIM
-    assert EE.NOTE_MARK in r["tier_reason"] and summ["merge_gates"]["episode_evidence"]["kept_assigned"] == 1
-    monkeypatch.setattr(EE, "DEMOTES", True)
-    summ2, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8)
-    assert _get(m2, *DIM)["tier"] == "Candidate" and summ2["merge_gates"]["episode_evidence"]["demoted"] == 1
+    assert r["tier"] == dim_tier and r["episode_claim"] == EE.UNTESTABLE_CLAIM and EE.NOTE_MARK in r["tier_reason"]
+    assert summ["merge_gates"]["episode_evidence"]["mode"] == (mode or "measured")
+    t = _table(tmp_path / "a", "episode_evidence.csv")
+    row = t[t["neutral_formula"] == DIM[0]].iloc[0]
+    assert not bool(row["measured_failure"]) and row["mode"] == (mode or "measured")
+    # the plume ion in ONE episode file, Assigned by it: (e) fails -- a MEASURED failure
+    _s, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True), k_episode_max=0, **kw)
+    r2 = _get(m2, *E1)
+    assert r2["tier"] == single_tier and "(e) one episode file, no adduct partner" in r2["tier_reason"]
+    t2 = _table(tmp_path / "b", "episode_evidence.csv")
+    assert bool(t2[t2["neutral_formula"] == E1[0]].iloc[0]["measured_failure"])
+
+
+def test_an_unknown_mode_is_refused():
+    m, led, ts, w = _unit()
+    with pytest.raises(ValueError):
+        _judge(m, led, ts, w, mode="lenient")
+
+
+def test_the_cli_and_the_pipeline_carry_the_mode(monkeypatch):
+    from peaky import cli
+    from peaky import pipeline as PL
+    p = cli.build_parser()
+    assert p.parse_args(["batch", "--batch", "B"]).episode_evidence == "measured"
+    got = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_run_batch(**kw):
+        got.update(kw)
+        raise _Stop
+    monkeypatch.setattr(cli, "_require_creds", lambda: None)
+    monkeypatch.setattr(PL, "run_batch", fake_run_batch)
+    with pytest.raises(_Stop):
+        cli.cmd_batch(p.parse_args(["batch", "--batch", "B", "--episode-evidence", "strict", "--no-progress"]))
+    assert got["episode_evidence"] == "strict"
+    with pytest.raises(SystemExit):
+        p.parse_args(["batch", "--batch", "B", "--episode-evidence", "lenient"])
 
 
 def test_one_episode_file_needs_an_adduct_partner_in_its_spectrum(tmp_path, monkeypatch):        # (e)
@@ -234,12 +276,13 @@ def test_without_a_calibrated_window_the_mass_cannot_hold():                    
 
 
 def test_a_curated_neutral_keeps_the_votes_tier():
-    m, led, ts, w = _unit()
-    _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), demote=True)
-    assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
-    m, led, ts, w = _unit()
-    _t, s = _judge(m, led, ts, w, demote=True)
-    assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
+    for mode in ("strict", "measured"):           # the unit's one file fails (e): a measured failure
+        m, led, ts, w = _unit()
+        _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), mode=mode)
+        assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
+        m, led, ts, w = _unit()
+        _t, s = _judge(m, led, ts, w, mode=mode)
+        assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
 
 
 @pytest.mark.parametrize("nf,ad,cls", [
@@ -307,28 +350,6 @@ def test_promotion_is_closed_to_elements_no_isotope_speaks_for():               
 K1 = ("C16H22O4", "[M+(C5H9NO)H]+")
 
 
-def test_the_solvent_cluster_reads_as_the_persistent_ions_cluster(tmp_path, monkeypatch):
-    summ, m = _run(tmp_path, monkeypatch, k_episode_max=8)
-    r = _get(m, *K1)
-    assert r["tier"] == "Assigned" and r["solvent_cluster_of"] == "C16H22O4 [M+H]+ + C5H9NO"
-    assert "C21H31NO5 [M+H]+ (the covalent reading)" in r["alternatives"]
-    assert EE.CLUSTER_MARK in r["tier_reason"] and "the parent's tier" in r["tier_reason"]
-    assert abs(r["mz"] - C.ion_mz(*K1)) < 0.001
-    assert not len(m[m["neutral_formula"] == "C21H31NO5"])
-    t = _table(tmp_path, "solvent_clusters.csv")
-    assert len(t) == 1 and bool(t["pair_test"].iloc[0]) and t["track_r"].iloc[0] >= 0.99
-    # the reagent-cluster strip spared it (the urea hexamer.NH4+ sits 1.4 ppm away)
-    drops = _table(tmp_path, "vote_drops.csv")
-    assert not drops["reason"].astype(str).str.contains("reagent-cluster strip").any()
-    assert summ["merge_gates"]["solvent_clusters"]["relabelled"] == 1
-
-
-def test_a_cluster_that_does_not_track_parent_x_solvent_is_capped_at_candidate(tmp_path, monkeypatch):  # TRACK_R
-    _s, m = _run(tmp_path, monkeypatch, build=dict(cluster_track=False), k_episode_max=8)
-    r = _get(m, *K1)
-    assert r["tier"] == "Candidate" and "the pair test not passed" in r["tier_reason"]
-
-
 def test_a_line_outside_the_episode_is_no_cluster(tmp_path, monkeypatch):                         # CONFINED_FRAC
     summ, m = _run(tmp_path, monkeypatch, build=dict(cluster_outside=True), k_episode_max=8)
     assert not len(m[m["adduct"] == K1[1]])
@@ -352,82 +373,6 @@ def test_the_cluster_label_names_the_solvent_and_resolves_in_a_fresh_lookup(addu
     assert EE.cluster_label(adduct, "C5H9NO") == label
     assert abs(C.ion_mz("C16H22O4", label) - (C.ion_mz("C16H22O4", adduct) + C.neutral_mass("C5H9NO"))) < 1e-9
     assert label not in C.ADDUCT_SHIFTS or True     # resolved by chemistry.cluster_shift, registered or not
-
-
-def _cluster_series(n=20, parent_in=20, bright=(5, 6, 7, 8, 9), cluster_at=(5, 6, 7, 8, 9), track=True,
-                    parent_tier="Assigned", background=False):
-    """A batch series: a persistent parent, the NMP.urea ion bright in `bright` (over a faint
-    background in every spectrum with `background`), the cluster in `cluster_at` (tracking
-    parent x solvent, or not)."""
-    pm = C.ion_mz("C16H22O4", "[M+H]+")
-    sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
-    km = pm + C.neutral_mass("C5H9NO")
-    rows = []
-    for k in range(n):
-        sid = f"s{k:02d}"
-        hp = 1e5 * (1 + 0.3 * np.sin(k))
-        hs = 1e6 * (1 + 0.5 * np.cos(k)) if k in bright else (1e3 * (1 + 0.2 * np.sin(k)) if background else 0.0)
-        if k < parent_in:
-            rows.append(dict(sample_item_id=sid, mz=pm, height=hp))
-        if hs:
-            rows.append(dict(sample_item_id=sid, mz=sm, height=hs))
-        if k in cluster_at:
-            # outside the solvent's episode the cluster stands as high as inside it (not confined)
-            hk = 0.02 * hp * (hs if k in bright else 1e6) / 1e6 if track else 1e3 * (1 + (k % 3))
-            rows.append(dict(sample_item_id=sid, mz=km, height=hk))
-
-        rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
-    ts = pd.DataFrame(rows)
-    merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
-                                alternatives="", tier_reason=""),
-                           dict(mz=km, neutral_formula="C21H31NO5", adduct="[M+H]+", tier="Assigned", episode=True,
-                                alternatives="", tier_reason="")])
-    return merged, ts
-
-
-@pytest.mark.parametrize("kw,relabelled,tier", [
-    ({}, True, "Assigned"),                                              # tracks: the parent's tier
-    (dict(track=False), True, "Candidate"),                             # TRACK_R: capped at Candidate
-    (dict(parent_tier="Candidate"), False, None),                       # a KNOWN (Assigned) persistent ion only
-    (dict(parent_in=9), False, None),                                   # PERSIST_FRAC: the parent in 9 of 20
-    (dict(cluster_at=(4, 5, 6, 7, 8, 9)), False, None),                 # CONFINED_FRAC: 5 of 6 in the episode
-    (dict(cluster_at=(5, 6, 7)), False, None),                          # TRACK_MIN_N: 3 shared spectra
-    (dict(cluster_at=(5, 6, 7, 8)), True, "Assigned"),                  # ... 4
-    (dict(bright=tuple(range(20)), cluster_at=tuple(range(11))), False, None),   # the solvent bright everywhere
-    (dict(bright=tuple(range(11))), False, None),                       # SOLVENT_MAX_FRAC: bright in 11 of 20
-    (dict(bright=tuple(range(10))), True, "Assigned"),                  # ... in 10 of 20: an episode
-    (dict(background=True), True, "Assigned"),                          # a solvent background everywhere + an episode
-    (dict(background=True, cluster_at=(5, 6, 7, 8, 9, 12)), False, None),    # 12: the background, not the episode
-])
-def test_the_cluster_rules(kw, relabelled, tier):
-    merged, ts = _cluster_series(**kw)
-    tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert (s["relabelled"] == 1) is relabelled
-    if relabelled:
-        r = merged.iloc[1]
-        assert (r["neutral_formula"], r["adduct"], r["tier"]) == ("C16H22O4", "[M+(C5H9NO)H]+", tier)
-    else:
-        assert merged.iloc[1]["neutral_formula"] == "C21H31NO5"
-    assert (EE.SOLVENT_X, EE.SOLVENT_MAX_FRAC, EE.PERSIST_FRAC, EE.CONFINED_FRAC, EE.CLUSTER_MAX_FRAC, EE.TRACK_R,
-            EE.TRACK_MIN_N, EE.SOLVENT_LIFT) == (5.0, 0.5, 0.5, 0.9, 0.5, 0.7, 4, 5.0)
-
-
-def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
-    # the solvent bright in 10 of 20 spectra and the cluster in those 10 plus one more (11 of 20, > 50 %)
-    merged, ts = _cluster_series(bright=tuple(range(10)), cluster_at=tuple(range(10)))
-    _t, s = EE.read_solvent_clusters(merged.copy(), ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert s["relabelled"] == 1
-    merged2, ts2 = _cluster_series(bright=tuple(range(10)), cluster_at=tuple(range(11)))
-    _t, s2 = EE.read_solvent_clusters(merged2, ts2, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert s2["relabelled"] == 0
-
-
-def test_a_dim_solvent_is_no_episode():                                                           # SOLVENT_X
-    merged, ts = _cluster_series()
-    sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
-    ts.loc[(ts["mz"] - sm).abs() < 1e-6, "height"] = 400.0             # 4x the 100-cps edge
-    _tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert s["relabelled"] == 0 and s["solvents_bright"] == []
 
 
 # --------------------------------------------------------------------------- Part D in the batch
@@ -459,49 +404,372 @@ def test_the_14n_twin_excludes_a_rival_with_another_label_count():              
     assert EE._excluded(_facts(9.0, {"twin": f}, snr=100.0), me, rival) is None       # untestable
 
 
-def test_co_occurrence_over_a_solvent_background_is_capped():                                    # the episode's spectra
-    # over a solvent background the cluster in the 5 episode spectra does not follow parent x solvent
-    # there: read as the cluster (same ion), but co-occurrence is no track -- Candidate
-    merged, ts = _cluster_series(background=True, track=False)
-    _t, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Candidate"
+# --------------------------------------------------------------------------- Part C: the specific track (repair)
+PM = C.ion_mz("C16H22O4", "[M+H]+")
+SOLV_UREA = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
+SOLV_DIMER = 2 * C.neutral_mass("C5H9NO") + C.M["H"] - C.M_E
+KM = PM + C.neutral_mass("C5H9NO")
+EP = tuple(range(4, 14))                     # a 10-spectrum episode in 24
 
 
-def test_the_track_is_read_on_the_episodes_spectra_only():                                       # the episode's spectra
-    # 24 spectra: NMP.urea at a background everywhere and in an episode in spectra 0-9; the cluster flat
-    # (2e3) through the episode -- no track -- and once outside it, at 20 cps where parent x solvent is
-    # at its background too. Over every spectrum that one low pair would carry r; the episode alone does not
-    pm = C.ion_mz("C16H22O4", "[M+H]+")
-    sm = C.ion_mz("C5H9NO", "[M+(CH4N2O)H]+")
-    km = pm + C.neutral_mass("C5H9NO")
+def _hp(k, a=0.6):
+    return 1e5 * (1 + a * np.sin(2.3 * k + 1))
+
+
+def _hs(k):
+    return 1e6 * (1 + 0.5 * np.cos(0.9 * k))
+
+
+def _cseries(n=24, ep=EP, cluster_at=None, track=True, a=0.6, parent_in=None, parent_tier="Assigned",
+             background=False, form=SOLV_UREA, dppm=0.0, decoys=0, seed=7):
+    """A batch series: a persistent parent (amplitude `a` of its own variation), the NMP ion (`form`)
+    in an episode `ep` (over a 1e3 background everywhere with `background`), the parent's NMP cluster
+    in `cluster_at` (parent x solvent, or a flat pattern with track=False), `decoys` random persistent
+    Assigned lines, noise picks at 100 cps (the edge)."""
+    cluster_at = ep if cluster_at is None else cluster_at
+    parent_in = n if parent_in is None else parent_in
+    rng = np.random.default_rng(seed)
+    # decoy persistent parents: nearly flat to moderately varying (CV ~0-0.25), as the field's persistent ions are
+    dec = [(400.0 + 1.37 * j, rng.uniform(0.02, 0.35), rng.uniform(0.3, 2.5), rng.uniform(0, 6.3)) for j in range(decoys)]
     rows = []
-    for k in range(24):
+    for k in range(n):
         sid = f"s{k:02d}"
-        hs = 1e6 * (1 + 0.5 * np.cos(k)) if k < 10 else 1e3
-        rows += [dict(sample_item_id=sid, mz=pm, height=1e5 * (1 + 0.3 * np.sin(k))),
-                 dict(sample_item_id=sid, mz=sm, height=hs)]
-        if k < 10:
-            rows.append(dict(sample_item_id=sid, mz=km, height=2e3 * (1 + 0.01 * (k % 2))))
-        elif k == 10:
-            rows.append(dict(sample_item_id=sid, mz=km, height=20.0))
-        rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=10.0) for j in range(20)]
+        hs = _hs(k) if k in ep else (1e3 if background else 0.0)
+        if k < parent_in:
+            rows.append(dict(sample_item_id=sid, mz=PM, height=_hp(k, a)))
+        if hs:
+            rows.append(dict(sample_item_id=sid, mz=form, height=hs))
+        if k in cluster_at:
+            hk = 0.02 * _hp(k, a) * (_hs(k) if k in ep else 1e6) / 1e6 if track else 2e3 * (1 + 0.1 * (k % 2))
+            rows.append(dict(sample_item_id=sid, mz=KM * (1 + dppm * 1e-6), height=hk))
+        for m_, c_, w_, ph in dec:
+            rows.append(dict(sample_item_id=sid, mz=m_, height=1e5 * (1 + c_ * np.sin(w_ * k + ph))))
+        rows += [dict(sample_item_id=sid, mz=60.0 + 11.3 * j, height=100.0) for j in range(20)]
     ts = pd.DataFrame(rows)
-    merged = pd.DataFrame([dict(mz=pm, neutral_formula="C16H22O4", adduct="[M+H]+", tier="Assigned", episode=False,
+    merged = pd.DataFrame([dict(mz=PM, neutral_formula="C16H22O4", adduct="[M+H]+", tier=parent_tier, episode=False,
                                 alternatives="", tier_reason=""),
-                           dict(mz=km, neutral_formula="C21H31NO5", adduct="[M+H]+", tier="Assigned", episode=True,
-                                alternatives="", tier_reason="")])
-    tab, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
-    assert s["relabelled"] == 1 and merged.iloc[1]["tier"] == "Candidate"
-    assert tab["n_track"].iloc[0] == 10 and tab["track_r"].iloc[0] < 0.7
+                           dict(mz=KM * (1 + dppm * 1e-6), neutral_formula="C21H31NO5", adduct="[M+H]+",
+                                tier="Assigned", episode=True, alternatives="", tier_reason="")])
+    return merged, ts, dec
 
 
-def test_another_ion_at_the_cluster_mass_is_re_read_only_on_the_pair_test():                    # same ion or track
-    # a merged reading of a different composition 0.5 ppm from parent + NMP: kept when the line does not
-    # track parent x solvent, re-read as the cluster when it does
-    for track, relabelled in ((False, 0), (True, 1)):
-        merged, ts = _cluster_series(track=track)
+def _read(merged, ts):
+    return EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+
+
+def test_the_series_construction_is_what_the_cluster_tests_need():
+    ep = list(EP)
+    p = np.array([_hp(k) for k in ep]); s = np.array([_hs(k) for k in ep]); k_ = 0.02 * p * s / 1e6
+    pt = EE.pair_test(k_, p, s)
+    assert pt["specific"] and pt["r"] > 0.99 and pt["r"] - pt["r_solvent"] >= 0.2 and pt["cv_parent"] >= 0.3
+    pf = np.array([_hp(k, 0.05) for k in ep])
+    assert not EE.pair_test(0.02 * pf * s / 1e6, pf, s)["specific"]          # a flat parent
+
+
+@pytest.mark.parametrize("kw,relabelled,tier", [
+    ({}, True, "Assigned"),                                              # the specific track: the parent's tier
+    (dict(a=0.05), True, "Candidate"),                                   # a flat parent: co-occurs with the solvent
+    (dict(track=False), True, "Candidate"),                              # no track: co-occurs with the solvent
+    (dict(cluster_at=EP[:5]), True, "Candidate"),                        # 5 shared spectra (< SPECIFIC_MIN_N 6)
+    (dict(cluster_at=EP[:6]), True, "Assigned"),                         # 6
+    (dict(cluster_at=EP[:3]), False, None),                              # TRACK_MIN_N: 3 shared spectra
+    (dict(cluster_at=EP[:4]), True, "Candidate"),                        # ... 4
+    (dict(parent_tier="Candidate"), False, None),                        # a KNOWN (Assigned) persistent ion only
+    (dict(parent_in=11), False, None),                                   # PERSIST_FRAC: the parent in 11 of 24
+    (dict(cluster_at=(2,) + EP), True, "Assigned"),                      # CONFINED_FRAC: 10 of 11 = 0.909 reads
+    (dict(background=True), True, "Assigned"),                           # a solvent background everywhere + an episode
+    (dict(background=True, cluster_at=EP + (20,)), True, "Assigned"),    # 10 of 11 spectra inside: confined
+    (dict(background=True, cluster_at=EP[:8] + (20, 21)), False, None),  # 8 of 10 inside: not confined
+    (dict(form=SOLV_DIMER), True, "Assigned"),                           # the solvent seen only as its dimer
+    (dict(dppm=2.5), True, "Assigned"),                                  # inside the 3-ppm cluster window
+    (dict(dppm=4.5), False, None),                                       # outside it
+])
+def test_the_cluster_rules(kw, relabelled, tier):
+    merged, ts, _d = _cseries(**kw)
+    tab, s = _read(merged, ts)
+    assert (s["relabelled"] == 1) is relabelled, (kw, s)
+    r = merged.iloc[1]
+    if relabelled:
+        assert (r["neutral_formula"], r["adduct"], r["tier"]) == ("C16H22O4", "[M+(C5H9NO)H]+", tier)
+        if tier == "Candidate":
+            assert f"solvent cluster of C16H22O4 [M+H]+: {EE.CO_OCCURS}" in r["tier_reason"]
+            assert not bool(tab["pair_test"].iloc[0])
+        else:
+            assert "specifically" in r["tier_reason"] and bool(tab["pair_test"].iloc[0])
+    else:
+        assert r["neutral_formula"] == "C21H31NO5"
+
+
+def test_cluster_confinement_reads_the_lines_presence():                                         # CONFINED_FRAC
+    # no background: a spectrum outside the episode has no solvent; 10 of 11 cluster spectra inside reads,
+    # 9 of 11 (0.82) does not
+    m1, ts1, _d = _cseries(cluster_at=EP + (2,))
+    assert _read(m1, ts1)[1]["relabelled"] == 1
+    m2, ts2, _d = _cseries(cluster_at=EP + (1, 2))
+    assert _read(m2, ts2)[1]["relabelled"] == 0
+
+
+def test_cluster_max_frac():                                                                       # CLUSTER_MAX_FRAC
+    # a 12-spectrum episode in 24 and the cluster in it (12 = half): reads; in 13 (all 13 inside a 13-spectrum
+    # episode) it is in more than half the batch: no plume cluster
+    m1, ts1, _d = _cseries(ep=tuple(range(4, 16)))
+    assert _read(m1, ts1)[1]["relabelled"] == 1
+    m2, ts2, _d = _cseries(ep=tuple(range(4, 17)))
+    assert _read(m2, ts2)[1]["relabelled"] == 0
+
+
+def test_a_dim_solvent_is_no_episode():                                                           # SOLVENT_X
+    merged, ts, _d = _cseries()
+    ts.loc[(ts["mz"] - SOLV_UREA).abs() < 1e-6, "height"] = 400.0                # 4x the 100-cps edge
+    tab, s = _read(merged, ts)
+    assert s["relabelled"] == 0 and s["solvents_bright"] == []
+
+
+def _decoy_rates(a):
+    merged, ts, dec = _cseries(decoys=60, a=a)
+    line = EE._series_lines(ts)
+    ep = [f"s{k:02d}" for k in EP]
+    ks, ss = line(KM).reindex(ep), line(SOLV_UREA).reindex(ep)
+    own = EE.pair_test(ks, line(PM).reindex(ep), ss)
+    plain = spec = 0
+    for m_, *_r in dec:
+        pt = EE.pair_test(ks, line(m_).reindex(ep), ss)
+        plain += int(pt["r"] >= EE.TRACK_R)
+        spec += int(pt["specific"])
+    return own, plain / len(dec), spec / len(dec)
+
+
+def test_random_persistent_parents_fail_the_specific_test():                                      # the decoy test
+    # 60 random persistent lines (CV ~0-0.25) beside the episode-confined cluster: the SPECIFIC test is passed
+    # by <= 10 % of them, while the cluster's own (varying) parent passes it ...
+    own, plain, spec = _decoy_rates(0.6)
+    assert own["specific"] and spec <= 0.1, (plain, spec)
+    # ... and with a flat true parent (the field's case) the plain track r >= 0.7 is the solvent episode's
+    # profile: most random parents pass it, none passes the specific test, the true one neither
+    own_f, plain_f, spec_f = _decoy_rates(0.05)
+    assert plain_f >= 0.5 and spec_f <= 0.1 and not own_f["specific"] and own_f["r"] >= EE.TRACK_R, (plain_f, spec_f)
+
+
+def _pt_case(n=10, a=0.6, mix=0.0, noise=0.0, seed=0, start=0):
+    """(k, p, s): a parent of amplitude a, the solvent, and k = (1 - mix) x parent x solvent + mix x solvent
+    (scaled), with log-normal noise, over spectra start .. start + n - 1."""
+    rng = np.random.default_rng(seed)
+    kk = np.arange(start, start + n)
+    p = _hp(kk, a); s = _hs(kk)
+    prod = p * s / (p * s).mean()
+    k = ((1 - mix) * prod + mix * s / s.mean()) * np.exp(rng.normal(0, noise, n))
+    return k, p, s
+
+
+def _find(pred, **fixed):
+    """A deterministic search over mix / noise / seed for a pair-test case whose statistics satisfy `pred`."""
+    for seed in range(40):
+        for mix in np.linspace(0.0, 1.0, 21):
+            for noise in (0.0, 0.05, 0.1, 0.2, 0.3, 0.5):
+                case = _pt_case(mix=mix, noise=noise, seed=seed, **fixed)
+                pt = EE.pair_test(*case)
+                if pred(pt):
+                    return pt
+    raise AssertionError("no case found")
+
+
+def test_the_pair_test_thresholds_at_their_boundaries():                                          # pair_test
+    ok = dict(cv=lambda pt: pt["cv_parent"] >= 0.35)
+    # r: 0.65 fails, 0.75 passes (gain and CV comfortably met)
+    lo = _find(lambda pt: 0.62 <= pt["r"] <= 0.68 and pt["r"] - pt["r_solvent"] >= 0.3 and ok["cv"](pt))
+    hi = _find(lambda pt: 0.72 <= pt["r"] <= 0.78 and pt["r"] - pt["r_solvent"] >= 0.3 and ok["cv"](pt))
+    assert not lo["specific"] and hi["specific"]
+    # the gain over the solvent alone: 0.15 fails, 0.25 passes (r >= 0.8)
+    g1 = _find(lambda pt: pt["r"] >= 0.8 and 0.12 <= pt["r"] - pt["r_solvent"] <= 0.18 and ok["cv"](pt))
+    g2 = _find(lambda pt: pt["r"] >= 0.8 and 0.22 <= pt["r"] - pt["r_solvent"] <= 0.28 and ok["cv"](pt))
+    assert not g1["specific"] and g2["specific"]
+    # the parent's CV: 0.25 fails, 0.35 passes
+    c1 = EE.pair_test(*_pt_case(a=0.4))
+    c2 = EE.pair_test(*_pt_case(a=0.55))
+    assert 0.2 <= c1["cv_parent"] < 0.3 <= c2["cv_parent"] <= 0.4, (c1, c2)
+    assert min(c1["r"] - c1["r_solvent"], c2["r"] - c2["r_solvent"]) >= 0.2 and not c1["specific"] and c2["specific"]
+    # the number of spectra: 5 fails, 6 passes (the same spectra, the gain and the CV met by both)
+    start = next(st for st in range(40) if EE.pair_test(*_pt_case(n=6, start=st))["specific"]
+                 and (lambda q: q["r"] - q["r_solvent"] >= 0.2 and q["cv_parent"] >= 0.3)(
+                     EE.pair_test(*_pt_case(n=5, start=st))))
+    n5, n6 = EE.pair_test(*_pt_case(n=5, start=start)), EE.pair_test(*_pt_case(n=6, start=start))
+    assert n5["r"] > 0.99 and n6["r"] > 0.99 and not n5["specific"] and n6["specific"]
+    assert (EE.TRACK_R, EE.SPECIFIC_GAIN, EE.PARENT_CV_MIN, EE.SPECIFIC_MIN_N) == (0.7, 0.2, 0.3, 6)
+
+
+def test_the_fixture_cluster_co_occurs_and_is_capped(tmp_path, monkeypatch):
+    # the fixture's plume is 4 spectra: the cluster reads as the persistent ion's cluster, capped at Candidate
+    summ, m = _run(tmp_path, monkeypatch, k_episode_max=8)
+    r = _get(m, *K1)
+    assert r["tier"] == "Candidate" and r["solvent_cluster_of"] == "C16H22O4 [M+H]+ + C5H9NO"
+    assert f"solvent cluster of C16H22O4 [M+H]+: {EE.CO_OCCURS}" in r["tier_reason"]
+    assert "C21H31NO5 [M+H]+ (the covalent reading)" in r["alternatives"]
+    assert not len(m[m["neutral_formula"] == "C21H31NO5"])
+    t = _table(tmp_path, "solvent_clusters.csv")
+    assert len(t) == 1 and not bool(t["pair_test"].iloc[0]) and t["n_track"].iloc[0] == 4
+    drops = _table(tmp_path, "vote_drops.csv")
+    assert not drops["reason"].astype(str).str.contains("reagent-cluster strip").any()
+    assert summ["merge_gates"]["solvent_clusters"]["relabelled"] == 1
+
+
+def test_another_ion_at_the_cluster_mass_is_re_read_only_on_the_specific_test():
+    for a, relabelled in ((0.05, 0), (0.6, 1)):
+        merged, ts, _d = _cseries(a=a)
         merged.loc[1, ["neutral_formula", "adduct"]] = ["C16H30FN4O5", "[M+H]+"]      # another ion, 0.5 ppm away
-        assert abs(C.ion_mz("C16H30FN4O5", "[M+H]+") - merged.loc[1, "mz"]) / merged.loc[1, "mz"] * 1e6 < 3
-        _t, s = EE.read_solvent_clusters(merged, ts, adducts=["[M+H]+", "[M+(CH4N2O)H]+"], log=lambda *a: None)
+        _t, s = _read(merged, ts)
         assert s["relabelled"] == relabelled
         assert merged.iloc[1]["neutral_formula"] == ("C16H22O4" if relabelled else "C16H30FN4O5")
+
+
+# --------------------------------------------------------------------------- Part B: every file, use-site bars (repair)
+SAT_S = ("C8H10N4O2S", "[M+H]+")
+
+
+def _unit2(c13=(8.0, 8.0), ppm=(0.1, 0.1), s34=None, flags=(True, True), tier="Candidate", nf=E1[0], ad=E1[1],
+           extra=None, ion_only=False, n_files=2):
+    """One merged reading in TWO episode files s1, s2: per file its 13C line at that carbon count
+    (None: no line), its ppm_error, its 34S line at that multiple of its prediction (s34), its row's
+    episode flag; `extra(sid)` adds rows."""
+    mz = C.ion_mz(nf, ad)
+    h = 3e5
+    leds, tss = {}, []
+    for j, sid in enumerate(("s1", "s2")):
+        rows = [dict(peak_id=f"{sid}p0", mz=mz, height=h, role="M0", neutral_formula=nf, adduct=ad, tier=tier,
+                     ppm_error=ppm[j], episode=flags[j], alternatives="[]")]
+        if c13[j] is not None:
+            rows.append(dict(peak_id=f"{sid}p1", mz=mz + ISO.D_13C, height=h * 0.010816 * c13[j], role="unexplained",
+                             tier=None, episode=flags[j]))
+        if s34 is not None and s34[j]:
+            rows.append(dict(peak_id=f"{sid}p2", mz=mz + ISO.D_34S, height=h * ISO.R_34S_PER_S * s34[j],
+                             role="unexplained", tier=None, episode=flags[j]))
+        rows += (extra(sid, mz, h) if extra else [])
+        rows += [dict(peak_id=f"{sid}n{k}", mz=100.0 + 3.1 * k, height=100.0, role="unexplained", tier=None,
+                      episode=False) for k in range(30)]
+        led = pd.DataFrame(rows)
+        leds[sid] = led
+        tss.append(led[["peak_id", "mz", "height"]].assign(sample_item_id=sid))
+    merged = pd.DataFrame([dict(mz=mz, neutral_formula=nf, adduct=ad, tier=tier, n_files=n_files, srcs="s1,s2",
+                                episode=True, tier_reason="", ion_only_of=("s1p9" if ion_only else pd.NA))])
+    return merged, leds, pd.concat(tss, ignore_index=True)
+
+
+def _j2(merged, leds, ts, adducts=("[M+H]+",), **kw):
+    return EE.judge(merged, leds, ts, windows={"s1": (0.0, 0.2), "s2": (0.0, 0.2)}, edges={"s1": 100.0, "s2": 100.0},
+                    adducts=list(adducts), log=lambda *a, **k: None, **kw)
+
+
+def test_the_two_file_unit_is_assigned_when_both_files_agree():
+    m, leds, ts = _unit2()
+    _t, s = _j2(m, leds, ts)
+    assert m.at[0, "tier"] == "Assigned" and s["promoted"] == 1
+
+
+def test_the_mass_window_binds_in_every_episode_file():                                           # (a) every file
+    m, leds, ts = _unit2(ppm=(0.1, 2.0))
+    _j2(m, leds, ts)
+    assert m.at[0, "tier"] == "Candidate" and "(a) s2: +2.00 ppm outside" in m.at[0, "tier_reason"]
+
+
+def test_one_contradicting_13c_file_fails_the_isotopes():                                         # (b) every file
+    m, leds, ts = _unit2(c13=(8.0, 4.0))
+    _j2(m, leds, ts)
+    assert m.at[0, "tier"] == "Candidate" and "(b) failed" in m.at[0, "tier_reason"]
+
+
+def test_one_file_without_its_heteroatom_line_fails_the_isotopes():                               # (b) S line, every file
+    m, leds, ts = _unit2(nf=SAT_S[0], s34=(1.0, 0.0))
+    _j2(m, leds, ts)
+    assert m.at[0, "tier"] == "Candidate" and "(b) failed" in m.at[0, "tier_reason"]
+    m2, leds2, ts2 = _unit2(nf=SAT_S[0], s34=(1.0, 1.0))
+    _j2(m2, leds2, ts2)
+    assert m2.at[0, "tier"] == "Assigned"
+
+
+def test_a_rival_must_be_excluded_in_every_testable_file():                                       # (c) every file
+    me, rival = {"C": 8, "H": 11, "N": 4, "O": 2}, {"C": 10, "H": 14, "N": 1, "O": 2}
+    one = _facts(6.5)                                         # 6.5 C: the reading's band (2) holds, the rival's (2.5) not
+    two = one + [dict(h0=1e6, snr0=1e3, mz0=300.0, edge=100.0, c13=(True, 8.5), lines={})]   # 8.5: both bands hold
+    assert EE._excluded(one, me, rival) is not None
+    assert EE._excluded(two, me, rival) is None
+
+
+def _spec(h0, mz0=195.0877, extra=()):
+    rows = [dict(peak_id="r", mz=mz0, height=h0)] + [dict(peak_id=f"x{i}", mz=mz0 + d, height=hh)
+                                                     for i, (d, hh) in enumerate(extra)]
+    return EE._Spectrum(pd.DataFrame(rows), 100.0)
+
+
+def test_the_13c_line_is_testable_from_a_predicted_snr_of_10():                                   # (b) the S/N bar
+    share = 8 * 0.010816
+    for snr, testable in ((15.0, True), (7.0, False)):
+        h0 = snr * 100.0 / share
+        f = EE._file_facts(_spec(h0), {"peak_id": "r", "mz": 195.0877}, {"C": 8, "H": 11, "N": 4, "O": 2}, "+")
+        assert f["c13"][0] is testable, (snr, f)
+
+
+def test_a_heteroatom_line_is_testable_from_a_predicted_snr_of_10():                             # (b) heteroatom bar
+    for snr, tested in ((15.0, 1), (7.0, 0)):
+        h0 = snr * 100.0 / ISO.R_34S_PER_S
+        f = [dict(h0=h0, snr0=float("nan"), mz0=300.0, edge=100.0, c13=(True, 8.0), lines={"S": ISO.R_34S_PER_S})]
+        assert EE._line_state(f, "S", 1)[0] == tested
+
+
+def test_the_adduct_partner_must_stand_at_3x_the_edge():                                         # (e) partner height
+    pmz = C.ion_mz(E1[0], "[M+(CH4N2O)H]+")
+
+    def part(x):
+        return lambda sid, mz, h: [dict(peak_id=f"{sid}q", mz=pmz, height=x * 100.0, role="unexplained", tier=None,
+                                        episode=True)] if sid == "s1" else []
+    for x, ok in ((2.0, False), (4.0, True)):
+        m, leds, ts = _unit2(extra=part(x), n_files=1)
+        m.at[0, "srcs"] = "s1"
+        _j2(m, leds, ts, adducts=("[M+H]+", "[M+(CH4N2O)H]+"))
+        assert (m.at[0, "tier"] == "Assigned") is ok, (x, m.at[0, "tier_reason"])
+
+
+def test_an_exotic_rival_counts_within_half_a_mda():                                             # ALIAS_MDA at the use site
+    rv = [{"alternatives": json.dumps([{"formula": "C10H13FNSi", "adduct": "[M+H]+"}])}]
+    m0 = C.ion_mz("C10H13FNSi", "[M+H]+")
+    assert len(EE._named_rivals(rv, None, m0 + 0.0004)) == 1
+    assert len(EE._named_rivals(rv, None, m0 + 0.0006)) == 0
+
+
+def _iso_parent(sid, mz, h):
+    """A brighter Assigned row whose 13C line falls on the reading (row <= 1.5 x its prediction)."""
+    return [dict(peak_id=f"{sid}P", mz=mz - ISO.D_13C, height=3e6, role="M0", neutral_formula="C10H11NO3",
+                 adduct="[M+H]+", tier="Assigned", ppm_error=0.1, episode=False, alternatives="[]")]
+
+
+def test_the_low_file_hold_is_read_on_the_episode_rows():                                        # (d) the re-read
+    # a Candidate reading (the hold never tested it) on the 13C line of a brighter Assigned row in both
+    # episode files, no tier_reason mark: (d) holds it
+    m, leds, ts = _unit2(c13=(None, None), extra=_iso_parent)
+    _j2(m, leds, ts)
+    assert "(d) held: isotopologue risk" in m.at[0, "tier_reason"]
+
+
+def test_the_own_13c_skip_needs_every_episode_file():                                            # (d) every file
+    # its own 13C line in s1 only, the isotopologue parent in both: still held (the hold's own rule)
+    m, leds, ts = _unit2(c13=(8.0, None), extra=_iso_parent)
+    _j2(m, leds, ts)
+    assert "(d) held: isotopologue risk" in m.at[0, "tier_reason"]
+    m2, leds2, ts2 = _unit2(c13=(8.0, 8.0), extra=_iso_parent)          # in both: an M0 of its own
+    _j2(m2, leds2, ts2)
+    assert "(d) held" not in m2.at[0, "tier_reason"]
+
+
+@pytest.mark.parametrize("ad,ion_only", [("[M]+.", False), (E1[1], True)])
+def test_radical_and_ion_only_readings_are_never_promoted(ad, ion_only):                         # promotion closed
+    nf = "C8H11N4O2" if ad == "[M]+." else E1[0]
+    m, leds, ts = _unit2(nf=nf, ad=ad, ion_only=ion_only)
+    _j2(m, leds, ts, adducts=("[M+H]+", "[M]+."))
+    assert m.at[0, "tier"] == "Candidate" and "never promoted" in m.at[0, "tier_reason"]
+
+
+def test_the_file_rows_own_flag_is_required():                                                   # the episode files
+    m, leds, ts = _unit2(flags=(False, False))
+    _t, s = _j2(m, leds, ts)
+    assert s["judged"] == 0 and m.at[0, "tier"] == "Candidate"
+    m2, leds2, ts2 = _unit2(flags=(True, False))                         # one episode file: (e) fails, no partner
+    _t, s2 = _j2(m2, leds2, ts2)
+    assert s2["judged"] == 1 and "(1 file(s): s1)" in m2.at[0, "tier_reason"]

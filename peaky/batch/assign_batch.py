@@ -2405,7 +2405,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
-        k_episode_max: int | None = SS.K_EPISODE_MAX,
+        k_episode_max: int | None = SS.K_EPISODE_MAX, episode_evidence: str = _EE.MODE,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
@@ -2451,6 +2451,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     every episodic bin peaking at >= `episode_min_x_edge` (5) x its sample's
     noise edge gets its peak spectrum, and its episode its peak file and up to
     two neighbours -- no budget (a coverage guarantee, not a cost bound);
+    `episode_evidence` (episode_evidence.MODES; default 'measured') is what an episodic
+    reading in <= 3 files the vote made Assigned becomes when its episode's own evidence
+    fails (docs/MERGE.md step 6g).
     `k_episode_max` is an optional safety cap, flagged when it binds -- assigned with the cover's files
     (tables/selected_samples.csv role 'episode'); the record is
     batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
@@ -3835,7 +3838,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             merged, full_ledgers, ts_annot if ts_annot is not None else ts_peaks, windows=_win, edges=_edg,
             adducts=list(prof.adducts or []), labelled=any("^N" in str(a) for a in (prof.adducts or [])),
             levels=levels, tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), exempt=frozenset(curated or ()),
-            orbitrap=(cfg.instrument_class == "orbitrap"), log=log)
+            orbitrap=(cfg.instrument_class == "orbitrap"), mode=episode_evidence, log=log)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",

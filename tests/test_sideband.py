@@ -418,3 +418,65 @@ def test_the_batch_merge_holds_the_isotopologue_reading(tmp_path, monkeypatch):
     assert p.tier.iloc[0] == "Assigned"
     tab = pd.read_csv(tmp_path / "tables" / "sideband_holds.csv")
     assert len(tab) == 2 and set(tab["action"]) == {"held"} and set(tab["partner_reading"]) == {f"{IPAR[0]} {IPAR[1]}"}
+
+
+# --------------------------------------------------------------------------- Part D wiring (repair: behaviour, not pins)
+def _two_partner_series(n=12, seed=3):
+    """The ramping 20x parent the satellite follows, and a 3x line 2 mDa below the satellite that varies on its
+    own (the dimmer partner), noise picks at 50 cps."""
+    rng = np.random.default_rng(seed)
+    hp = 10 ** np.linspace(4.5, 6.5, n)
+    hs = hp / 20 * np.exp(rng.normal(0, 0.05, n))
+    hd = 10 ** rng.uniform(4.0, 5.5, n)
+    rows = []
+    for k in range(n):
+        rows += [dict(sample_item_id=f"t{k:02d}", mz=PMZ, height=hp[k]), dict(sample_item_id=f"t{k:02d}", mz=SMZ, height=hs[k]),
+                 dict(sample_item_id=f"t{k:02d}", mz=SMZ - 2e-3, height=hd[k])]
+        rows += [dict(sample_item_id=f"t{k:02d}", mz=150.0 + 7.1 * j, height=50.0) for j in range(10)]
+    return pd.DataFrame(rows)
+
+
+def test_the_artefact_test_reads_the_brightest_partner():                     # the partner choice
+    def dim(sid):
+        return [_row(f"{sid}d", SMZ - 2e-3, 3e5, role="unexplained", tier=None)]     # 3x the satellite
+    led = _sat_ledgers(dim)
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, _two_partner_series(), **NOLOG)
+    assert summ["satellite_held"] == 1 and (tab["partner_mz"].round(4) == round(PMZ, 4)).all()
+
+
+def test_own_13c_is_read_only_where_testable():                                # SAT_13C_TESTABLE_X at the use site
+    # the spectra's edge 2000 cps: the satellite's 13C line is testable (>= 3x the edge) in its 4 brightest
+    # spectra only, and present there at its share; absent (untestable) in the 8 others -> its own 13C line
+    n = 12
+    hp = 10 ** np.linspace(4.5, 6.5, n)
+    hs = hp / 20
+    rows = []
+    for k in range(n):
+        sid = f"t{k:02d}"
+        rows += [dict(sample_item_id=sid, mz=PMZ, height=hp[k]), dict(sample_item_id=sid, mz=SMZ, height=hs[k])]
+        if hs[k] * ISO.R_13C_PER_C * 15 >= 3 * 2000.0:
+            rows.append(dict(sample_item_id=sid, mz=SMZ + ISO.D_13C, height=hs[k] * ISO.R_13C_PER_C * 15))
+        rows += [dict(sample_item_id=sid, mz=150.0 + 7.1 * j, height=2000.0) for j in range(10)]
+    ts = pd.DataFrame(rows)
+    assert 2 <= sum(1 for x in hs if x * ISO.R_13C_PER_C * 15 >= 6000.0) < n / 2
+    led = _sat_ledgers()
+    merged = _merged(led)
+    tab, summ = SB.hold_low_file_promotions(merged, led, ts, **NOLOG)
+    assert summ["satellite_held"] == 0 and set(tab["own_13c_series"]) == {True}
+
+
+def test_the_artefact_hold_needs_a_partner_in_every_file():                    # every file
+    led = _sat_ledgers()
+    led["s02"] = led["s02"][led["s02"]["peak_id"] != "s02p"].reset_index(drop=True)   # s02: no partner
+    merged = _merged(led)
+    _tab, summ = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05), **NOLOG)
+    assert summ["satellite_held"] == 0 and summ["satellite_noted"] == 0
+    assert _get(merged, *SAT)["tier"] == "Assigned"
+
+
+def test_the_hold_record_carries_the_log_log_exponent():
+    led = _sat_ledgers()
+    merged = _merged(led)
+    tab, _s = SB.hold_low_file_promotions(merged, led, _series(ramp=True, ratio_noise=0.05), **NOLOG)
+    assert np.allclose(tab["fit_loglog_slope"], 1.0, atol=0.05) and (tab["fit_loglog_r2"] > 0.95).all()

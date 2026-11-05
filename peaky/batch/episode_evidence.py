@@ -54,10 +54,13 @@ inside one batch run and are not read.
 All five hold -> the reading is Assigned from that episode (tier Assigned, the
 note says which facts; a Candidate is promoted). Otherwise it is not Assigned
 FROM ITS EPISODE: a Candidate stays Candidate, and a reading the vote made
-Assigned keeps that tier with the failed clauses in the note (DEMOTES False, the
-default: measured on a 12-ledger field arm, demoting such rows cost two true
-episode lines whose 13C line is untestable at their height and moved precision
-by 0.0002; DEMOTES True makes them Candidate, a curated neutral excepted); when
+Assigned (MODE, `--episode-evidence`) -- "measured", the default -- goes to
+Candidate when a MEASURED fact fails ((a); (b) read and contradicting; (c); (d);
+(e)) and keeps its tier with the note when its only failure is "(b) untestable"
+(a line too dim to test is no evidence either way: on a 12-ledger field arm
+demoting those cost two true episode lines); "promote-only" keeps every such
+row; "strict" demotes on any failed clause. A curated neutral keeps the vote's
+tier in every mode. When
 no isotope
 line was testable the claim is `single episode, isotopes untestable`
 (UNTESTABLE_CLAIM; the evidence level is the level machinery's, untouched).
@@ -70,21 +73,24 @@ to an ion-only reading.
 (solvent_clusters.episode_solvents: NMP, DMSO) every persistent ion can gain a
 cluster line at its own m/z + the solvent's neutral mass. A merged row there
 whose presence is confined to the solvent's episode (>= CONFINED_FRAC of its
-spectra, in at most CLUSTER_MAX_FRAC of the batch's) --
-the spectra where one of the solvent's own ion forms (its reagent-profile ion
-forms and its proton-bound dimer) is elevated the same way at >= SOLVENT_X x the
-edge, in at most SOLVENT_MAX_FRAC of the batch's spectra (a solvent background
-everywhere is fine; its episodes are what count) -- beside a known PERSISTENT
-Assigned ion (in >= PERSIST_FRAC of the batch's spectra), is read as that ion's
-cluster: the
-parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`), not a new
-neutral -- where the line, the parent and the solvent ion share at least
-TRACK_MIN_N of the episode's spectra (fewer: nothing is read). Its tier is the
-parent's when the pair test passes -- the cluster tracks the product parent x
-solvent across those spectra (Pearson r >= TRACK_R) -- else the parent's capped
-at Candidate. A merged reading of ANOTHER ion composition at that mass is re-read
-as the cluster only when the pair test passes (a same-ion reading is relabelled
-either way). The reagent-cluster strip of the merge spares a row read so.
+spectra, in at most CLUSTER_MAX_FRAC of the batch's) -- the spectra where one of
+the solvent's own ion forms (its reagent-profile ion forms and its proton-bound
+dimer) stands at >= SOLVENT_X x the edge and, for a form present in most
+spectra, >= SOLVENT_LIFT x its median (a solvent background everywhere is fine;
+its episodes are what count) -- beside a known PERSISTENT Assigned ion (in >=
+PERSIST_FRAC of the batch's spectra), and that shares at least TRACK_MIN_N of the
+episode's spectra with the parent and the solvent ion (fewer: nothing is read),
+is read as that ion's cluster: the parent's neutral, the adduct naming the
+solvent (`[M+(C5H9NO)H]+`), not a new neutral. That reading rests on the
+composition (the line's ion = a persistent Assigned ion + the solvent) and on
+co-occurrence with the solvent; so its tier is capped at Candidate with the note
+"solvent cluster of <X>: co-occurs with the solvent" unless the track is
+SPECIFIC (`pair_test`): r(cluster, parent x solvent) >= TRACK_R and >= the
+solvent alone's r + SPECIFIC_GAIN, with the parent varying over the episode
+(CV >= PARENT_CV_MIN), on >= SPECIFIC_MIN_N spectra -- then the parent's tier.
+A merged reading of ANOTHER ion composition at that mass is re-read as the
+cluster only on the specific test. The reagent-cluster strip of the merge spares
+a row read so.
 
 Pure: reads the merged ledger, the per-file ledgers and the batch series;
 mutates only the merged rows it judges or relabels; returns a table and a
@@ -145,23 +151,23 @@ ALIAS_SWAPS = (
 #: the ion forms a 15N-label alias rival may take beside the reagent profile's own: the
 #: carbonate radical anion's cluster and the radical anion itself (the [M+CO3]- / [M+^NO3]- pair)
 ALIAS_EXTRA_ADDUCTS = ("[M+CO3]-", "[M]-.")
-#: True: a reading that fails is Candidate (Assigned from one episode only when all hold); False (the
-#: default): a reading the vote made Assigned keeps its tier with the note -- the rule promotes only
-DEMOTES = False
+#: what a failing reading the vote made Assigned becomes (`--episode-evidence`): "measured" (the
+#: default) -- Candidate when a MEASURED fact fails ((a), (b) read and contradicting, (c), (d), (e)),
+#: Assigned kept with the note when its only failure is "(b) untestable"; "promote-only" -- always kept
+#: with the note; "strict" -- Candidate whenever a clause fails (Assigned from one episode only when all
+#: hold). A curated neutral keeps the vote's tier in every mode; a Candidate is promoted in every mode.
+MODES = ("measured", "promote-only", "strict")
+MODE = "measured"
 NOTE_MARK = "episode evidence"
 UNTESTABLE_CLAIM = "single episode, isotopes untestable"
 ASSIGNED_CLAIM = "single episode, isotope facts hold"
 TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "tier_in", "tier_out", "verdict", "episode_claim",
                  "n_files", "episode_files", "a_mass", "b_isotopes", "b_detail", "c_rivals", "c_detail",
-                 "d_hold", "e_second", "e_detail", "note"]
+                 "d_hold", "e_second", "e_detail", "note", "measured_failure", "mode", "prior_reason"]
 
 # --------------------------------------------------------------------------- Part C constants
 #: the solvent's own ion is bright in a spectrum at this multiple of its noise edge
 SOLVENT_X = 5.0
-#: the solvent is in an EPISODE: bright in at most this share of the batch's spectra (a solvent
-#: ion bright everywhere is the source's or the air's background, and a line "confined" to its
-#: bright spectra is then confined to nothing)
-SOLVENT_MAX_FRAC = 0.5
 #: a line present in most spectra (a background) is ELEVATED only at >= this multiple of its median
 #: height there (the episode stage's lift): the solvent's episode and the cluster's spectra are read so
 SOLVENT_LIFT = 5.0
@@ -176,10 +182,20 @@ CLUSTER_MAX_FRAC = 0.5
 #: the pair test: the cluster tracks parent x solvent (Pearson r) on at least this many spectra
 TRACK_R = 0.7
 TRACK_MIN_N = 4
+#: the pair test is SPECIFIC -- the parent, not the solvent episode alone, explains the line -- only
+#: where the product beats the solvent alone by this much in r, the parent varies over the episode's
+#: spectra (coefficient of variation >= PARENT_CV_MIN: a flat persistent parent makes parent x solvent
+#: the solvent's own profile, and any line confined to the episode then "tracks" it), and on at least
+#: SPECIFIC_MIN_N spectra. Measured on two uronium batches of a field campaign: with the plain track
+#: (r >= 0.7) 94-97 % of RANDOM persistent parents passed beside an episode-confined line
+SPECIFIC_GAIN = 0.2
+PARENT_CV_MIN = 0.3
+SPECIFIC_MIN_N = 6
+CO_OCCURS = "co-occurs with the solvent"
 CLUSTER_MARK = "solvent cluster"
 CLUSTER_COLUMNS = ["mz", "was_neutral", "was_adduct", "neutral_formula", "adduct", "solvent", "parent_mz",
                    "parent_reading", "parent_tier", "tier_in", "tier_out", "n_spectra", "n_in_episode",
-                   "n_track", "track_r", "pair_test"]
+                   "n_track", "track_r", "r_solvent", "cv_parent", "pair_test"]
 
 
 def empty_table() -> pd.DataFrame:
@@ -498,18 +514,20 @@ def _sideband(full: dict, efiles: list, ts_sorted, counts: dict, sigma: dict, or
     """The low-file hold's two clauses (batch/sideband.py) read on the episode rows: the
     isotopologue line of a brighter Assigned row in every episode file, or (Orbitrap-class)
     a satellite partner in every file that the per-spectrum test calls the row's artefact.
-    The text of the hold that applies, or None."""
-    per = []
+    A row with its own 13C line in EVERY episode file is an M0 of its own (the hold's
+    own rule, `hold_low_file_promotions`). The text of the hold that applies, or None."""
+    per, own = [], []
     for sid, r in efiles:
         f = full.get(sid)
         if f is None:
             return None
         sg = sigma.get(sid)
         tol = SB.ISO_PPM + (max(0.0, sg) if sg is not None and np.isfinite(sg) else 0.0)
-        if SB._own_13c(f, r, counts, tol):
-            return None                        # an M0 of its own in this file
+        own.append(bool(SB._own_13c(f, r, counts, tol)))
         sat = (SB._satellite(f, r, ts_sorted, []) or SB._shoulder(f, r)) if orbitrap else None
         per.append((r, SB._isotopologue(f, r, tol), sat))
+    if own and all(own):
+        return None                            # an M0 of its own in every episode file
     if per and all(iso is not None for _r, iso, _sat in per):
         x = per[0][1]
         return f"{SB.HOLD_MARK} ({x['rule']} of {x['partner_mz']:.4f} {x['partner_reading']})"
@@ -529,7 +547,7 @@ def _note(merged, i, msg):
 
 def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windows: dict | None = None,
           edges: dict | None = None, adducts=(), labelled: bool = False, levels: pd.DataFrame | None = None,
-          tol_ppm: float = 6.0, exempt=frozenset(), demote: bool | None = None, orbitrap: bool = True,
+          tol_ppm: float = 6.0, exempt=frozenset(), mode: str | None = None, orbitrap: bool = True,
           max_files: int = MAX_FILES, log=print) -> tuple[pd.DataFrame, dict]:
     """Part B (module note) on every episodic merged reading with n_files <= `max_files`.
 
@@ -540,10 +558,12 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
     (mu, sigma) ppm}, the files' calibrated windows. edges: {sample id: noise edge
     cps}. adducts: the reagent profile's ion forms. labelled: the reagent carries
     the 15N label. levels: the pooled pairs (competitors_left). exempt: curated
-    neutrals a failure never demotes. Returns (table, summary)."""
-    demote = DEMOTES if demote is None else bool(demote)
+    neutrals a failure never demotes. mode: MODES (None: MODE). Returns (table, summary)."""
+    mode = MODE if mode is None else str(mode)
+    if mode not in MODES:
+        raise ValueError(f"episode evidence mode {mode!r}: one of {MODES}")
     out = {"judged": 0, "assigned": 0, "promoted": 0, "demoted": 0, "kept_assigned": 0, "untestable": 0,
-           "candidate": 0}
+           "candidate": 0, "mode": MODE if mode is None else str(mode)}
     if merged is None or not len(merged) or "episode" not in merged.columns:
         return empty_table(), out
     if "tier_reason" not in merged.columns:
@@ -670,8 +690,10 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
         e_ok = bool(pair) or len(efiles) >= 2
         e_det = pair or (f"{len(efiles)} episode files read the ion" if len(efiles) >= 2 else
                          "one episode file, no adduct partner in its spectrum")
-        elements_ok = set(counts) <= PROMOTABLE and ad not in ("[M]-.", "[M]+.") and \
-            not _s(merged.at[i, "ion_only_of"] if "ion_only_of" in merged.columns else "")
+        radical = ad in ("[M]-.", "[M]+.") or bool(
+            _s(merged.at[i, "ion_only_of"] if "ion_only_of" in merged.columns else ""))
+        exotic = sorted(set(counts) - PROMOTABLE)
+        elements_ok = not exotic and not radical
         all_ok = a_ok and b_state == "holds" and c_ok and d_ok and e_ok and elements_ok
         failed = ([f"(a) {'; '.join(a_bad)}"] if not a_ok else []) \
             + ([f"(b) {b_state}: {b_det}"] if b_state != "holds" else []) \
@@ -679,9 +701,11 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                if not c_ok else []) \
             + ([f"(d) held: {', '.join(holds)}"] if not d_ok else []) \
             + ([f"(e) {e_det}"] if not e_ok else []) \
-            + ([f"elements {''.join(sorted(set(counts) - PROMOTABLE))} no isotope speaks for"]
-               if not elements_ok else [])
+            + ([f"elements {''.join(exotic)} no isotope speaks for: never promoted"] if exotic else []) \
+            + (["a radical / ion-only reading: never promoted"] if radical else [])
         files_txt = ",".join(sid for sid, _r in efiles)
+        prior = _s(merged.at[i, "tier_reason"])
+        measured = False
         if all_ok:
             verdict, claim, tier_out = "assigned", ASSIGNED_CLAIM, "Assigned"
             msg = (f"{NOTE_MARK}: Assigned from a single episode ({len(efiles)} file(s): {files_txt}) -- (a) in the "
@@ -694,6 +718,8 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             verdict = "untestable" if b_state == "untestable" else "candidate"
             claim = UNTESTABLE_CLAIM if b_state == "untestable" else "single episode, " + failed[0].split(":")[0]
             curated = nf in exempt
+            measured = (not a_ok) or b_state == "failed" or (not c_ok) or (not d_ok) or (not e_ok)
+            demote = {"strict": True, "measured": measured, "promote-only": False}[mode]
             tier_out = ("Candidate" if (demote and not curated) or tier_in != "Assigned" else tier_in)
             msg = (f"{NOTE_MARK}: not Assigned from its episode ({len(efiles)} file(s): {files_txt}) -- "
                    + "; ".join(failed)
@@ -712,7 +738,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                          episode_files=files_txt, a_mass=("ok" if a_ok else "; ".join(a_bad)), b_isotopes=b_state,
                          b_detail=b_det, c_rivals=("ok" if c_ok else "left"),
                          c_detail="; ".join(left + gone), d_hold=", ".join(holds), e_second=e_ok, e_detail=e_det,
-                         note=msg))
+                         note=msg, measured_failure=bool(measured), mode=mode, prior_reason=prior))
     if out["judged"]:
         log(f"[episode] {out['judged']} episodic reading(s) in <= {max_files} files judged on their episode's "
             f"spectra: {out['assigned']} Assigned ({out['promoted']} promoted), {out['candidate']} not "
@@ -748,6 +774,27 @@ def _elevated(h: pd.Series, edge: pd.Series, n_spec: int, x_edge: float) -> set:
     if len(h) > 0.5 * n_spec:
         thr = np.maximum(thr, SOLVENT_LIFT * float(h.median()))
     return set(h.index[h.to_numpy() >= thr])
+
+
+def _r(a, b) -> float:
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if len(a) < 2 or not (a.std() > 0 and b.std() > 0):
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def pair_test(k, p, s) -> dict:
+    """The plume-solvent pair test over the episode spectra holding all three lines: the
+    cluster `k`, the parent `p`, the solvent ion `s` (arrays). {n, r (k on p x s), r_solvent
+    (k on s alone), cv_parent (std / mean of p), specific}: specific = n >= SPECIFIC_MIN_N,
+    r >= TRACK_R, r - r_solvent >= SPECIFIC_GAIN and cv_parent >= PARENT_CV_MIN -- the parent's
+    own variation, not the episode's, carries the line."""
+    k, p, s = (np.asarray(x, dtype=float) for x in (k, p, s))
+    r, rs = _r(k, p * s), _r(k, s)
+    cv = float(p.std() / p.mean()) if len(p) and p.mean() > 0 else float("nan")
+    spec = bool(len(k) >= SPECIFIC_MIN_N and np.isfinite(r) and r >= TRACK_R and np.isfinite(rs)
+                and r - rs >= SPECIFIC_GAIN and np.isfinite(cv) and cv >= PARENT_CV_MIN)
+    return {"n": int(len(k)), "r": r, "r_solvent": rs, "cv_parent": cv, "specific": spec}
 
 
 def cluster_label(adduct: str, solvent: str) -> str | None:
@@ -796,15 +843,17 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 continue
         if sign == "+":
             ions.append(2 * ms + C.M["H"] - C.M_E)          # the proton-bound dimer
-        # the solvent's own ion: each of its forms that is EPISODIC here (bright, >= SOLVENT_X x the edge,
-        # in at most SOLVENT_MAX_FRAC of the spectra; a form bright everywhere is another ion's mass)
+        # the solvent's own ion: each of its forms where it stands out (`_elevated`: >= SOLVENT_X x the
+        # edge and, for a form present in most spectra, >= SOLVENT_LIFT x its median -- which makes the
+        # episode at most half of the batch's spectra by itself: no more than half a line's heights can
+        # reach 5x its median)
         hs, bright = None, set()
         for m_ in ions:
             s_ = line(m_)
             if not len(s_):
                 continue
             b_ = _elevated(s_, edge, n_spec, SOLVENT_X)
-            if not b_ or len(b_) > SOLVENT_MAX_FRAC * n_spec:
+            if not b_:
                 continue
             bright |= b_
             hs = s_ if hs is None else pd.concat([hs, s_], axis=1).max(axis=1)
@@ -845,16 +894,14 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 # the pair test reads the episode's own spectra: parent x solvent there, never one spike
                 j3 = pd.concat([ks.rename("k"), ps.rename("p"), hs.rename("s")], axis=1, join="inner").dropna()
                 j3 = j3[(j3 > 0).all(axis=1) & j3.index.isin(list(bright))]
-                r = (float(np.corrcoef(j3["k"], j3["p"] * j3["s"])[0, 1]) if len(j3) >= 2
-                     and j3["k"].std() > 0 and (j3["p"] * j3["s"]).std() > 0 else float("nan"))
                 if len(j3) < TRACK_MIN_N:
-                    continue                   # too few episode spectra to read a track: nothing is read
-                # the pair test: the cluster tracks the product of the pair, parent x solvent
-                passed = bool(np.isfinite(r) and r >= TRACK_R)
+                    continue                   # too few episode spectra to read anything: nothing is read
+                pt = pair_test(j3["k"].to_numpy(), j3["p"].to_numpy(), j3["s"].to_numpy())
+                r, passed = pt["r"], pt["specific"]
                 same_ion = _counts(merged.at[k, "neutral_formula"], merged.at[k, "adduct"]) == _counts(
                     p["neutral_formula"], lab)
                 if not same_ion and not passed:
-                    continue                   # another ion at the mass is re-read only on the pair test
+                    continue                   # another ion at the mass is re-read only on the specific test
                 ptier = _s(p["tier"])
                 tier_out = ptier if passed else ("Candidate" if ptier == "Assigned" else ptier)
                 was = (_s(merged.at[k, "neutral_formula"]), _s(merged.at[k, "adduct"]))
@@ -870,10 +917,13 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                 _note(merged, k, (f"{CLUSTER_MARK}: the {solv.formula} ({solv.name}) cluster of the persistent "
                                   f"{p['neutral_formula']} {p['adduct']} (m/z {pm:.4f}, +{ms:.4f}): present in "
                                   f"{len(kel)} spectra, {n_in} of them in the solvent's episode; "
-                                  + (f"tracks parent x solvent (r {r:.2f} on {len(j3)} episode spectra): the "
-                                     "parent's tier" if passed else
-                                     f"the pair test not passed (r {r:.2f} on {len(j3)} episode spectra; needs "
-                                     f">= {TRACK_R:g}): capped at Candidate")
+                                  + (f"tracks parent x solvent specifically (r {r:.2f} vs {pt['r_solvent']:.2f} on "
+                                     f"the solvent alone, parent CV {pt['cv_parent']:.2f}, {pt['n']} episode "
+                                     "spectra): the parent's tier" if passed else
+                                     f"solvent cluster of {p['neutral_formula']} {p['adduct']}: {CO_OCCURS} (r "
+                                     f"{r:.2f} on parent x solvent vs {pt['r_solvent']:.2f} on the solvent alone, "
+                                     f"parent CV {pt['cv_parent']:.2f}, {pt['n']} episode spectra -- not a specific "
+                                     "track): capped at Candidate")
                                   + (f"; was {was[0]} {was[1]}" if all(was) else "")))
                 out["relabelled"] += 1
                 out["pair_passed"] += int(passed)
@@ -883,10 +933,13 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
                                  parent_mz=pm, parent_reading=f"{p['neutral_formula']} {p['adduct']}",
                                  parent_tier=ptier, tier_in=tier_in, tier_out=tier_out, n_spectra=len(kel),
                                  n_in_episode=n_in, n_track=len(j3), track_r=round(r, 4) if np.isfinite(r) else np.nan,
+                                 r_solvent=(round(pt["r_solvent"], 4) if np.isfinite(pt["r_solvent"]) else np.nan),
+                                 cv_parent=round(pt["cv_parent"], 4) if np.isfinite(pt["cv_parent"]) else np.nan,
                                  pair_test=passed))
     if out["relabelled"]:
         log(f"[episode] {out['relabelled']} merged row(s) read as a persistent ion's plume-solvent cluster "
-            f"({out['pair_passed']} track parent x solvent, {out['capped']} capped at Candidate)")
+            f"({out['pair_passed']} track parent x solvent specifically, {out['capped']} capped at Candidate: "
+            f"{CO_OCCURS})")
     return pd.DataFrame(rows, columns=CLUSTER_COLUMNS), out
 
 

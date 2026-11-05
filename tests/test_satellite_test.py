@@ -86,3 +86,15 @@ def test_the_own_13c_band():                                                    
     t = np.array([True, True, False, False, False])
     c = np.where(t, s * share, 0.0)
     assert SAT.own_13c_series(s, c, 10, testable=t) is True
+
+
+def test_a_sub_linear_follower_is_not_explained_and_its_exponent_is_reported():
+    # s = 0.4 p^0.42 (the measured exponent of the uronium-mode partners): it follows its parent, but not
+    # proportionally -- the through-origin test does not explain it; the log-log fit reads the exponent
+    p = 10 ** np.linspace(4, 6, 30)
+    s = 0.4 * p ** 0.42
+    v = SAT.satellite_verdict(p, s)
+    assert not v["explained"] and abs(v["loglog_slope"] - 0.42) < 1e-6 and v["loglog_r2"] > 0.999
+    assert "does not follow its parent proportionally" in v["why"] and "log-log exponent 0.42" in v["why"]
+    q = SAT.satellite_verdict(p, 0.25 * p)
+    assert q["explained"] and abs(q["loglog_slope"] - 1.0) < 1e-9 and "log-log exponent 1.00" in q["why"]

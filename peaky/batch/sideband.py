@@ -93,7 +93,8 @@ SATELLITE_HOLD_MARK = "satellite artefact"
 TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "n_files_assigned", "action", "sample_item_id", "peak_id",
                  "row_mz", "row_height", "rule", "partner_peak_id", "partner_mz", "partner_height",
                  "partner_reading", "d_mDa", "ratio", "track_n", "track_share",
-                 "fit_n", "fit_slope", "fit_r2", "fit_r2_uncentred", "own_13c_series", "satellite_test"]
+                 "fit_n", "fit_slope", "fit_r2", "fit_r2_uncentred", "fit_loglog_slope", "fit_loglog_r2",
+                 "own_13c_series", "satellite_test"]
 
 
 def empty_table() -> pd.DataFrame:
@@ -431,6 +432,9 @@ def hold_low_file_promotions(merged: pd.DataFrame, per_file: dict, ts: pd.DataFr
                     fit_r2=round(test["r2"], 4) if np.isfinite(test["r2"]) else np.nan,
                     fit_r2_uncentred=(round(test["r2_uncentred"], 4) if np.isfinite(test["r2_uncentred"])
                                       else np.nan),
+                    fit_loglog_slope=(round(test["loglog_slope"], 4) if np.isfinite(test["loglog_slope"])
+                                      else np.nan),
+                    fit_loglog_r2=round(test["loglog_r2"], 4) if np.isfinite(test["loglog_r2"]) else np.nan,
                     own_13c_series=test["own_13c"], satellite_test=test["why"]))
         recs = [dict(sample_item_id=sid, peak_id=_s(r["peak_id"]), row_mz=_num(r["mz"]),
                      row_height=_num(r["height"]), **rec, **fit) for sid, r, rec in recs]

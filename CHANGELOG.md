@@ -91,30 +91,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   15N-label classes, and the exotic rivals within 0.5 mDa the files and the levels left open), (d) no low-file
   hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
   spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
-  A Candidate that passes is promoted; otherwise a Candidate stays one and a reading the vote made Assigned keeps
-  its tier with the note (`episode_evidence.DEMOTES = False`; True makes it Candidate); with no testable isotope
+  A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned goes to
+  Candidate when a MEASURED fact fails ((a), (b) read and contradicting, (c), (d), (e)) and keeps its tier with the
+  note when its only failure is "(b) untestable" (`--episode-evidence measured`, the default; `promote-only` keeps
+  every such row, `strict` demotes on any failed clause; a curated neutral keeps its tier); with no testable isotope
   line the new
   `episode_claim` column reads `single episode, isotopes untestable`. Promotion is closed to ions carrying F, Si,
-  P or I. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
+  P or I and to radical / ion-only readings. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
   unchanged byte for byte.
 
 - **A persistent ion's cluster with a plume solvent is read as that ion's cluster** (docs/MERGE.md step 4 bis).
   NMP (C5H9NO) and DMSO (C2H6OS) join the solvent catalog as plume solvents (`solvent_clusters.episode_solvents`;
   no context lists them as source solvents, so no per-file ladder changes). In a batch with episode files, a
   merged row at a persistent Assigned ion + the solvent's neutral mass, confined to the spectra where the
-  solvent's own ion is bright (in at most half the batch's spectra: an episode), takes the parent's neutral and a solvent-naming adduct (`[M+(C5H9NO)H]+`;
-  `solvent_cluster_of`), the covalent reading moving to `alternatives`, when the three lines share >= 4 of the
-  episode's spectra; its tier is the parent's when it tracks parent x solvent there (r >= 0.7; co-occurrence alone
-  is no track), else capped at Candidate, and the reagent-cluster strip spares it.
+  solvent's own ion stands out (an episode, read against the solvent's own background), takes the parent's neutral
+  and a solvent-naming adduct (`[M+(C5H9NO)H]+`; `solvent_cluster_of`), the covalent reading moving to
+  `alternatives`, when the three lines share >= 4 of the episode's spectra. That reading rests on the composition
+  and on co-occurrence, so its tier is capped at Candidate ("solvent cluster of <X>: co-occurs with the solvent")
+  unless the track is specific -- r(line, parent x solvent) >= 0.7 and >= r(line, solvent alone) + 0.2, the parent
+  varying over the episode (CV >= 0.3), on >= 6 spectra -- then the parent's tier; the reagent-cluster strip spares
+  it.
   `chemistry.ion_mz` resolves such cluster labels (and the solvent-ladder labels) in a process that never
   registered them (`chemistry.cluster_shift`). `tables/solvent_clusters.csv`.
 
 - **A line beside a brighter one that the brighter line explains is held as its artefact** (the per-spectrum
   satellite test, `assignment/satellites.satellite_verdict`; docs/MERGE.md step 4d). The low-file hold's
   satellite clause stays a note, except where the test calls the reading an artefact: over the batch's spectra
-  holding both lines its height is the partner's times one number (a fit through the origin, centred R^2 >= 0.9 on
-  >= 5 spectra) and it has no 13C line of its own there; then it is Candidate (`satellite artefact`,
-  `sideband_holds.csv` action `satellite_held` with the fit). The test reads any partner within +-4 mDa at >= 2x
+  holding both lines its height is the partner's times one number (slope through the origin; R^2 of that fit over
+  the centred variance >= 0.9 on >= 5 spectra) and it has no 13C line of its own there; then it is Candidate
+  (`satellite artefact`, `sideband_holds.csv` action `satellite_held` with the fit and the log-log exponent). The
+  test shows proportional parent-following only: a sub-linear or ion-load-driven artefact fails it the same way. The test reads any partner within +-4 mDa at >= 2x
   the row, not only the 10x satellites of the note. The function reads arrays only, so tools outside the package
   can apply the same test.
 

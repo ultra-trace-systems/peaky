@@ -435,6 +435,7 @@ def cmd_batch(args) -> None:
                            residual_k_max=args.residual_k_max,
                            episodes=args.episodes, episode_min_x_edge=args.episode_min_x_edge,
                            k_episode_max=args.k_episode_max,
+                           episode_evidence=args.episode_evidence,
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
@@ -2092,6 +2093,13 @@ def _add_episode_args(sp) -> None:
                     help="optional safety cap on the files the episode stage adds (default: none). "
                          "A cap that leaves a wanted file out breaks the coverage rule and is flagged "
                          "in batch_summary.json['selection']['episodes']")
+    from peaky.batch import episode_evidence as _EE
+    sp.add_argument("--episode-evidence", choices=_EE.MODES, default=_EE.MODE,
+                    help="what an episodic reading in <= 3 files the files' vote made Assigned becomes when its "
+                         "episode's own evidence fails (docs/MERGE.md step 6g): 'measured' (default) -- Candidate "
+                         "on a measured failure, kept when its isotopes are only untestable; 'promote-only' -- "
+                         "kept; 'strict' -- Candidate on any failed clause. A Candidate that passes is promoted "
+                         "in every mode")
 
 
 def _auto_or_float(v: str):
