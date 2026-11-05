@@ -115,7 +115,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"   # + the plume solvents NMP and DMSO (episode_solvents)
 
 # charge-carrier shifts, written the way chemistry.ADDUCT_SHIFTS writes them
 PROTON = C.M["H"] - C.M_E          # [M+H]+  : gain a proton
@@ -136,6 +136,12 @@ class Solvent:
     #: H3O+ (19.018) is below every window these sources acquire, so a water
     #: rung is licensed by the exact spacing off an anchored rung instead.
     anchor: bool = True
+    #: a solvent the sampled AIR brings in as a short plume (an industrial
+    #: solvent episode), not the source's own vapour: the merge reads the
+    #: clusters it builds on persistent ions during such an episode
+    #: (`episode_solvents`, batch/episode_evidence.py); no context lists it as a
+    #: source solvent, so the per-file ladder above never enumerates it
+    plume: bool = False
 
     @property
     def mass(self) -> float:
@@ -153,8 +159,20 @@ SOURCE_SOLVENTS: tuple[Solvent, ...] = (
     Solvent("CH4O", "methanol"),
     Solvent("C2H6O", "ethanol"),
     Solvent("C3H6O", "acetone"),
+    # plume solvents (measured on a uronium Orbitrap field campaign: an NMP episode
+    # lifted NMP.urea H+ to 3e6 cps and every persistent [M+H]+ contaminant gained a
+    # +99.0684 cluster line for its duration; DMSO.NMP H+ beside it)
+    Solvent("C5H9NO", "N-methyl-2-pyrrolidone", plume=True),
+    Solvent("C2H6OS", "dimethyl sulfoxide", plume=True),
 )
 _BY_FORMULA = {s.formula: s for s in SOURCE_SOLVENTS}
+
+
+def episode_solvents() -> tuple[Solvent, ...]:
+    """The plume solvents of the catalog (`Solvent.plume`): the solvents whose
+    clusters on persistent ions the batch merge reads during an episode
+    (batch/episode_evidence.read_solvent_clusters)."""
+    return tuple(s for s in SOURCE_SOLVENTS if s.plume)
 
 MAX_UNITS = 4          # solvent molecules per cluster (n=1 is the monomer, never ours)
 MAX_WATER = 1          # waters per cluster -- water is UNANCHORED (no in-window

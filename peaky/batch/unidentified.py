@@ -17,8 +17,10 @@ Two pieces:
   - *bright* = height >= `BRIGHT_X` x the file's noise edge
     (batch_summary ``per_file[].noise_edge_cps``, the file's own run's
     ``cfg.noise_edge_cps``; ``height_gate_cps`` where a file has none), or a
-    row its ledger flags ``episode`` (the hook an episode-aware selection sets;
-    no ledger carries it today, so it reads False);
+    row its ledger flags ``episode`` (the episode stage's row flag,
+    sampling.episode_row_flags: the rows of an episode file on an episodic bin;
+    absent, it reads False); the table's ``episode`` column = any of the bin's
+    rows flagged, as the merged ledger's own ``episode`` column;
   - *unidentified* = a per-file row whose role at the end of the run is
     ``unexplained``; an ``iso_child`` / ``artifact`` whose parent is not
     explained (an M0 parent the merged ledger does not hold Assigned at its

@@ -78,6 +78,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   readers. On by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the
   previous selection and merged ledger byte for byte. `--k-episode-max N` sets an absolute budget instead.
 
+- **A short episode's readings are judged on the episode's own spectra** (`batch/episode_evidence.py`, docs/MERGE.md
+  step 6g). The episode stage's row flag now reaches the merged ledger (`episode`, any file's row of the bin
+  flagged). A merged reading of an episodic bin in <= 3 files is Assigned from its episode only when, in the
+  episode files' own spectra, (a) its error sits in each file's calibrated window, (b) its own 13C line reads its
+  carbon count within the levels' band wherever testable (predicted S/N >= 10; at least one file) and each S / Cl /
+  Br shows its own line, (c) no exact-alias rival is left that those isotope facts cannot exclude (the four
+  15N-label classes, and the exotic rivals within 0.5 mDa the files and the levels left open), (d) no low-file
+  hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
+  spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
+  Otherwise it is Candidate (a curated neutral keeps the vote's tier); with no testable isotope line the new
+  `episode_claim` column reads `single episode, isotopes untestable`. Promotion is closed to ions carrying F, Si,
+  P or I. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
+  unchanged byte for byte.
+
+- **A persistent ion's cluster with a plume solvent is read as that ion's cluster** (docs/MERGE.md step 4 bis).
+  NMP (C5H9NO) and DMSO (C2H6OS) join the solvent catalog as plume solvents (`solvent_clusters.episode_solvents`;
+  no context lists them as source solvents, so no per-file ladder changes). In a batch with episode files, a
+  merged row at a persistent Assigned ion + the solvent's neutral mass, confined to the spectra where the
+  solvent's own ion is bright, takes the parent's neutral and a solvent-naming adduct (`[M+(C5H9NO)H]+`;
+  `solvent_cluster_of`), the covalent reading moving to `alternatives`; its tier is the parent's when it tracks
+  parent x solvent (r >= 0.7 on >= 4 spectra), else capped at Candidate, and the reagent-cluster strip spares it.
+  `chemistry.ion_mz` resolves such cluster labels (and the solvent-ladder labels) in a process that never
+  registered them (`chemistry.cluster_shift`). `tables/solvent_clusters.csv`.
+
+- **A line beside a brighter one that the brighter line explains is held as its artefact** (the per-spectrum
+  satellite test, `assignment/satellites.satellite_verdict`; docs/MERGE.md step 4d). The low-file hold's
+  satellite clause stays a note, except where the test calls the reading an artefact: over the batch's spectra
+  holding both lines its height is the partner's times one number (a fit through the origin, centred R^2 >= 0.9 on
+  >= 5 spectra) and it has no 13C line of its own there; then it is Candidate (`satellite artefact`,
+  `sideband_holds.csv` action `satellite_held` with the fit). The test reads any partner within +-4 mDa at >= 2x
+  the row, not only the 10x satellites of the note. The function reads arrays only, so tools outside the package
+  can apply the same test.
+
 - **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's
   axis correction where it reaches, else the file's own self-centre; and the lock model corrects
   sub-ppm axes.** Below five anchors every candidate was judged at 0 ppm whatever the file's offset:
