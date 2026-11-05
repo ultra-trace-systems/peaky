@@ -159,10 +159,22 @@ selected sample_ids (SAMPLING.md)
    and scan range match; `lent` when the reagent and polarity match and the scan
    range does not, or -- only with `--tier-calibration-lent` -- when the reagent
    differs on the same polarity and instrument class over overlapping days (within
-   one day). A lent width must lie within 1.5x of the lending runs' per-file sigma
-   spread (`width.per_file_sigma`, stored in the json); a polarity, class, reagent
-   or width the gate refuses leaves the files `none`, the log says why as a
-   WARNING, and `levels_not_assessed_reason` adds it. The files' stats read
+   one day). A lent window then passes a mass-accuracy transfer check
+   (`calfile.transfer`): the batch's own unfloored core scatter (the campaign-rule
+   core rows of its uncalibrated files about each file's own centre, >= 15 rows in
+   >= 2 files, `calfile.receiving_scatter`) must be at most 1.5x the lending files'
+   median unfloored scatter (`width.per_file_raw_sigma`, stored in the json; the
+   floored per-file sigmas sit on the 0.15-ppm floor and cannot tell modes apart). A
+   more precise receiver passes. The check asks whether the lender's mass accuracy
+   transfers to this batch; it is no control of over-grading, which does not move
+   with the window's width. A campaign json is not checked (it is the batch's own
+   mode). A lent window's mass-error (z-tail) test floors its sigma at 0.03 mDa
+   (`masscal.sigma_at`), as a fitted trend's is: the file ran no mass-error test of
+   its own. A polarity, class, reagent or transfer check that refuses leaves the
+   files `none`; the log says why as a WARNING and `levels_calibration.file.reason`
+   records it, and when the batch levelled nothing `levels_not_assessed_reason`
+   adds it too. `peaky calibration pool` refuses runs whose scan ranges differ
+   unless `--allow-mixed` (the json then records their union, `scan_mixed`). The files' stats read
    `tier_calibration: campaign | lent` and their lent window as `degeneracy_cal`;
    `batch_summary['levels_calibration']` records the batch's weakest file source
    in one word (`per_file` / `pooled` / `campaign` / `lent` / `none`), the files

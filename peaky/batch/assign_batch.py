@@ -1261,6 +1261,7 @@ def _levels_calibration(per_stats: list, record, file_state: dict, cfg) -> dict:
         out["file"]["decided"] = bool(file_state.get("decided"))
         out["file"]["batch_facts"] = file_state.get("facts")
         out["file"]["lent_files"] = dict(file_state.get("files") or {})
+        out["file"]["transfer"] = file_state.get("transfer")
     return out
 
 
@@ -2838,11 +2839,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     file_state: dict = {"decided": False, "pool": None, "as": None, "reason": None, "files": {}}
     _cal_record = getattr(cfg, "tier_calibration", None)
 
-    def _file_pool():
+    def _file_pool(need_ledgers: dict):
         """The calibration file's Pool (source campaign / lent) or None, decided
         once against the batch's reagent, polarity, instrument class, scan range
         and days (calfile.choose; lending across reagents only with
-        `tier_calibration_lent`); the reason it lends nothing is logged once."""
+        `tier_calibration_lent`; a lent window only when the mass-accuracy transfer
+        check passes on `need_ledgers`, the uncalibrated files' own core scatter,
+        calfile.receiving_scatter); the reason it lends nothing is logged once."""
         if file_state["decided"]:
             return file_state["pool"]
         file_state["decided"] = True
@@ -2851,10 +2854,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         from peaky.assignment import calfile as _CF
         from peaky.assignment import tiers as _TP
         facts = _CF.series_facts(ts_peaks if ts_peaks is not None else peaks)
+        recv = _CF.receiving_scatter(need_ledgers, reagent=prof.name,
+                                     polarity="positive" if prof.polarity == "+" else "negative",
+                                     carry=axis_info.get("edge_carry"))
+        det: dict = {}
         src_, why_ = _CF.choose(_cal_record, reagent=prof.name, polarity=prof.polarity,
                                 instrument_class=cfg.instrument_class, scan_range=facts["scan_range"],
-                                days=facts["days"], lent_ok=bool(getattr(cfg, "tier_calibration_lent", False)))
-        file_state.update(**{"as": src_, "reason": why_, "facts": facts})
+                                days=facts["days"], lent_ok=bool(getattr(cfg, "tier_calibration_lent", False)),
+                                recv=recv, detail=det)
+        file_state.update(**{"as": src_, "reason": why_, "facts": facts, "transfer": det or None})
         if src_ is None:
             log(f"[calpool] WARNING: the calibration file is not lent: {why_}")
             return None
@@ -3006,7 +3014,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if pool.cal is None:
             # neither the files' own cores nor the batch's pool: the calibration
             # file, when one was given and the batch reads it (calfile.choose)
-            pool = _file_pool()
+            pool = _file_pool({r["sid"]: r["ledger"] for r in need})
             if pool is None:
                 return
         for r in need:

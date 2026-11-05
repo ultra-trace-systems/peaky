@@ -2172,8 +2172,9 @@ def _add_tier_calibration_flags(p) -> None:
                    help="a calibration json (`peaky calibration pool`): lent ONLY to a file whose own core "
                         "and the batch's pooled core both fall short of a tier calibration, as 'campaign' "
                         "(the json's reagent, polarity and scan range match the batch) or 'lent' (another "
-                        "scan range). A file that calibrates either way is unchanged. The json's sha256 goes "
-                        "into run_manifest.json; batch_summary 'levels_calibration' says how it was read")
+                        "scan range, when the batch's own core scatter is at most 1.5x the lender's). A file "
+                        "that calibrates either way is unchanged. batch_summary 'levels_calibration' says how "
+                        "it was read; the json's sha256 goes into run_manifest.json")
     p.add_argument("--tier-calibration-lent", dest="tier_calibration_lent", action="store_true", default=False,
                    help="allow the --tier-calibration json of ANOTHER reagent of the same polarity and "
                         "instrument class over the same days to be lent ('lent'); never implicit")
@@ -2637,7 +2638,8 @@ def build_parser() -> argparse.ArgumentParser:
     pKp.add_argument("runs", nargs="+", help="finished batch run dirs")
     pKp.add_argument("--out", required=True, help="the json to write")
     pKp.add_argument("--allow-mixed", action="store_true",
-                     help="pool runs of different reagents / polarities anyway (refused by default)")
+                     help="pool runs of different reagents / polarities / scan ranges anyway (refused by "
+                          "default; mixed scan ranges are recorded as their union)")
     pKp.add_argument("--scan-range", default=None, metavar="LO-HI",
                      help="the scan range to record (default: read off the runs' series)")
     pKp.add_argument("--verbose", "-v", action="store_true", help="print the core ions too")

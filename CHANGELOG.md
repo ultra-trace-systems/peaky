@@ -169,11 +169,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never a reagent identity, a reagent-library line, an alias-series-held row or a 13C-shadow line; the json
   (schema 1) records the reagent, polarity, scan range and days read off the runs' series, the source runs
   (dir, commit, files), the core and the width (the run sigma of the files that calibrated alone, else the
-  pooled sigma; the per-file sigma spread). `--tier-calibration` lends it ONLY to a file neither calibration
-  reached, as `campaign` (reagent, polarity and scan range match) or `lent` (another scan range; another
-  reagent of the same polarity and class over the same days only with `--tier-calibration-lent`); a lent
-  width outside 1.5x of the lending spread is refused and the file stays `none`, the reason logged and in
-  `levels_not_assessed_reason`. Files that calibrate per file or on the batch pool are byte-identical with
+  pooled sigma; the lending files' unfloored core scatter); runs of different scan ranges are refused unless
+  `--allow-mixed` (the json then records their union). `--tier-calibration` lends it ONLY to a file neither
+  calibration reached, as `campaign` (reagent, polarity and scan range match) or `lent` (another scan range;
+  another reagent of the same polarity and class over the same days only with `--tier-calibration-lent`). A
+  lent window passes a mass-accuracy transfer check -- the batch's own unfloored core scatter (>= 15 rows in
+  >= 2 files, about each file's centre) at most 1.5x the lending files' median -- or the file stays `none`,
+  the reason logged (and in `levels_not_assessed_reason` when nothing was levelled). The check asks whether
+  the lender's accuracy transfers; it does not control over-grading, which does not move with the window's
+  width. A lent window's mass-error test takes the 0.03 mDa absolute floor. Files that calibrate per file or on the batch pool are byte-identical with
   the flag. New: per-file `tier_calibration` values `campaign` / `lent` (stats, M0 rows, merged rows; the
   reasons name the "campaign-pooled" / "lent" window), `batch_summary['levels_calibration']`, the json's
   sha256 in `run_manifest.json` (`input.tier_calibration`; its descriptor in the fingerprinted config;

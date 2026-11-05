@@ -42,15 +42,18 @@ DAY = "2025-10-01"
 
 # --------------------------------------------------------------------------- calibration jsons
 def _record(*, reagent="Br", polarity="-", scan_range=(100.0, 139.0), mu=0.0, sigma=0.3, spread=(0.25, 0.35),
-            days=(DAY, DAY), usable=True, klass="orbitrap"):
+            days=(DAY, DAY), usable=True, klass="orbitrap", raw=0.07):
     pf = ({"n": 4, "min": spread[0], "median": round(sum(spread) / 2, 4), "max": spread[1]} if spread
           else {"n": 0, "min": None, "median": None, "max": None})
+    rw = ({"n": 4, "min": raw, "median": raw, "max": raw, "files": {f"l{i}": raw for i in range(4)}} if raw
+          else {"n": 0, "min": None, "median": None, "max": None, "files": {}})
     return {"schema": CF.SCHEMA, "source": "campaign", "reagent": reagent, "polarity": polarity,
             "scan_range": list(scan_range), "instrument_class": klass, "days": list(days) if days else None,
             "runs": [{"dir": "r1", "commit": "abc", "n_files": 4}],
             "core": {"n_ions": 20, "n_files": 4, "n_files_read": 4, "ions": []},
             "width": ({"mu": mu, "sigma": sigma, "basis": "run", "model": "constant",
-                       "pooled": {"mu": mu, "sigma": sigma}, "run": None, "per_file_sigma": pf}
+                       "pooled": {"mu": mu, "sigma": sigma}, "run": None, "per_file_sigma": pf,
+                       "per_file_raw_sigma": rw}
                       if usable else None),
             "usable": usable, "reason": None if usable else "too few ions"}
 
@@ -164,10 +167,15 @@ def test_a_matching_json_is_lent_as_campaign_and_the_files_get_levels(tmp_path, 
 
 
 def test_a_json_of_another_scan_range_is_lent(tmp_path, monkeypatch):
+    """5 isotope-backed rows per file: the batch pool falls short, the files' own core scatter is measurable
+    (>= 15 rows in >= 2 files: 0.074 ppm against the lender's 0.07, ratio 1.06) and the window is lent."""
     rec = _json(tmp_path / "..", "c2.json", scan_range=(40.0, 600.0))
-    summ = _run(tmp_path, monkeypatch, record=rec)
+    summ = _run(tmp_path, monkeypatch, record=rec, iso_rows=5)
     lc = summ["levels_calibration"]
     assert lc["source"] == "lent" and lc["files"]["lent"] == len(summ["per_file"]) and lc["file"]["read_as"] == "lent"
+    tr = lc["file"]["transfer"]
+    assert tr["n_rows"] >= 15 and tr["n_files"] >= 2 and tr["lender_raw_median"] == 0.07
+    assert tr["recv_sigma"] == pytest.approx(1.4826 * 0.05, abs=1e-3) and tr["ratio"] <= 1.5
     assert summ["levels_not_assessed_reason"] is None
     off = _m0(tmp_path, summ["per_file"][-1]["sample_id"]).query("neutral_formula == 'C17H28O6'")
     assert off["tier_reason"].str.contains("off the lent instrument accuracy").all()
@@ -181,24 +189,48 @@ def test_another_reagent_is_lent_only_with_the_flag_and_only_over_the_same_days(
     assert "lending across reagents needs --tier-calibration-lent" in lc["file"]["reason"]
     assert "A calibration file was given and not used" in summ["levels_not_assessed_reason"]
     assert all(p["degeneracy_cal"] is None for p in summ["per_file"])
-    summ = _run(tmp_path / "b", monkeypatch, record=rec, lent=True)
+    summ = _run(tmp_path / "b", monkeypatch, record=rec, lent=True, iso_rows=5)
     assert summ["levels_calibration"]["source"] == "lent" and summ["levels_calibration"]["file"]["lent_flag"] is True
     far = _json(tmp_path / "..", "c4.json", reagent="NO3", days=("2024-01-01", "2024-01-05"))
-    summ = _run(tmp_path / "c", monkeypatch, record=far, lent=True)
+    summ = _run(tmp_path / "c", monkeypatch, record=far, lent=True, iso_rows=5)
     assert summ["levels_calibration"]["source"] == "none"
     assert "needs the same days" in summ["levels_calibration"]["file"]["reason"]
 
 
-def test_a_lent_width_outside_the_lending_spread_is_refused(tmp_path, monkeypatch):
-    """Width 3x the spread's top: a lent file stays 'none' and says why; the same json at the batch's own
-    scan range (campaign) is not gated."""
-    rec = _json(tmp_path / "..", "c5.json", scan_range=(40.0, 600.0), sigma=1.05, spread=(0.25, 0.35))
-    summ = _run(tmp_path / "a", monkeypatch, record=rec)
+def test_a_lent_window_whose_mass_accuracy_does_not_transfer_is_refused(tmp_path, monkeypatch):
+    """The transfer check on the batch path: the files' own core scatter (0.074 ppm) 3.7x the lender's
+    (0.02) -> 'none' with the reason; too few core rows to measure it (3 per file) -> 'none'; a json with
+    no unfloored lender scatter -> 'none'; each reason also in levels_not_assessed_reason. The same tight
+    json at the batch's own scan range (campaign) is not checked."""
+    tight = _json(tmp_path / "..", "c5.json", scan_range=(40.0, 600.0), raw=0.02)
+    summ = _run(tmp_path / "a", monkeypatch, record=tight, iso_rows=5)
     lc = summ["levels_calibration"]
-    assert lc["source"] == "none" and "outside 1.5x the lending runs' per-file sigma spread" in lc["file"]["reason"]
+    assert lc["source"] == "none" and "the lender's mass accuracy does not transfer" in lc["file"]["reason"]
+    assert lc["file"]["transfer"]["ratio"] == pytest.approx(1.4826 * 0.05 / 0.02, rel=0.02)
     assert "A calibration file was given and not used" in summ["levels_not_assessed_reason"]
-    ok = _json(tmp_path / "..", "c6.json", scan_range=(40.0, 600.0), sigma=0.5, spread=(0.25, 0.35))
-    assert _run(tmp_path / "b", monkeypatch, record=ok)["levels_calibration"]["source"] == "lent"
+    ok = _json(tmp_path / "..", "c6.json", scan_range=(40.0, 600.0))
+    summ = _run(tmp_path / "b", monkeypatch, record=ok, iso_rows=3)
+    assert summ["levels_calibration"]["source"] == "none"
+    assert "is not measurable" in summ["levels_calibration"]["file"]["reason"]
+    blind = _json(tmp_path / "..", "c6b.json", scan_range=(40.0, 600.0), raw=None)
+    summ = _run(tmp_path / "c", monkeypatch, record=blind, iso_rows=5)
+    assert "records no unfloored scatter" in summ["levels_calibration"]["file"]["reason"]
+    camp = _json(tmp_path / "..", "c6c.json", raw=0.001)
+    assert _run(tmp_path / "d", monkeypatch, record=camp, iso_rows=5)["levels_calibration"]["source"] == "campaign"
+
+
+def test_the_transfer_check_decides_on_the_ratio_and_the_row_counts():
+    """RECV_X = 1.5 decides: 1.48x lends, 1.52x and 2x do not; under 15 rows or 2 files nothing is lent;
+    a receiver more precise than the lender lends (no lower bound)."""
+    rec = dict(_record(raw=0.1), _sha256="t" * 64)
+    kw = dict(reagent="Br", polarity="-", instrument_class="orbitrap", scan_range=[40.0, 600.0], days=[DAY, DAY])
+    for sig, n, k, want in [(0.148, 20, 3, "lent"), (0.152, 20, 3, None), (0.2, 20, 3, None), (0.01, 20, 3, "lent"),
+                            (0.1, 14, 3, None), (0.1, 30, 1, None)]:
+        det = {}
+        got = CF.choose(rec, recv={"sigma": sig, "n_rows": n, "n_files": k}, detail=det, **kw)[0]
+        assert got == want, (sig, n, k)
+        assert det["max_ratio"] == 1.5
+    assert CF.choose(rec, recv=None, **kw)[0] is None
 
 
 def test_a_polarity_or_an_unusable_json_lends_nothing():
@@ -300,32 +332,41 @@ def test_run_windows_marks_a_campaign_or_lent_file_as_borrowed(monkeypatch):
 
 
 # --------------------------------------------------------------------------- calibration pool
+#: more CHO neutrals, so a file can hold the tiers.CAL_MIN_N (20) core rows of a file that calibrates alone
+MORE_NEUTRALS = NEUTRALS + ["C17H28O6", "C18H30O6", "C19H30O7", "C20H32O7"]
+
+
 def _rows(n_cho=16, *, ppm=0.05):
-    rows = [(nf, AD, ppm * ((k % 5) - 2), 1e5 * (1 + k), True, "Good") for k, nf in enumerate(NEUTRALS[:n_cho])]
+    rows = [(nf, AD, ppm * ((k % 5) - 2), 1e5 * (1 + k), True, "Good")
+            for k, nf in enumerate(MORE_NEUTRALS[:n_cho])]
     return rows
 
 
-def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, shadow_mz=None):
+def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, shadow_mz=None, n_cho=16,
+             src="per_file", ts_lo=None):
     """A finished run dir: per-file ledgers of 16 CHO [M-H]- readings with their 13C lines, `extra`
-    rows [(neutral, adduct, iso label | None)] each with that isotope line, batch_summary, manifest, a
-    series parquet, a label-twin table with `shadow_mz` as a shadow line. `own`: (mu, sigma) the files
-    calibrated alone with, else uncalibrated. `alias_ion`: a neutral whose rows carry the alias-series
-    hold's mark."""
+    rows [(neutral, adduct, iso label | None[, confidence, ppm])] each with that isotope line,
+    batch_summary, manifest, a series parquet, a label-twin table with `shadow_mz` as a shadow line.
+    `own`: (mu, sigma) of the files' stats `degeneracy_cal` (`src` their `tier_calibration`: 'per_file' =
+    calibrated alone, 'pooled' = lent the batch pool), else uncalibrated. `alias_ion`: a neutral whose rows
+    carry the alias-series hold's mark. `n_cho`: CHO readings per file (MORE_NEUTRALS). `ts_lo`: an extra
+    series peak at this m/z in every file (moves the series' low edge)."""
     os.makedirs(os.path.join(path, "per_file"), exist_ok=True)
     os.makedirs(os.path.join(path, "tables"), exist_ok=True)
     os.makedirs(os.path.join(path, "data"), exist_ok=True)
     ts = []
     for s in sids:
-        led = _file(s, _rows())
-        for k, (nf, ad, lab) in enumerate(extra or []):
+        led = _file(s, _rows(n_cho))
+        for k, (nf, ad, lab, *opt) in enumerate(extra or []):
+            conf, ppm_e = (opt + ["Good", 0.02][len(opt):])[:2]
             mz = C.ion_mz(nf, ad)
             pid = f"{s}-x{k}"
             add = L.new_ledger(pd.DataFrame([(pid, mz, 2e5)] + ([(pid + "i", mz + 1.99, 1e4)] if lab else []),
                                             columns=["peak_id", "mz", "height"]))
             led = pd.concat([led, add], ignore_index=True)
             L.commit_assignment(led, pid, neutral_formula=nf, adduct=ad, ion_formula=_ion(nf, ad), ion_score=0.95,
-                                compound_score=0.95, ppm_error=0.02, pass_no=1, method="cheminfo+grid",
-                                confidence="Good", commentary=f"Pass 1: {nf} {ad}")
+                                compound_score=0.95, ppm_error=ppm_e, pass_no=1, method="cheminfo+grid",
+                                confidence=conf, commentary=f"Pass 1: {nf} {ad}")
             if lab:
                 L.attach_isotopologue(led, pid + "i", pid, iso_label=lab, iso_match_score=0.9)
         if alias_ion:
@@ -333,14 +374,14 @@ def _run_dir(path, sids, *, reagent="Br", own=None, extra=None, alias_ion=None, 
             led.loc[i, "tier_reason"] = led.loc[i, "tier_reason"].astype(str) + f"; {SERIES_ALIAS_MARK} (alias)"
         led.to_csv(os.path.join(path, "per_file", f"{s}_ledger.csv"), index=False)
         ts += [{"sample_item_id": s, "mz": m, "datetime_utc": pd.Timestamp(f"{DAY} 12:00", tz="UTC")}
-               for m in pd.to_numeric(led["mz"]).tolist()]
+               for m in pd.to_numeric(led["mz"]).tolist() + ([ts_lo] if ts_lo is not None else [])]
     pd.DataFrame(ts).to_parquet(os.path.join(path, "data", "X_ts.parquet"))
     if shadow_mz is not None:
         pd.DataFrame([{"mz": shadow_mz, "adduct": "[M+NO3]-", "line_verdict": "shadow"}]).to_csv(
             os.path.join(path, "tables", "label_twins.csv"), index=False)
     from peaky.chem.resolution import Resolution
     per_file = [{"sample_id": s, "degeneracy_cal": ({"mu": own[0], "sigma": own[1]} if own else None),
-                 "tier_calibration": "per_file" if own else "none"} for s in sids]
+                 "tier_calibration": src if own else "none"} for s in sids]
     json.dump({"reagent": reagent, "per_file": per_file, "resolution": Resolution.coerce(ORBI).as_dict(),
                "mass_axis": {}}, open(os.path.join(path, "batch_summary.json"), "w"))
     json.dump({"code": {"git": {"commit": "c0ffee"}}, "input": {}}, open(os.path.join(path, "run_manifest.json"), "w"))
@@ -478,3 +519,32 @@ def test_a_lent_constant_window_takes_the_absolute_floor_in_the_mass_error_test(
     t_own = T.compute_tiers(led, cal=own).set_index("peak_id")["tier"]
     assert (t_lent["z-0"], t_own["z-0"]) == (T.TIER_ASSIGNED, T.TIER_CANDIDATE)
     assert (t_lent["z-1"], t_own["z-1"]) == (T.TIER_CANDIDATE, T.TIER_CANDIDATE)
+
+
+
+# --------------------------------------------------------------------------- the pool's lending scatter and scan ranges
+def test_the_pool_records_the_lending_files_unfloored_scatter_and_only_theirs(tmp_path):
+    """22 core rows per file that calibrated alone: the json keeps each file's unfloored scatter (scaled
+    MAD 0.074 ppm, under the 0.15 floor its floored sigma sits on); files the batch pool lent a window
+    are no lending files (neither spread counts them)."""
+    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"], own=(0.0, 0.15), n_cho=22)
+    r2 = _run_dir(tmp_path / "r2", ["b0", "b1"], own=(0.0, 0.3), n_cho=22, src="pooled")
+    rec = CF.pool_runs([r1, r2], log=lambda *a: None)
+    rw, pf = rec["width"]["per_file_raw_sigma"], rec["width"]["per_file_sigma"]
+    assert rw["n"] == 2 and set(rw["files"]) == {"a0", "a1"} and rw["median"] == pytest.approx(1.4826 * 0.05, abs=1e-3)
+    assert pf["n"] == 2 and pf["max"] == pytest.approx(0.15)
+    assert rec["width"]["basis"] == "run" and rec["width"]["sigma"] == pytest.approx(0.15)
+    assert CF.raw_scatter(pd.read_csv(os.path.join(r1, "per_file", "a0_ledger.csv"))) == pytest.approx(
+        rw["files"]["a0"], abs=1e-4)
+    assert CF.raw_scatter(_file("x", _rows(16))) is None          # under CAL_MIN_N core rows: no own scatter
+
+
+def test_the_pool_refuses_mixed_scan_ranges_unless_asked_and_records_their_union(tmp_path):
+    r1 = _run_dir(tmp_path / "r1", ["a0", "a1"])
+    r2 = _run_dir(tmp_path / "r2", ["b0", "b1"], ts_lo=45.0)
+    with pytest.raises(CF.CalibrationError, match="mix scan ranges"):
+        CF.pool_runs([r1, r2], log=lambda *a: None)
+    rec = CF.pool_runs([r1, r2], allow_mixed=True, log=lambda *a: None)
+    assert rec["scan_mixed"] is True and rec["scan_range"][0] == pytest.approx(45.0)
+    same = CF.pool_runs([r1, _run_dir(tmp_path / "r3", ["c0", "c1"])], log=lambda *a: None)
+    assert same["scan_mixed"] is False

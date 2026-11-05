@@ -29,9 +29,15 @@ calibration is an explicit, hashed INPUT instead:
     batch; ``lent`` when reagent and polarity match and the scan range differs,
     or -- only with ``--tier-calibration-lent`` -- when the reagent differs on
     the same polarity and instrument class over the same days. Lending never
-    happens implicitly across reagents. A lent width must lie within
-    LENT_SPREAD_X of the lending runs' own per-file width spread (the json
-    stores it); otherwise the file stays ``none`` and the reason is logged.
+    happens implicitly across reagents. A lent window passes a mass-accuracy
+    transfer check (`transfer`): the receiving batch's own unfloored core
+    scatter (its campaign-rule core rows about each file's own centre, >=
+    RECV_MIN_ROWS rows in >= RECV_MIN_FILES files) must be at most RECV_X times
+    the lending files' median unfloored scatter (the json stores it,
+    `width.per_file_raw_sigma`); otherwise the file stays ``none`` and the
+    reason is logged. The check asks whether the lender's mass accuracy
+    transfers; it is no control of over-grading, which does not move with the
+    window's width.
   * ``peaky relevel <run dir> --tier-calibration cal.json --out <dir>``
     (`relevel_run`): the same choice on a finished run, the evidence levels
     only (no re-assignment, no re-tier: the tier stage needs the tier-time
@@ -67,14 +73,19 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 
-__version__ = "0.1.0"  # the tier calibration as a file input (pool / show / compare / batch / relevel)
+__version__ = "0.2.0"  # the mass-accuracy transfer check replaces the width-spread gate; mixed scan ranges refused
 
 #: the json schema this module writes and reads
 SCHEMA = 1
 #: the source a pooled json names itself (a batch reads it as campaign or lent)
 SOURCE_CAMPAIGN = T.CAL_SOURCE_CAMPAIGN
-#: a lent width must lie within this factor of the lending runs' per-file width spread
-LENT_SPREAD_X = 1.5
+#: the mass-accuracy transfer check of a lent window (`transfer`): the receiving batch's own unfloored
+#: core scatter must be at most this factor of the lending files' median unfloored scatter ...
+RECV_X = 1.5
+#: ... measured over at least this many core rows ...
+RECV_MIN_ROWS = 15
+#: ... in at least this many files
+RECV_MIN_FILES = 2
 #: two scan ranges' low edges match within this many Da ...
 SCAN_LO_DA = 3.0
 #: ... or this fraction of the low edge
@@ -84,7 +95,7 @@ SCAN_HI_X = (0.5, 1.5)
 #: lending across reagents needs the acquisition days to overlap within this many days
 DAY_SLACK = 1
 #: the top-level keys of a calibration json
-RECORD_KEYS = ("schema", "source", "reagent", "polarity", "scan_range", "instrument_class", "days", "runs",
+RECORD_KEYS = ("schema", "source", "reagent", "polarity", "scan_range", "scan_mixed", "instrument_class", "days", "runs",
                "core", "width", "usable", "reason", "fitted_at", "peaky_version")
 #: the per-file ledger columns the pool reads
 _LEDGER_COLS = ["peak_id", "mz", "height", "role", "neutral_formula", "adduct", "ion_formula", "confidence",
@@ -189,7 +200,67 @@ def run_facts(run_dir: str) -> dict:
             "polarity": _polarity_of(summ.get("reagent")), "instrument_class": _klass_of(summ),
             "scan_range": sf["scan_range"], "days": sf["days"], "commit": commit, "per_file": per_file,
             "n_files": len(per_file), "edge_carry": (summ.get("mass_axis") or {}).get("edge_carry"),
-            "own_cals": [(float(c["mu"]), float(c["sigma"])) for c in own]}
+            "own_cals": [(float(c["mu"]), float(c["sigma"])) for c in own],
+            "own_sids": {str(p.get("sample_id")) for p in per_file if p.get("degeneracy_cal")
+                         and p.get("tier_calibration", T.CAL_SOURCE_PER_FILE) == T.CAL_SOURCE_PER_FILE}}
+
+
+def raw_scatter(ledger: pd.DataFrame, *, carry=None) -> float | None:
+    """The unfloored scatter of a file's own calibration core: the scaled MAD of
+    its `tiers.core_point` ppm errors (on the batch axis model's carried scale)
+    about their median, over the errors within 2 ppm of it (all of them when
+    fewer than tiers.CAL_MIN_N are), as `tiers.robust_centre` reads them but
+    BEFORE the CAL_SIGMA_FLOOR. None when the file holds fewer than
+    tiers.CAL_MIN_N core rows (it cannot calibrate alone)."""
+    if ledger is None or not len(ledger) or "role" not in ledger.columns:
+        return None
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    kids = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
+    pts = [p for p in (T.core_point(r, kids) for _, r in m0.iterrows()) if p is not None]
+    if len(pts) < T.CAL_MIN_N:
+        return None
+    ppm = np.asarray([p[0] for p in pts], dtype=float)
+    if carry:
+        ppm = ppm - MC.edge_carry_at(carry, np.asarray([p[1] for p in pts], dtype=float))
+    srs = pd.Series(ppm)
+    core = srs[(srs - srs.median()).abs() <= 2.0]
+    if len(core) < T.CAL_MIN_N:
+        core = srs
+    return float(1.4826 * (core - core.median()).abs().median())
+
+
+def receiving_scatter(ledgers: dict, *, reagent=None, polarity: str = "negative", carry=None,
+                      exclude_mz=()) -> dict:
+    """The receiving batch's own unfloored core scatter for the transfer check:
+    the campaign-rule core rows (`calpool.core_rows(inorganic=True)`, the reagent
+    library and identity, the alias-series hold, `exclude_mz` shadow lines) of
+    every file in `ledgers` ({sid: ledger}) that holds >= CENTRE_MIN_ROWS
+    Assigned M0 rows, each about its file's own centre (the median ppm error of
+    those Assigned rows, as `calpool.lent_calibration` centres the lent window),
+    on the carried scale; {sigma (the scaled MAD of the deviations about their
+    median), n_rows, n_files}; sigma None without rows."""
+    masses = _reagent_masses(reagent)
+    devs, nf = [], 0
+    for sid in sorted(ledgers, key=str):
+        led = ledgers[sid]
+        if led is None or not len(led) or not {"role", "tier", "ppm_error", "mz"} <= set(led.columns):
+            continue
+        rows = CP.core_rows(led, polarity=polarity, reagent_masses=masses, sid=str(sid), inorganic=True,
+                            exclude_peaks=_alias_held(led), exclude_mz=exclude_mz)
+        a = led[(led["role"] == L.ROLE_M0) & (led["tier"].astype(str) == T.TIER_ASSIGNED)]
+        ppm = pd.to_numeric(a["ppm_error"], errors="coerce")
+        rp = rows["ppm"].astype(float).to_numpy() if len(rows) else np.empty(0)
+        if carry:
+            ppm = ppm - MC.edge_carry_at(carry, pd.to_numeric(a["mz"], errors="coerce").to_numpy(dtype=float))
+            if len(rows):
+                rp = rp - MC.edge_carry_at(carry, rows["mz"].to_numpy(dtype=float))
+        if len(ppm.dropna()) < CP.CENTRE_MIN_ROWS or not len(rp):
+            continue
+        devs += list(rp - float(ppm.median()))
+        nf += 1
+    dv = np.asarray(devs, dtype=float)
+    sigma = float(1.4826 * np.median(np.abs(dv - np.median(dv)))) if len(dv) else None
+    return {"sigma": None if sigma is None else round(sigma, 4), "n_rows": int(len(dv)), "n_files": int(nf)}
 
 
 def _shadow_lines(run_dir: str) -> list:
@@ -242,8 +313,12 @@ def pool_runs(run_dirs, *, allow_mixed: bool = False, scan_range=None, log=print
               min_ions: int = CP.POOL_MIN_IONS, min_files: int = CP.POOL_MIN_FILES,
               min_span_frac: float = CP.POOL_MIN_SPAN_FRAC) -> dict:
     """The calibration record (RECORD_KEYS) pooled over finished run dirs
-    (module note). Refuses (CalibrationError) runs of different reagents or
-    polarities unless `allow_mixed`, and a run dir without a batch summary.
+    (module note). Refuses (CalibrationError) runs of different reagents,
+    polarities or scan ranges (`scan_match`) unless `allow_mixed` -- mixed scan
+    ranges are then recorded as their union (`scan_mixed` True) -- and a run dir
+    without a batch summary. The width records the lending files' unfloored core
+    scatter (`raw_scatter`, `width.per_file_raw_sigma`), the reference of a lent
+    window's transfer check (`transfer`).
     `scan_range` ([lo, hi]) overrides the range read off the runs' series. A
     file present in two runs is read once (the first). Never raises on thin
     data: a core that cannot calibrate gives `usable` False and its `reason`."""
@@ -256,8 +331,13 @@ def pool_runs(run_dirs, *, allow_mixed: bool = False, scan_range=None, log=print
     if (len(reagents) > 1 or len(pols) > 1) and not allow_mixed:
         raise CalibrationError(f"the runs mix reagents {reagents} / polarities {pols}; pass --allow-mixed "
                                "to pool them anyway")
+    ranges = [f["scan_range"] for f in facts if f["scan_range"]]
+    mixed_scan = any(not scan_match(ranges[0], r) or not scan_match(r, ranges[0]) for r in ranges[1:])
+    if mixed_scan and not allow_mixed:
+        raise CalibrationError("the runs mix scan ranges " + ", ".join(
+            f"{f['dir']} {f['scan_range']}" for f in facts) + "; pass --allow-mixed to pool them anyway")
     klasses = sorted({str(f["instrument_class"]) for f in facts})
-    parts, seen, ledgers_m0 = [], set(), []
+    parts, seen, ledgers_m0, raw = [], set(), [], {}
     runs = []
     for f in facts:
         masses = _reagent_masses(f["reagent"])
@@ -274,6 +354,11 @@ def pool_runs(run_dirs, *, allow_mixed: bool = False, scan_range=None, log=print
             led = pd.read_csv(p, low_memory=False, usecols=lambda c: c in _LEDGER_COLS)
             n_read += 1
             ledgers_m0.append(led.loc[led["role"] == L.ROLE_M0, ["role", "mz"]])
+            if sid in f["own_sids"]:
+                # the lending file's unfloored scatter (the transfer check's reference)
+                r_ = raw_scatter(led, carry=f["edge_carry"])
+                if r_ is not None:
+                    raw[sid] = round(r_, 4)
             rows = CP.core_rows(led, polarity=polarity, reagent_masses=masses, sid=sid, inorganic=True,
                                 exclude_peaks=_alias_held(led), exclude_mz=shadows)
             if len(rows) and f["edge_carry"]:
@@ -295,8 +380,12 @@ def pool_runs(run_dirs, *, allow_mixed: bool = False, scan_range=None, log=print
              if own else None)
     lo = [f["scan_range"][0] for f in facts if f["scan_range"]]
     hi = [f["scan_range"][1] for f in facts if f["scan_range"]]
+    # the scan range: the override, else (one method) the median low edge and the top, else (runs of
+    # different ranges pooled with --allow-mixed) the union of the runs' ranges
     sr = ([float(scan_range[0]), float(scan_range[1])] if scan_range is not None
-          else ([round(float(np.median(lo)), 3), round(float(max(hi)), 3)] if lo else None))
+          else None if not lo
+          else [round(float(min(lo)), 3), round(float(max(hi)), 3)] if mixed_scan
+          else [round(float(np.median(lo)), 3), round(float(max(hi)), 3)])
     days = [d for f in facts if f["days"] for d in f["days"]]
     core = pool.core
     width = None
@@ -308,13 +397,17 @@ def pool_runs(run_dirs, *, allow_mixed: bool = False, scan_range=None, log=print
                  "run": ({"mu": round(run_w[0], 4), "sigma": round(run_w[1], 4), "n_files": int(run_w[2])}
                          if run_w is not None else None),
                  "per_file_sigma": _spread([c[1] for c in own]),
+                 # the lending files' unfloored core scatter (median + per file): the transfer check's
+                 # reference (`transfer`); the floored per-file sigmas above sit on CAL_SIGMA_FLOOR
+                 "per_file_raw_sigma": dict(_spread(list(raw.values())), files=dict(sorted(raw.items()))),
                  "abs_floor_mda": float(MC.ABS_FLOOR_MDA)}
     import peaky
     record = {
         "schema": SCHEMA, "source": SOURCE_CAMPAIGN,
         "reagent": reagents[0] if len(reagents) == 1 else reagents,
         "polarity": pols[0] if len(pols) == 1 else pols,
-        "scan_range": sr, "instrument_class": klass if klass is not None else klasses,
+        "scan_range": sr, "scan_mixed": bool(mixed_scan),
+        "instrument_class": klass if klass is not None else klasses,
         "days": [min(days), max(days)] if days else None,
         "runs": runs,
         "core": {"n_ions": int(pool.n_ions), "n_rows": int(len(rows)), "n_files": int(pool.n_files),
@@ -404,7 +497,9 @@ def descriptor(record: dict | None) -> dict | None:
             "days": record.get("days"), "usable": record.get("usable"),
             "runs": [dict(r) for r in record.get("runs") or []],
             "n_ions": (record.get("core") or {}).get("n_ions"),
-            "width": {k: w.get(k) for k in ("mu", "sigma", "basis", "per_file_sigma")} if w else None}
+            "width": ({k: w.get(k) for k in ("mu", "sigma", "basis", "per_file_sigma")}
+                      | {"per_file_raw_sigma": {k: v for k, v in (w.get("per_file_raw_sigma") or {}).items()
+                                                if k != "files"} or None} if w else None)}
 
 
 def show_text(record: dict) -> str:
@@ -422,9 +517,11 @@ def show_text(record: dict) -> str:
                f"{c.get('mz_span')} of the committed {c.get('mz_range')}")
     if record.get("usable"):
         pf = w.get("per_file_sigma") or {}
+        rw = w.get("per_file_raw_sigma") or {}
         out.append(f"  width: {w.get('mu'):+.3f} ± {w.get('sigma'):.3f} ppm (basis {w.get('basis')}; pooled "
                    f"{(w.get('pooled') or {}).get('mu'):+.3f} ± {(w.get('pooled') or {}).get('sigma'):.3f}; "
-                   f"per-file sigma n {pf.get('n')} {pf.get('min')}..{pf.get('max')})")
+                   f"per-file sigma n {pf.get('n')} {pf.get('min')}..{pf.get('max')}; unfloored per-file "
+                   f"scatter n {rw.get('n')} median {rw.get('median')} ({rw.get('min')}..{rw.get('max')}))")
     else:
         out.append(f"  NOT USABLE: {record.get('reason')}")
     for i in c.get("ions") or []:
@@ -488,25 +585,39 @@ def _days_overlap(a, b) -> bool:
     return a0 - d <= b1 and b0 - d <= a1
 
 
-def sanity(record: dict) -> str | None:
-    """Why a json's width may not be lent (None: it may): its width must lie
-    within LENT_SPREAD_X of the lending runs' per-file sigma spread."""
+def transfer(record: dict, recv: dict | None) -> tuple[str | None, dict]:
+    """The mass-accuracy transfer check of a lent window (module note): (why not
+    | None, {lender_raw_median, recv_sigma, n_rows, n_files, ratio, max_ratio}).
+    The receiving scatter `recv` (`receiving_scatter`) must be measured on >=
+    RECV_MIN_ROWS rows in >= RECV_MIN_FILES files and be at most RECV_X times
+    the lending files' median unfloored scatter (`width.per_file_raw_sigma`).
+    A more precise receiver passes (it is lent a conservatively wide window)."""
     w = record.get("width") or {}
-    pf = w.get("per_file_sigma") or {}
-    if not pf.get("n"):
-        return ("the calibration json records no per-file width spread (no file of its runs calibrated "
-                "alone), so a lent width cannot be checked")
-    s, lo, hi = float(w["sigma"]), float(pf["min"]), float(pf["max"])
-    if not (lo / LENT_SPREAD_X <= s <= hi * LENT_SPREAD_X):
-        return (f"the lent width {s:.3f} ppm lies outside {LENT_SPREAD_X:g}x the lending runs' per-file sigma "
-                f"spread {lo:.3f}-{hi:.3f} ppm")
-    return None
+    lend = (w.get("per_file_raw_sigma") or {}).get("median")
+    recv = recv or {}
+    det = {"lender_raw_median": lend, "recv_sigma": recv.get("sigma"), "n_rows": int(recv.get("n_rows") or 0),
+           "n_files": int(recv.get("n_files") or 0), "ratio": None, "max_ratio": RECV_X}
+    if not lend:
+        return ("the calibration json records no unfloored scatter of lending files (no file of its runs "
+                "calibrated alone), so the transfer of its mass accuracy cannot be checked"), det
+    if det["recv_sigma"] is None or det["n_rows"] < RECV_MIN_ROWS or det["n_files"] < RECV_MIN_FILES:
+        return (f"the batch's own core scatter is not measurable ({det['n_rows']} core rows in {det['n_files']} "
+                f"files; the transfer check needs >= {RECV_MIN_ROWS} rows in >= {RECV_MIN_FILES} files)"), det
+    det["ratio"] = round(float(det["recv_sigma"]) / float(lend), 3)
+    if det["ratio"] > RECV_X:
+        return (f"the batch's own core scatter {det['recv_sigma']:.3f} ppm ({det['n_rows']} rows, {det['n_files']} "
+                f"files) is {det['ratio']:.2f}x the lending files' median {float(lend):.3f} ppm (at most "
+                f"{RECV_X:g}x): the lender's mass accuracy does not transfer"), det
+    return None, det
 
 
 def choose(record: dict | None, *, reagent, polarity, instrument_class, scan_range, days,
-           lent_ok: bool = False) -> tuple[str | None, str | None]:
+           lent_ok: bool = False, recv: dict | None = None,
+           detail: dict | None = None) -> tuple[str | None, str | None]:
     """(source, reason) a batch reads a calibration json as: (CAL_SOURCE_CAMPAIGN
-    | CAL_SOURCE_LENT, None) or (None, why not) -- module note."""
+    | CAL_SOURCE_LENT, None) or (None, why not) -- module note. `recv`: the
+    batch's own core scatter (`receiving_scatter`), read only by a lent window's
+    transfer check; `detail` (a dict) receives that check's record."""
     if not record:
         return None, None
     tag = f"the calibration json {str(record.get('_sha256') or '')[:12]}".rstrip()
@@ -517,23 +628,25 @@ def choose(record: dict | None, *, reagent, polarity, instrument_class, scan_ran
     if instrument_class is None or record.get("instrument_class") != instrument_class:
         return None, (f"{tag} is of instrument class {record.get('instrument_class')!r}, the batch "
                       f"{instrument_class!r}")
+
+    def _lent(what):
+        why, det = transfer(record, recv)
+        if detail is not None:
+            detail.update(det)
+        if why:
+            return None, f"{tag} ({what}) is not lent: {why}"
+        return T.CAL_SOURCE_LENT, None
     if record.get("reagent") == reagent:
         if scan_match(record.get("scan_range"), scan_range):
             return T.CAL_SOURCE_CAMPAIGN, None
-        why = sanity(record)
-        if why:
-            return None, f"{tag} (scan range {record.get('scan_range')}, the batch {scan_range}) is not lent: {why}"
-        return T.CAL_SOURCE_LENT, None
+        return _lent(f"scan range {record.get('scan_range')}, the batch {scan_range}")
     if not lent_ok:
         return None, (f"{tag} is of reagent {record.get('reagent')!r}, the batch {reagent!r}: lending across "
                       "reagents needs --tier-calibration-lent")
     if not _days_overlap(record.get("days"), days):
         return None, (f"{tag} (reagent {record.get('reagent')!r}) covers days {record.get('days')}, the batch "
                       f"{days}: lending across reagents needs the same days")
-    why = sanity(record)
-    if why:
-        return None, f"{tag} (reagent {record.get('reagent')!r}) is not lent: {why}"
-    return T.CAL_SOURCE_LENT, None
+    return _lent(f"reagent {record.get('reagent')!r}")
 
 
 def as_pool(record: dict, source: str, *, abs_floor_mda: float = MC.ABS_FLOOR_MDA) -> CP.Pool:
@@ -576,8 +689,15 @@ def lend_to_summary(summary: dict, per_file: dict, record: dict | None, *, lent_
     `facts`: reagent, polarity, instrument_class, scan_range, days of the run.
     Returns (summary copy, source | None, reason | None, {sid: centre word})."""
     out = copy.deepcopy(summary)
-    src, why = choose(record, lent_ok=lent_ok, **{k: facts.get(k) for k in
-                                                  ("reagent", "polarity", "instrument_class", "scan_range", "days")})
+    uncal = {st.get("sample_id"): per_file[st.get("sample_id")] for st in out.get("per_file") or []
+             if "degeneracy_cal" in st and st["degeneracy_cal"] is None and st.get("sample_id") in per_file}
+    recv = receiving_scatter(uncal, reagent=facts.get("reagent"),
+                             polarity="positive" if facts.get("polarity") == "+" else "negative",
+                             carry=(summary.get("mass_axis") or {}).get("edge_carry")) if record else None
+    det: dict = {}
+    src, why = choose(record, lent_ok=lent_ok, recv=recv, detail=det,
+                      **{k: facts.get(k) for k in ("reagent", "polarity", "instrument_class", "scan_range", "days")})
+    facts["transfer"] = det or None
     centres = {}
     if src is None:
         return out, None, why, centres
@@ -642,11 +762,13 @@ def relevel_run(run_dir: str, record: dict | None, *, out_dir: str, lent_ok: boo
     if na and why:
         na += f" A calibration file was given and not used: {why}."
     rec = {"run_dir": run_dir, "calibration": descriptor(record), "lent_flag": bool(lent_ok), "read_as": used,
-           "reason": why, "centres": centres, "n_pairs": int(len(levels)),
+           "reason": why, "transfer": facts.get("transfer"), "centres": centres, "n_pairs": int(len(levels)),
            "peaky_version": __import__("peaky").__version__}
     summ = dict(summ)
     summ["levels_calibration"] = levels_record(summ.get("per_file") or [], record, used_as=used, reason=why,
                                                lent_flag=lent_ok)
+    if summ["levels_calibration"]["file"] is not None:
+        summ["levels_calibration"]["file"]["transfer"] = facts.get("transfer")
     summ["levels_not_assessed_reason"] = na
     ev = dict(summ.get("evidence_levels") or {})
     ev["pooled"] = EV.summarize(levels["evidence_level"]) if len(levels) else {}
