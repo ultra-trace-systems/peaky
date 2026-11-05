@@ -807,13 +807,20 @@ selected sample_ids (SAMPLING.md)
    holds becomes one row of `tables/unidentified.csv` with its `why`
    (`vote_dropped` > `absorbed_by_merge` > `orphan_iso_child` > `orphan_artifact` >
    `all_blocked` > `no_formula`) and the readings tried ([OUTPUTS.md](OUTPUTS.md)).
-   A merged row within the window holds a bin **unless some file resolves the line
-   from that row's peak** -- the same file holds another peak nearer the merged row
-   (two picks in one spectrum): then the line, an unidentified row or a vote loser of
-   another ion than its merged row (the vote's single linkage chains such a line
-   into a neighbour's cluster), gets its own row, `why = absorbed_by_merge`, the
-   merged row as partner. A line no file resolves stays the merged ion, as the merge
-   window reads it.
+   A merged row within the window holds a bin unless a file holds the line as a
+   separate pick from that row's: row j sits within the window of merged row x and
+   the same file holds another pick q (not an artifact row) nearer x, at least
+   `ABSORB_MIN_HWHM` (1) HWHM apart from j by the batch's width model (closer maxima
+   of one line are a split centroid or a shoulder). Then the line -- an unidentified
+   row or a vote loser of another ion than its merged row (the vote's single linkage
+   chains such a line into a neighbour's cluster) -- gets its own row, `why =
+   absorbed_by_merge`, the merged row as partner, built from the bin's members on the
+   resolved side only (beyond the midpoint of the pair j-q, on j's side), so its `mz`
+   is the resolved line's, not the merged line's. The vote losers bin apart from the
+   other rows (they never lengthen a chain); a released bin of losers and a released
+   regular bin beside the same merged row, within the window of each other, are one row. Without a width model nothing is read as
+   absorbed. A line no file separates stays the merged ion, as the merge window reads
+   it.
    `batch_summary.json["unidentified_bright"]` is the row count,
    `["unidentified"]` the counts by why and the vote-drop counts by reason.
 
