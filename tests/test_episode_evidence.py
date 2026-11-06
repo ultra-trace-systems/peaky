@@ -1041,3 +1041,35 @@ def test_the_batch_hands_the_guards_gate_verdicts_to_the_episode_evidence(tmp_pa
     assert g["files"] == want and g["merged"] == (summ["merge_gates"]["isotope_guard"]["facts_unreliable"] is False)
     assert AB._guard_gate([{"sample_id": "a"}, {"sample_id": "b", "isotope_guard": {"facts_unreliable": False}}],
                           {"facts_unreliable": True}) == {"files": {"a": False, "b": True}, "merged": False}
+
+
+def test_measured_reads_a_favoured_rival_only_in_trusted_files():                              # (c) through the gate
+    # the rival's 29Si / 30Si lines sit at its share in both files: measured demotes when the files' gates are
+    # open (NEGATIVE CONTROL), keeps the vote's Assigned when neither file's guard trusts its own isotope lines
+    for files, demoted in (({"s1": True, "s2": True}, True), ({"s1": False, "s2": False}, False)):
+        m, leds, ts = _unit2(tier="Assigned", alts=RIVAL_ALT, extra=_si_lines(1.0))
+        tab, _s = _j2(m, leds, ts, mode="measured", guard_gate={"files": files, "merged": True})
+        assert "favoured" not in tab.iloc[0]["measurement"] or demoted
+        assert (m.at[0, "tier"] == "Candidate") is demoted, files
+
+
+def test_measured_drops_a_pooled_13c_fact_the_merged_condition_calls_a_blend():               # (d) merged condition
+    # the pooled pair carries a 13C contradiction; in both source files a pick 6 ppm above the 13C position carries
+    # the predicted 13C area, so the merged guard's per-row condition calls it a blend: no measured hold
+    # (control: without those picks the same pooled fact holds and demotes)
+    lv = pd.DataFrame([dict(neutral_formula=E1[0], adduct=E1[1], competitors_left="",
+                            committed_reasons="13C reads 3.0 C for 8 (tol 2.0, rule C, 4 spectra)")])
+
+    def blend(sid, mz, h):
+        return [dict(peak_id=f"{sid}b", mz=(mz + ISO.D_13C) * (1 + 6e-6), height=h * 0.010816 * 8, role="unexplained",
+                     tier=None, episode=True)]
+    for extra, demoted in ((None, True), (blend, False)):
+        m, leds, ts = _unit2(tier="Assigned", extra=extra)
+        for led in leds.values():
+            led["area"] = led["height"]
+        _j2(m, leds, ts, mode="measured", levels=lv, guard_gate=GATE_OPEN)
+        assert (m.at[0, "tier"] == "Candidate") is demoted, m.at[0, "tier_reason"]
+    facts = ["13C reads 3.0 C for 8 (tol 2.0, rule C, 4 spectra)", "34S (0.0447x) absent in 2/2 files"]
+    hit = dict(index=0, neutral_formula="C8H10N4O2S", adduct="[M+H]+", mz=227.0)
+    assert IG.binding_facts(facts, lambda h: "blend", hit) == facts[1:]
+    assert IG.binding_facts(facts, lambda h: None, hit) == facts and IG.binding_facts(facts, None, hit) == facts
