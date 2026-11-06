@@ -103,9 +103,9 @@ def test_every_bundled_list_is_pinned_and_loads_without_warnings():
 def test_the_bundled_list_is_not_active_unless_asked(monkeypatch, tmp_path):
     monkeypatch.setenv(LK.LISTS_DIR_ENV, str(tmp_path / "none"))
     RL.clear_catalog_cache()
-    lists, _ = RL.activate("TX Ur 122-600", "Texas Campaign 2026", "uronium")
+    lists, _ = RL.activate("Site A Ur 122-600", "Site A campaign", "uronium")
     assert E.LIST_ID not in {L.id for L in lists}
-    lists, _, rec = RL.activate("TX Ur 122-600", "Texas Campaign 2026", "uronium", record=True, include=E.LIST_ID)
+    lists, _, rec = RL.activate("Site A Ur 122-600", "Site A campaign", "uronium", record=True, include=E.LIST_ID)
     assert E.LIST_ID in {L.id for L in lists}
     me = next(r for r in RL.lists_record(lists, rec) if r["id"] == E.LIST_ID)
     assert me["pinned"] is True and me["how_activated"] == "explicit (--lists)" and me["version"] == E.VERSION
