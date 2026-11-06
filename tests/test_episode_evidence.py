@@ -698,6 +698,17 @@ def _j2(merged, leds, ts, adducts=("[M+H]+",), **kw):
                     adducts=list(adducts), log=lambda *a, **k: None, **kw)
 
 
+def test_a_solvent_cluster_row_is_not_judged_by_part_b():                                       # Part C rows
+    # a row Part C read as a plume-solvent cluster carries its own tier rule (capped unless specific): the
+    # episode evidence never judges it, in any mode
+    for mode in EE.MODES:
+        m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+        m["solvent_cluster_of"] = "C9H16O [M+NH4]+ + C5H9NO"
+        tab, s = _j2(m, leds, ts, mode=mode)
+        assert len(tab) == 0 and s["judged"] == 0 and m.at[0, "tier"] == "Assigned"
+        assert EE.NOTE_MARK not in str(m.at[0, "tier_reason"])
+
+
 def test_the_two_file_unit_is_assigned_when_both_files_agree():
     m, leds, ts = _unit2()
     _t, s = _j2(m, leds, ts)
