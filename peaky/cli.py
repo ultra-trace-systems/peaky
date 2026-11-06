@@ -2097,7 +2097,8 @@ def _add_episode_args(sp) -> None:
     sp.add_argument("--episode-evidence", choices=_EE.MODES, default=_EE.MODE,
                     help="what an episodic reading in <= 3 files the files' vote made Assigned becomes when its "
                          "episode's own evidence fails (docs/MERGE.md step 6g): 'measured' (default) -- Candidate "
-                         "on a measured failure, kept when its isotopes are only untestable; 'promote-only' -- "
+                         "only when a measurement contradicts it (mass outside a calibrated window, an isotope "
+                         "line read against it, a rival an isotope fact favours, a hold); 'promote-only' -- "
                          "kept; 'strict' -- Candidate on any failed clause. A Candidate that passes is promoted "
                          "in every mode")
 

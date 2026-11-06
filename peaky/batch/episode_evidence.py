@@ -55,12 +55,15 @@ All five hold -> the reading is Assigned from that episode (tier Assigned, the
 note says which facts; a Candidate is promoted). Otherwise it is not Assigned
 FROM ITS EPISODE: a Candidate stays Candidate, and a reading the vote made
 Assigned (MODE, `--episode-evidence`) -- "measured", the default -- goes to
-Candidate when a MEASURED fact fails ((a); (b) read and contradicting; (c); (d);
-(e)) and keeps its tier with the note when its only failure is "(b) untestable"
-(a line too dim to test is no evidence either way: on a 12-ledger field arm
-demoting those cost two true episode lines); "promote-only" keeps every such
-row; "strict" demotes on any failed clause. A curated neutral keeps the vote's
-tier in every mode. When
+Candidate only on a contradicting MEASUREMENT, never on a missing one: its mass
+outside an existing calibrated window ((a); no window is untestable), an
+isotope line read against it ((b)), a rival a measured isotope fact favours
+((c); a rival left with untestable isotopes is untestable), a hold ((d)); (e)
+never demotes (a missing adduct pair or second file is no measurement). The
+row's `measurement` column names what contradicted it. "promote-only" keeps
+every such row; "strict" demotes on any failed clause. A curated neutral
+(`curated_exempt`: the pass-0 registry + the active reference lists' formulas)
+keeps the vote's tier in every mode. When
 no isotope
 line was testable the claim is `single episode, isotopes untestable`
 (UNTESTABLE_CLAIM; the evidence level is the level machinery's, untouched).
@@ -110,7 +113,9 @@ from peaky.batch import sideband as SB
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"   # the three modes; measured = demote only on a contradicting measurement; the
+#                        specific plume-solvent track; one curated-exemption source (curated_exempt)
+#                        0.1.0 Parts B and C
 
 # --------------------------------------------------------------------------- Part B constants
 #: the most files a reading may sit in and still be judged on its episode alone
@@ -152,10 +157,12 @@ ALIAS_SWAPS = (
 #: carbonate radical anion's cluster and the radical anion itself (the [M+CO3]- / [M+^NO3]- pair)
 ALIAS_EXTRA_ADDUCTS = ("[M+CO3]-", "[M]-.")
 #: what a failing reading the vote made Assigned becomes (`--episode-evidence`): "measured" (the
-#: default) -- Candidate when a MEASURED fact fails ((a), (b) read and contradicting, (c), (d), (e)),
-#: Assigned kept with the note when its only failure is "(b) untestable"; "promote-only" -- always kept
-#: with the note; "strict" -- Candidate whenever a clause fails (Assigned from one episode only when all
-#: hold). A curated neutral keeps the vote's tier in every mode; a Candidate is promoted in every mode.
+#: default) -- Candidate only on a contradicting MEASUREMENT, never on a missing one: (a) its mass
+#: outside an EXISTING calibrated window; (b) an isotope line read against it; (c) a rival that a
+#: measured isotope fact favours (`_favours`); (d) a hold; (e) never ((e) is a promotion criterion only);
+#: "promote-only" -- always kept with the note; "strict" -- Candidate whenever a clause fails (Assigned
+#: from one episode only when all hold). A curated neutral (`curated_exempt`) keeps the vote's tier in
+#: every mode; a Candidate is promoted in every mode.
 MODES = ("measured", "promote-only", "strict")
 MODE = "measured"
 NOTE_MARK = "episode evidence"
@@ -163,7 +170,7 @@ UNTESTABLE_CLAIM = "single episode, isotopes untestable"
 ASSIGNED_CLAIM = "single episode, isotope facts hold"
 TABLE_COLUMNS = ["mz", "neutral_formula", "adduct", "tier_in", "tier_out", "verdict", "episode_claim",
                  "n_files", "episode_files", "a_mass", "b_isotopes", "b_detail", "c_rivals", "c_detail",
-                 "d_hold", "e_second", "e_detail", "note", "measured_failure", "mode", "prior_reason"]
+                 "d_hold", "e_second", "e_detail", "note", "measured_failure", "mode", "prior_reason", "measurement"]
 
 # --------------------------------------------------------------------------- Part C constants
 #: the solvent's own ion is bright in a spectrum at this multiple of its noise edge
@@ -196,6 +203,38 @@ CLUSTER_MARK = "solvent cluster"
 CLUSTER_COLUMNS = ["mz", "was_neutral", "was_adduct", "neutral_formula", "adduct", "solvent", "parent_mz",
                    "parent_reading", "parent_tier", "tier_in", "tier_out", "n_spectra", "n_in_episode",
                    "n_track", "track_r", "r_solvent", "cv_parent", "pair_test"]
+
+
+def curated_exempt(context, reflists_active=()) -> frozenset:
+    """The curated neutrals no failed episode clause ever demotes: the pass-0 registry of the
+    context's polarity plus every formula of the run's active reference lists
+    (`passes.curated_formulas(polarity, context, reflists.prior_formulas(lists))`) -- the exempt
+    set the merge's removal gates use too. ONE source: the batch and an offline re-judge call it."""
+    from peaky.assignment import passes as PS
+    from peaky.assignment import reflists as RL
+    from peaky.chem import contexts as CX
+    try:
+        pol = CX.get_context(context).polarity if context else "negative"
+    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
+        pol = "negative"
+    return frozenset(PS.curated_formulas(pol, context, RL.prior_formulas(reflists_active) if reflists_active else ()))
+
+
+def curated_exempt_from_summary(summ: dict, catalog: dict | None = None) -> frozenset:
+    """`curated_exempt` rebuilt from a finished run's batch_summary.json: its context and its active
+    reference lists (`reflists_context.active`, [id, version, how]) read from the catalog
+    (`reflists.load_catalog`); a list whose version differs from the recorded one raises (the set
+    would not be the run's)."""
+    from peaky.assignment import reflists as RL
+    act = ((summ or {}).get("reflists_context") or {}).get("active") or []
+    cat = catalog if catalog is not None else (RL.load_catalog() if act else {})
+    lists = []
+    for lid, ver, *_how in act:
+        L = cat.get(lid)
+        if L is None or str(L.data_version) != str(ver):
+            raise ValueError(f"reference list {lid} {ver} of the run is not in the catalog at that version")
+        lists.append(L)
+    return curated_exempt((summ or {}).get("context"), lists)
 
 
 def empty_table() -> pd.DataFrame:
@@ -412,6 +451,43 @@ def _excluded(facts: list[dict], counts: dict, rival: dict) -> str | None:
             tested, ok = _line_state(facts, key, 0, n_ref=n_rsi)
             if tested and ok == tested:
                 return f"no {key[2:]}Si line where Si{n_rsi} predicts one"
+    return None
+
+
+def _favours(facts: list[dict], counts: dict, rival: dict) -> str | None:
+    """Why a MEASURED isotope fact favours a rival ion (counts `rival`) over the reading, or None:
+    the 13C count reads nearer the rival's carbon count in every testable file (inside the rival's
+    band); an S / Cl / Br / Si line, or the label's 14N twin, that the rival predicts and the reading
+    does not (or at another count) sits at the rival's share in every file where it is testable."""
+    nc, nr = int(counts.get("C", 0)), int(rival.get("C", 0))
+    t13 = [f for f in facts if f["c13"][0]]
+    if nr != nc and t13 and all(abs(f["c13"][1] - nr) < abs(f["c13"][1] - nc) and abs(f["c13"][1] - nr) <= _band(nr)
+                               for f in t13):
+        cs = ", ".join("%.1f" % f["c13"][1] for f in t13)
+        return f"13C reads {cs} C: nearer its {nr} than {nc}"
+    for el in ("S", "Cl", "Br"):
+        n_s, n_r = int(counts.get(el, 0)), int(rival.get(el, 0))
+        if n_r > n_s:
+            tested, ok = _line_state(facts, el, n_r, n_ref=n_s)
+            if tested and ok == tested:
+                return f"its {HETERO_LINES[el][2]} line reads {el}{n_r}"
+    n_si, n_rsi = int(counts.get("Si", 0)), int(rival.get("Si", 0))
+    if n_rsi > n_si:
+        tested, ok = _line_state(facts, "Si30", n_rsi)
+        if tested and ok == tested:
+            return f"its 30Si line reads Si{n_rsi}"
+    n_l, n_rl = int(counts.get("^N", 0)), int(rival.get("^N", 0))
+    if n_rl > n_l:
+        f14 = 1.0 - ISO.label_purity()
+        tested = ok = 0
+        for x in facts:
+            pred = f14 * n_rl
+            if not (x["h0"] > 0 and pred > 0 and _pred_snr(x["h0"], x["snr0"], pred, x["edge"]) >= MIN_SNR):
+                continue
+            tested += 1
+            ok += int(LINE_BAND[0] * pred <= x["lines"].get("twin", 0.0) <= LINE_BAND[1] * pred)
+        if tested and ok == tested:
+            return f"its 14N twin reads ^N{n_rl}"
     return None
 
 
@@ -642,7 +718,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
         out["judged"] += 1
         tier_in = _s(merged.at[i, "tier"])
         # (a) the mass in every episode file's calibrated window
-        a_bad = []
+        a_bad, a_out = [], []          # a_out: the MEASURED failures (a window exists, the mass outside it)
         for sid, r in efiles:
             w = windows.get(sid)
             e = _num(r.get("ppm_error"))
@@ -650,6 +726,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                 a_bad.append(f"{sid}: no calibrated window")
             elif abs(e - _num(w[0])) > K_SIGMA * _num(w[1]):
                 a_bad.append(f"{sid}: {e:+.2f} ppm outside {_num(w[0]):+.2f} +- {K_SIGMA * _num(w[1]):.2f}")
+                a_out.append(a_bad[-1])
         a_ok = not a_bad
         # the episode spectra's line facts
         facts_rows = []
@@ -666,12 +743,16 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             mz_ion = m
         rivals = _alias_rivals(counts, sign, adducts, labelled) + _named_rivals(
             [r for _sid, r in efiles], lvl.get((nf, ad)), mz_ion)
-        left, gone = [], []
+        left, gone, favoured = [], [], []
         for name, rc in rivals:
             if rc == counts:
                 continue
             why = _excluded(facts, counts, rc) if facts else None
             (gone if why else left).append(f"{name}" + (f" ({why})" if why else ""))
+            if not why and facts:
+                fav = _favours(facts, counts, rc)
+                if fav:
+                    favoured.append(f"{name} ({fav})")
         c_ok = not left
         # (d) no hold: the row's own notes, the pooled isotope-contradiction facts, and the low-file
         # hold's two clauses read on the episode rows themselves (a Candidate reading the hold never tested)
@@ -705,7 +786,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             + (["a radical / ion-only reading: never promoted"] if radical else [])
         files_txt = ",".join(sid for sid, _r in efiles)
         prior = _s(merged.at[i, "tier_reason"])
-        measured = False
+        measured, meas = False, []
         if all_ok:
             verdict, claim, tier_out = "assigned", ASSIGNED_CLAIM, "Assigned"
             msg = (f"{NOTE_MARK}: Assigned from a single episode ({len(efiles)} file(s): {files_txt}) -- (a) in the "
@@ -718,7 +799,15 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             verdict = "untestable" if b_state == "untestable" else "candidate"
             claim = UNTESTABLE_CLAIM if b_state == "untestable" else "single episode, " + failed[0].split(":")[0]
             curated = nf in exempt
-            measured = (not a_ok) or b_state == "failed" or (not c_ok) or (not d_ok) or (not e_ok)
+            # `measured` demotes only on a contradicting MEASUREMENT, never on a missing one: (a) a mass
+            # outside an existing window; (b) an isotope line read against the reading; (c) a rival a
+            # measured isotope fact favours; (d) a hold (each a measurement); (e) never -- the absence of an
+            # adduct pair or a second file is no measurement against the reading
+            meas = ([f"(a) {'; '.join(a_out)}"] if a_out else []) \
+                + ([f"(b) {b_det}"] if b_state == "failed" else []) \
+                + ([f"(c) favoured rival: {'; '.join(favoured[:3])}"] if favoured else []) \
+                + ([f"(d) held: {', '.join(holds)}"] if not d_ok else [])
+            measured = bool(meas)
             demote = {"strict": True, "measured": measured, "promote-only": False}[mode]
             tier_out = ("Candidate" if (demote and not curated) or tier_in != "Assigned" else tier_in)
             msg = (f"{NOTE_MARK}: not Assigned from its episode ({len(efiles)} file(s): {files_txt}) -- "
@@ -738,7 +827,8 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                          episode_files=files_txt, a_mass=("ok" if a_ok else "; ".join(a_bad)), b_isotopes=b_state,
                          b_detail=b_det, c_rivals=("ok" if c_ok else "left"),
                          c_detail="; ".join(left + gone), d_hold=", ".join(holds), e_second=e_ok, e_detail=e_det,
-                         note=msg, measured_failure=bool(measured), mode=mode, prior_reason=prior))
+                         note=msg, measured_failure=bool(measured), mode=mode, prior_reason=prior,
+                         measurement="; ".join(meas) if measured else ""))
     if out["judged"]:
         log(f"[episode] {out['judged']} episodic reading(s) in <= {max_files} files judged on their episode's "
             f"spectra: {out['assigned']} Assigned ({out['promoted']} promoted), {out['candidate']} not "
@@ -846,7 +936,7 @@ def read_solvent_clusters(merged: pd.DataFrame, ts: pd.DataFrame | None, *, addu
         # the solvent's own ion: each of its forms where it stands out (`_elevated`: >= SOLVENT_X x the
         # edge and, for a form present in most spectra, >= SOLVENT_LIFT x its median -- which makes the
         # episode at most half of the batch's spectra by itself: no more than half a line's heights can
-        # reach 5x its median)
+        # reach 5x its median -- per FORM: `bright`, the union over the forms, may exceed half)
         hs, bright = None, set()
         for m_ in ions:
             s_ = line(m_)

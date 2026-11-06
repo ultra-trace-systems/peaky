@@ -81,7 +81,9 @@ from peaky.batch import unidentified as _UN
 from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.14.0"  # + the episode evidence in the merge (batch/episode_evidence.py: the `episode` flag on
+__version__ = "0.14.1"  # the episode evidence demotes only on a contradicting measurement; one curated set
+                        #   (episode_evidence.curated_exempt); batch_summary records episode_evidence_mode
+                        # 0.14.0: + the episode evidence in the merge (batch/episode_evidence.py: the `episode` flag on
                         #   the merged row, the single-episode judgment, the plume-solvent clusters; tables/
                         #   episode_evidence.csv, solvent_clusters.csv) and the satellite-artefact hold (sideband.py)
                         # 0.13.0: + the episode stage between the cover and the first assignment (sampling.py,
@@ -2453,7 +2455,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     two neighbours -- no budget (a coverage guarantee, not a cost bound);
     `episode_evidence` (episode_evidence.MODES; default 'measured') is what an episodic
     reading in <= 3 files the vote made Assigned becomes when its episode's own evidence
-    fails (docs/MERGE.md step 6g).
+    fails (docs/MERGE.md step 6g): under 'measured' it is Candidate only when a measurement
+    contradicts it; batch_summary['episode_evidence_mode'] records the mode.
     `k_episode_max` is an optional safety cap, flagged when it binds -- assigned with the cover's files
     (tables/selected_samples.csv role 'episode'); the record is
     batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
@@ -3257,13 +3260,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # batch's polarity / context and the active reference lists): one exempt set
     # for both merged-ledger removal gates, the isotopologue gate and the
     # element-signature removal (passes.curated_formulas)
-    from peaky.assignment import passes as _PS
-    from peaky.chem import contexts as _CX
-    try:
-        _pol = _CX.get_context(context).polarity if context else "negative"
-    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
-        _pol = "negative"
-    curated = _PS.curated_formulas(_pol, context, RL.prior_formulas(reflists_active) if reflists_active else ())
+    curated = _EE.curated_exempt(context, reflists_active)
 
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
@@ -4119,6 +4116,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # what the reagent-N pass and the ammonium/amine gate each did, so the
         # counts are on record and not only in the log
         "merge_gates": merge_gates,
+        # the episode evidence's mode (episode_evidence.MODES; --episode-evidence), recorded whether or
+        # not the batch had an episode file (the run manifest reads it: pipeline._switch_record)
+        "episode_evidence_mode": episode_evidence,
         # the bright unidentified lines (tables/unidentified.csv): `unidentified_bright` the row
         # count (a later drop to 0 shows), `unidentified` by why + the vote-drop counts
         "unidentified_bright": int(unident_summary["rows"]),

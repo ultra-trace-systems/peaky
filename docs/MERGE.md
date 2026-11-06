@@ -366,9 +366,9 @@ selected sample_ids (SAMPLING.md)
    lies >= 90 % inside the solvent's episode -- the
    spectra where one of the solvent's own ion forms (its reagent-profile forms and
    its proton-bound dimer) stands at >= 5x the edge and, for a form present in most
-   spectra, >= 5x its median there (`SOLVENT_LIFT`; which also keeps the episode to
-   at most half the batch's spectra; a solvent background in every spectrum is
-   fine, its episodes are what count) -- and that is in <= 50 % of the batch's spectra,
+   spectra, >= 5x its median there (`SOLVENT_LIFT`; which keeps each form's episode
+   to at most half the batch's spectra -- the union over the forms may exceed half;
+   a solvent background in every spectrum is fine, its episodes are what count) -- and that is in <= 50 % of the batch's spectra,
    and that shares at least 4 of the episode's spectra with the parent and the
    solvent ion (fewer: nothing is read), is read as that ion's cluster: the
    parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`,
@@ -949,12 +949,24 @@ selected sample_ids (SAMPLING.md)
    is promoted. Otherwise the reading is not Assigned from its episode: a
    Candidate stays one, and what a reading the vote made Assigned becomes is the
    mode (`--episode-evidence`, `episode_evidence.MODE`): **measured** (the
-   default) -- Candidate when a MEASURED fact fails ((a); (b) read and
-   contradicting; (c) a rival left; (d) a hold; (e) no second fact), kept with the
-   note when its only failure is "(b) untestable" (a line too dim to test is no
-   evidence either way: on a 12-ledger field arm demoting those cost two true
-   episode lines); **promote-only** -- kept with the note; **strict** -- Candidate
-   on any failed clause. A curated neutral keeps the vote's tier in every mode.
+   default) -- Candidate only on a contradicting MEASUREMENT: (a) an error outside
+   a calibrated window that exists (no window is untestable, not a failure); (b)
+   a 13C or S / Cl / Br line read and contradicting the formula; (c) a rival left
+   that a measured isotope fact FAVOURS (its 13C count nearer the rival's in every
+   testable file and inside the rival's band, or the line of an element only the
+   rival carries -- 34S / 37Cl / 81Br / 30Si -- read at the rival's count, or the
+   label's 14N twin at the rival's share; a rival left with untestable isotopes is
+   untestable); (d) a hold. (e) is a promotion criterion only and never demotes,
+   nor does "(b) untestable", a promotion closed by the elements or the radical /
+   ion-only rule, or an untestable rival: a line too dim to test is no evidence
+   either way. **promote-only** -- kept with the note; **strict** -- Candidate on
+   any failed clause. A curated neutral keeps the vote's tier in every mode;
+   curated is ONE set, `episode_evidence.curated_exempt` (the pass-0 registry for
+   the batch's polarity and context, union the priors of the active reference
+   lists), which a replay rebuilds from `batch_summary.json`
+   (`curated_exempt_from_summary`, the lists by their recorded id and version).
+   The mode is recorded in `batch_summary.json["episode_evidence_mode"]` and in
+   `run_manifest.json`'s switches (`episode_evidence`).
    The note names the failed clauses, and where no isotope line was testable the
    claim column `episode_claim` reads `single episode, isotopes untestable` (the
    evidence level is untouched). The step runs after the stamp and the levels: a
@@ -962,7 +974,8 @@ selected sample_ids (SAMPLING.md)
    `per_file/_batch_ts.parquet`'s stamp and in the level tables.
    `tables/episode_evidence.csv` (one row per judged reading: the five clauses,
    `measured_failure`, `mode`, `prior_reason` = the row's `tier_reason` before the
-   step), `merge_gates["episode_evidence"]` (judged, assigned, promoted, demoted,
+   step, `measurement` = the contradicting measurement(s) that made it a measured
+   failure, empty otherwise), `merge_gates["episode_evidence"]` (judged, assigned, promoted, demoted,
    kept_assigned, untestable, candidate, mode).
 
 6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before

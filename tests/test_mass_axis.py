@@ -465,7 +465,9 @@ def test_the_run_manifest_records_the_switches_outside_passconfig(monkeypatch, t
     PL.run_batch(batch="switch batch", reagent="NO3", base_out=str(tmp_path), ts=ts, do_report=False, log=_quiet)
     assert rec["counts"]["context_flags"] == {"nox_skeleton": True}
     assert rec["counts"]["isotopologue_gate"] == {"ran": False, "skipped": "--no-isotopologue-gate"}
-    assert PL._switch_record({}) == {"context_flags": None, "isotopologue_gate": {"ran": False, "skipped": None}}
+    assert PL._switch_record({}) == {"context_flags": None, "isotopologue_gate": {"ran": False, "skipped": None},
+                                     "episode_evidence": None}
+    assert PL._switch_record({"episode_evidence_mode": "strict"})["episode_evidence"] == "strict"
 
 
 # --- the CLI ----------------------------------------------------------------------------------

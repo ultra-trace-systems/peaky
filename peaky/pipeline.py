@@ -25,9 +25,11 @@ from peaky.io import io_mascope as IO
 from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
+from peaky.batch import episode_evidence as EE
 from peaky.batch import timeseries as TS
 
-__version__ = "0.3.1"  # the manifest counts record context_flags and the isotopologue gate;
+__version__ = "0.3.2"  # the manifest switches record the episode evidence's mode (--episode-evidence);
+                       # 0.3.1: the manifest counts record context_flags and the isotopologue gate;
                        # 0.3.0: presence set-cover sample selection (one selector, batch + pool)
 
 # Content-stable epoch for SOURCE_DATE_EPOCH. NOT the run time: figures, workbooks
@@ -408,11 +410,14 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
 
 def _switch_record(summ: dict) -> dict:
     """The provenance counts of the run's switches that live outside PassConfig:
-    the context profile's run-level switches (`context_flags`) and whether the
-    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`)."""
+    the context profile's run-level switches (`context_flags`), whether the
+    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`), and the
+    episode evidence's mode (`episode_evidence`: --episode-evidence; it changes the
+    merged ledger, so two runs differing only in it must say so)."""
     gate = ((summ or {}).get("merge_gates") or {}).get("isotopologue") or {}
     return {"context_flags": (summ or {}).get("context_flags"),
-            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")}}
+            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")},
+            "episode_evidence": (summ or {}).get("episode_evidence_mode")}
 
 
 def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
@@ -424,7 +429,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               residual_min_cps: float | None = None,
               residual_k_max: int = SS.RESIDUAL_K_MAX,
               episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
-              k_episode_max: int | None = SS.K_EPISODE_MAX, episode_evidence: str = "measured",
+              k_episode_max: int | None = SS.K_EPISODE_MAX, episode_evidence: str = EE.MODE,
               occurrence_min: float | None = None,
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,

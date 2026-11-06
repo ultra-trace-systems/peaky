@@ -132,8 +132,8 @@ def test_co_occurrence_alone_is_no_evidence(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mode,dim_tier,single_tier", [
-    (None, "Assigned", "Candidate"),            # the default, "measured": an untestable line kept, (e) failed demoted
-    ("measured", "Assigned", "Candidate"),
+    (None, "Assigned", "Assigned"),             # the default, "measured": an untestable line kept, (e) never demotes
+    ("measured", "Assigned", "Assigned"),
     ("promote-only", "Assigned", "Assigned"),   # every failing vote-Assigned row kept with the note
     ("strict", "Candidate", "Candidate"),       # any failed clause demotes
 ])
@@ -148,12 +148,13 @@ def test_the_three_episode_evidence_modes(tmp_path, monkeypatch, mode, dim_tier,
     t = _table(tmp_path / "a", "episode_evidence.csv")
     row = t[t["neutral_formula"] == DIM[0]].iloc[0]
     assert not bool(row["measured_failure"]) and row["mode"] == (mode or "measured")
-    # the plume ion in ONE episode file, Assigned by it: (e) fails -- a MEASURED failure
+    # the plume ion in ONE episode file, Assigned by it: (e) fails -- no measurement against it
     _s, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True), k_episode_max=0, **kw)
     r2 = _get(m2, *E1)
     assert r2["tier"] == single_tier and "(e) one episode file, no adduct partner" in r2["tier_reason"]
     t2 = _table(tmp_path / "b", "episode_evidence.csv")
-    assert bool(t2[t2["neutral_formula"] == E1[0]].iloc[0]["measured_failure"])
+    row2 = t2[t2["neutral_formula"] == E1[0]].iloc[0]
+    assert not bool(row2["measured_failure"]) and str(row2["measurement"]) in ("", "nan")
 
 
 def test_an_unknown_mode_is_refused():
@@ -276,13 +277,39 @@ def test_without_a_calibrated_window_the_mass_cannot_hold():                    
 
 
 def test_a_curated_neutral_keeps_the_votes_tier():
-    for mode in ("strict", "measured"):           # the unit's one file fails (e): a measured failure
+    # the unit's file reads the mass 2 ppm outside its window: a measured (a) failure
+    for mode in ("strict", "measured"):
         m, led, ts, w = _unit()
+        led["s1"].loc[0, "ppm_error"] = 2.0
         _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), mode=mode)
         assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
         m, led, ts, w = _unit()
+        led["s1"].loc[0, "ppm_error"] = 2.0
         _t, s = _judge(m, led, ts, w, mode=mode)
         assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
+
+
+def test_the_batch_wires_the_curated_exemption(tmp_path, monkeypatch):                          # one source
+    # the solvent ion C5H9NO (a curated reference-list formula) and the plume ion both read 2 ppm outside
+    # their windows -- a measured (a) failure: the plume ion goes to Candidate, the curated neutral keeps Assigned
+    _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True), engine=dict(ppm={"S1": 2.0, "E1": 2.0}),
+                 k_episode_max=8)
+    assert _get(m, "C5H9NO", "[M+(CH4N2O)H]+")["tier"] == "Assigned"
+    assert _get(m, *E1)["tier"] == "Candidate"
+    from peaky.assignment import reflists as RL
+    from peaky.batch import assign_batch as _AB  # noqa: F401
+    cat = RL.load_catalog()
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert "C5H9NO" in EE.curated_exempt_from_summary(summ, cat)
+    assert summ["episode_evidence_mode"] == "measured"
+    # the replay's set is the batch's: the active lists' priors arrive by their recorded id + version
+    L = cat["contaminants_keller2008"]
+    fake = {"context": summ.get("context"), "reflists_context": {"active": [[L.id, L.data_version, "always active"]]}}
+    got = EE.curated_exempt_from_summary(fake, cat)
+    assert got == EE.curated_exempt(summ.get("context"), [L]) and set(L.formulas) <= got
+    assert set(L.formulas) - EE.curated_exempt(summ.get("context"))        # the list adds formulas
+    with pytest.raises(ValueError):
+        EE.curated_exempt_from_summary({"reflists_context": {"active": [[L.id, "0.0", "x"]]}}, cat)
 
 
 @pytest.mark.parametrize("nf,ad,cls", [
@@ -638,16 +665,15 @@ SAT_S = ("C8H10N4O2S", "[M+H]+")
 
 
 def _unit2(c13=(8.0, 8.0), ppm=(0.1, 0.1), s34=None, flags=(True, True), tier="Candidate", nf=E1[0], ad=E1[1],
-           extra=None, ion_only=False, n_files=2):
+           extra=None, ion_only=False, n_files=2, h=3e5, alts="[]", reason=""):
     """One merged reading in TWO episode files s1, s2: per file its 13C line at that carbon count
     (None: no line), its ppm_error, its 34S line at that multiple of its prediction (s34), its row's
     episode flag; `extra(sid)` adds rows."""
     mz = C.ion_mz(nf, ad)
-    h = 3e5
     leds, tss = {}, []
     for j, sid in enumerate(("s1", "s2")):
         rows = [dict(peak_id=f"{sid}p0", mz=mz, height=h, role="M0", neutral_formula=nf, adduct=ad, tier=tier,
-                     ppm_error=ppm[j], episode=flags[j], alternatives="[]")]
+                     ppm_error=ppm[j], episode=flags[j], alternatives=alts)]
         if c13[j] is not None:
             rows.append(dict(peak_id=f"{sid}p1", mz=mz + ISO.D_13C, height=h * 0.010816 * c13[j], role="unexplained",
                              tier=None, episode=flags[j]))
@@ -661,7 +687,7 @@ def _unit2(c13=(8.0, 8.0), ppm=(0.1, 0.1), s34=None, flags=(True, True), tier="C
         leds[sid] = led
         tss.append(led[["peak_id", "mz", "height"]].assign(sample_item_id=sid))
     merged = pd.DataFrame([dict(mz=mz, neutral_formula=nf, adduct=ad, tier=tier, n_files=n_files, srcs="s1,s2",
-                                episode=True, tier_reason="", ion_only_of=("s1p9" if ion_only else pd.NA))])
+                                episode=True, tier_reason=reason, ion_only_of=("s1p9" if ion_only else pd.NA))])
     return merged, leds, pd.concat(tss, ignore_index=True)
 
 
@@ -785,3 +811,87 @@ def test_the_file_rows_own_flag_is_required():                                  
     m2, leds2, ts2 = _unit2(flags=(True, False))                         # one episode file: (e) fails, no partner
     _t, s2 = _j2(m2, leds2, ts2)
     assert s2["judged"] == 1 and "(1 file(s): s1)" in m2.at[0, "tier_reason"]
+
+
+# --------------------------------------------------------------------------- measured: each clause (second repair)
+RIVAL_ALT = json.dumps([{"formula": "C10H13FNSi", "adduct": "[M+H]+"}])
+
+
+def _si_lines(fac):
+    return lambda sid, mz, h: [dict(peak_id=f"{sid}si{k}", mz=mz + d, height=h * r * fac, role="unexplained", tier=None,
+                                    episode=True) for k, (d, r) in enumerate(((ISO.D_29SI, ISO.R_29SI_PER_SI),
+                                                                               (ISO.D_30SI, ISO.R_30SI_PER_SI)))]
+
+
+@pytest.mark.parametrize("kw,demoted,clause", [
+    (dict(ppm=(0.1, 2.0)), True, "(a) s2: +2.00 ppm outside"),                        # (a) outside an existing window
+    (dict(c13=(8.0, 4.0)), True, "(b) 13C reads"),                                    # (b) a contradicting 13C line
+    (dict(alts=RIVAL_ALT, extra=_si_lines(1.0)), True, "(c) favoured rival: C10H13FNSi [M+H]+ (its 30Si line"),
+    (dict(reason="isotopologue risk: Assigned in 2 file(s) only"), True, "(d) held: isotopologue risk"),
+    (dict(alts=RIVAL_ALT, extra=_si_lines(1.0), h=1500.0), False, None),           # (c) rival left, isotopes untestable
+    (dict(n_files=1, flags=(True, False)), False, None),                             # (e) one file: never demotes
+    (dict(nf="C8H9FN4O2"), False, None),                                              # elements F only: never demotes
+])
+def test_measured_demotes_only_on_a_contradicting_measurement(kw, demoted, clause):          # measured, each clause
+    m, leds, ts = _unit2(tier="Assigned", **kw)
+    if kw.get("n_files") == 1:
+        m.at[0, "srcs"] = "s1"
+    tab, s = _j2(m, leds, ts, mode="measured")
+    row = tab.iloc[0]
+    assert (m.at[0, "tier"] == "Candidate") is demoted, (kw, m.at[0, "tier_reason"])
+    assert bool(row["measured_failure"]) is demoted
+    if demoted:
+        assert clause in row["measurement"], row["measurement"]
+    else:
+        assert row["measurement"] == "" and s["kept_assigned"] == 1
+    assert row["prior_reason"] == kw.get("reason", "")
+
+
+def test_strict_demotes_the_untestable_and_scope_failures_too():
+    for kw in (dict(alts=RIVAL_ALT, extra=_si_lines(1.0), h=1500.0), dict(nf="C8H9FN4O2")):
+        m, leds, ts = _unit2(tier="Assigned", **kw)
+        _j2(m, leds, ts, mode="strict")
+        assert m.at[0, "tier"] == "Candidate"
+
+
+def test_judge_defaults_to_measured():                                                           # judge(mode=None)
+    m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+    tab, s = _j2(m, leds, ts)
+    assert s["mode"] == "measured" and m.at[0, "tier"] == "Candidate" and tab.iloc[0]["mode"] == "measured"
+
+
+def test_a_favoured_rival_needs_its_fact_in_every_testable_file():                            # _favours, every file
+    me, rival = {"C": 8, "H": 11, "N": 4, "O": 2}, {"C": 10, "H": 14, "N": 1, "O": 2}
+    near = _facts(9.6)                                      # 9.6 C: nearer 10 than 8, inside the rival's band
+    assert EE._favours(near, me, rival) is not None
+    assert EE._favours(near + _facts(8.2), me, rival) is None
+    assert EE._favours(_facts(8.9), me, rival) is None      # nearer the reading
+
+
+def _find_pt(pred, n=10):
+    for seed in range(60):
+        for mix in np.linspace(0.0, 1.0, 41):
+            for noise in (0.0, 0.03, 0.05, 0.1, 0.2):
+                for a in (0.45, 0.55, 0.65, 0.8):
+                    for st in range(0, 12):
+                        case = _pt_case(n=n, a=a, mix=mix, noise=noise, seed=seed, start=st)
+                        pt = EE.pair_test(*case)
+                        if pred(pt, case):
+                            return pt, case
+    raise AssertionError("no case")
+
+
+def test_the_solvent_alone_tracking_better_is_no_specific_track():                           # the sign of the gain
+    # r(line, solvent alone) exceeds r(line, parent x solvent) by >= 0.22: the parent does not carry the line
+    pt, _c = _find_pt(lambda q, c: q["r"] >= 0.7 and q["r_solvent"] - q["r"] >= 0.22 and q["cv_parent"] >= 0.3)
+    assert not pt["specific"]
+
+
+def test_the_parent_cv_is_the_population_one():                                                # CV, ddof 0
+    # at n = 6 a parent with population CV 0.28 (sample CV >= 0.3) is not varying enough
+    def ok(q, c):
+        p = c[1]
+        return (q["r"] >= 0.9 and q["r"] - q["r_solvent"] >= 0.25 and 0.27 <= p.std() / p.mean() < 0.3
+                and p.std(ddof=1) / p.mean() >= 0.3)
+    pt, case = _find_pt(ok, n=6)
+    assert abs(pt["cv_parent"] - case[1].std() / case[1].mean()) < 1e-12 and not pt["specific"]

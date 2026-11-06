@@ -49,7 +49,8 @@ from peaky.assignment import satellites as SAT
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.3.0"   # + the per-spectrum satellite test: a note becomes a hold when the line is an artefact
+__version__ = "0.3.1"   # + the fit's log-log exponent in the hold record
+#                        0.3.0 the per-spectrum satellite test: a note becomes a hold when the line is an artefact
 #                        0.2.0 the satellite clause is a note only; the hold is the isotopologue clause
 
 #: the most files a reading may reach Assigned from and still be tested

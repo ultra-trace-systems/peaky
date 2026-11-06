@@ -92,13 +92,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
   spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
   A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned goes to
-  Candidate when a MEASURED fact fails ((a), (b) read and contradicting, (c), (d), (e)) and keeps its tier with the
-  note when its only failure is "(b) untestable" (`--episode-evidence measured`, the default; `promote-only` keeps
-  every such row, `strict` demotes on any failed clause; a curated neutral keeps its tier); with no testable isotope
+  Candidate only on a contradicting MEASUREMENT -- (a) an error outside a calibrated window that exists, (b) an
+  isotope line read and contradicting, (c) a rival that a measured isotope fact favours, (d) a hold; (e), an
+  untestable line or rival and a closed promotion never demote -- and otherwise keeps its tier with the note
+  (`--episode-evidence measured`, the default, recorded in the run manifest; `promote-only` keeps every such row,
+  `strict` demotes on any failed clause; a curated neutral -- the pass-0 registry plus the active reference lists'
+  priors, one set shared by the batch and a replay -- keeps its tier; the `measurement` column names what
+  contradicted it); with no testable isotope
   line the new
   `episode_claim` column reads `single episode, isotopes untestable`. Promotion is closed to ions carrying F, Si,
   P or I and to radical / ion-only readings. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
-  unchanged byte for byte.
+  unchanged byte for byte but for the recorded mode (`batch_summary.json["episode_evidence_mode"]`, the manifest's
+  `episode_evidence` switch).
 
 - **A persistent ion's cluster with a plume solvent is read as that ion's cluster** (docs/MERGE.md step 4 bis).
   NMP (C5H9NO) and DMSO (C2H6OS) join the solvent catalog as plume solvents (`solvent_clusters.episode_solvents`;
