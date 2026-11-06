@@ -21,6 +21,143 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   neighbours the list also names). A `both`-polarity list no longer flags MODE CONTRADICTS. The activation record
   gains `explicit` (the ids asked for by name).
 
+- **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
+  `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**
+  Every exit between enumeration and commit used to drop its candidate without a trace -- the
+  context filter discarded its reason, `commit_winners` skipped a sub-threshold winner with its
+  arbitration frame, the labelled rescue's gates and the pass-0 ppm gate only logged, and a
+  peak the grid box could not reach had no candidate at all -- so a bright line could sit as a
+  bare 'unexplained' row (on one field campaign's 15N-nitrate and uronium batches, 140 missed
+  truth lines at up to 80 kcps), and only an offline replay of every gate said why. The new
+  `assignment/blocked.py` keeps those exits during a run (the context filter of passes 1-4, the
+  commit gates of passes 1, 2, 3 and 5, pass 4's acceptance rule, the pass-0 mass gate and every
+  refused known-species claim, the labelled rescue's gates, every clear and the isotope lines it
+  releases, the pass-1 grid box, admission) and stamps two columns at the end of the run on every
+  unexplained row: the best reading a gate stopped (`<neutral> <adduct> (<ion>), score <s>, ppm
+  <+p>`; context-blocked readings are scored once at the stamp, local scorer only) and the gate
+  (`context:O/C 1.60>1.50`, `score<min_raw 0.62<0.70 (pass 1)`, `labeled:sibling`, `pass0:ppm
+  3.0>2.0`, `cleared:<reason>`, `no candidate in box (...)`, `not admitted (...)`). A batch
+  pools them per m/z cluster (file count, heights, the most frequent reading, gate counts). A
+  pair with no level now says what would lift it: `no file of this source calibrated (needs ≥ 20
+  isotope-backed core rows in a file, or a batch-pooled core of ≥ 15 distinct carbon-bearing ions
+  isotope-backed in ≥ 2 files)` (and per file `the file is not calibrated ...`) and `batch-level
+  re-read: the re-read pair is not levelled`. Diagnostics only: no assignment, tier, level,
+  claim or other column moves (an offline run with the recorder off is byte-identical minus the
+  two columns); only `would_lift` on those no-level rows changes.
+
+- **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's
+  axis correction where it reaches, else the file's own self-centre; and the lock model corrects
+  sub-ppm axes.** Below five anchors every candidate was judged at 0 ppm whatever the file's offset:
+  at the Orbitrap class width (0.58 ppm) a correct ion 0.6 ppm off misses the pass-1 floor, and the
+  pass-1 calibration, which only sees what that score let through, cannot find the offset. (1) The
+  lock model is applied once its largest correction reaches `LOCK_APPLY_PPM` (0.4 ppm, about 0.7x
+  the score width) instead of 1 ppm; a correction under 1 ppm only when its held-out locks sit
+  within half of it (`LOCK_SMALL_CV_SHARE`). On a field campaign's labelled-nitrate batches the
+  whole correction had hung on one lock reading 1.08 ppm against the old bar, and NO+ batches
+  sitting 0.5-0.6 ppm off (0.62-0.74 ppm at the largest correction, held-out locks 0.01-0.02 ppm)
+  were left uncorrected. Outside the model's scope every file's peaks stay as measured, as before.
+  An anchored file of a batch the lower bar newly corrects is then judged at its anchors' centre on
+  the corrected axis, which can sit off the peaks the model did not reach: on those NO+ batches,
+  whose locks stop near m/z 129, the anchored files' C9-C12 hydrocarbons above it score under Good
+  (nothing measured the axis there; a shift sized on the model's in-scope correction fixed them but
+  moved a curved axis's peaks away from their file's centre; the edge carry under Fixed now judges
+  them at the model's edge without moving them). (2) An Orbitrap-class file scored
+  locally whose snapshot still reads `assumed_zero` measures its centre before pass 0
+  (`assignment/selfcentre.py`, `PassConfig.self_centre`): its bright unexplained peaks are
+  enumerated as pass 1 enumerates them and judged by the pattern-only score; the median raw error
+  of the unique, pattern-Good, 13C-confirmed CHO/CHON readings (at least 8, scaled MAD at most
+  0.6 ppm, inside the search window, at least 0.1 ppm from zero) is the centre every pass judges
+  against, the isotope-response re-run included, until a mass trend the file's calibration accepts
+  takes over. With
+  the anchors stripped from 121 anchored Orbitrap files it stated a centre on 70, a median
+  0.04 ppm (at most 0.22 ppm) from the anchors' own; sparse files state none.
+  `pattern_scoring.mu_source` now reads `fitted`, `axis` (the batch's correction reached the
+  file; `axis_scope_share`), `self` (the measurement under `self_centre`), `trend`, `inherited`
+  or `assumed_zero`; every `per_file` row records `mu_source`, `mu_ppm` and `self_centre`, and
+  `batch_summary.json['scoring_centres']` counts the files per source. A file with its own
+  anchors, a stand-in judged at an inherited snapshot (a decoy arm), the trace-first sample and a
+  TOF keep their centre; an anchored file runs byte-identically wherever the batch's axis verdict
+  is the one the 1 ppm bar gave.
+
+- **A batch calibrates the tier engine on a core pooled over its files when a file cannot calibrate
+  alone (`assignment/calpool.py`).** The per-file core needs `tiers.CAL_MIN_N` = 20 isotope-backed
+  High/Good organic rows; small scan windows never reach it (on a 15N-nitrate field campaign: 0 of
+  183 files on the 40-600 and 65-120 windows, 0 of 84 on an NO+ 40-160 window), so their degeneracy
+  audit and z-tail gate were skipped and the evidence scale levelled nothing. After each per-file
+  stage the batch now pools, for the files that fell short: the rows the file core takes, with a
+  carbon-bearing neutral and no reagent identity (and, for a reagent with a cluster library --
+  halide, urea, ammonium, NO+ -- no line within 12 ppm of a library ion; a nitrate set has none),
+  one row per distinct ion (the tallest), an ion only where it is isotope-backed in >= 2 files -- a
+  pool of the per-file cores as they stood collapsed onto the carbon-free HNO3 lines. With >= 15
+  distinct ions spanning >= 0.25 of the committed m/z range it calibrates (median / scaled MAD /
+  0.15-ppm floor, no mass trend); a TOF-class batch is not pooled. Each such file is lent a window
+  about its own centre (the median ppm error of the rows its tier stage made Assigned; files of one
+  batch sit a few tenths of a ppm apart) whose width is the run sigma of the files that calibrated
+  alone when any did, else the pooled sigma, and is re-tiered without a re-run: the degeneracy
+  audit and the tier stage again on the ledger as its degeneracy stage found it (a batch's
+  per-file run keeps that copy, `assign.run(keep_pool_inputs=True)`, dropped right after the
+  pooled step; a single-sample run keeps none and its result has no such key), the verdicts
+  carried onto every finished row a later stage did not rewrite, the O >= 11 and oxygen-monster
+  flags, and its own evidence level, all in that window; the pooled levels take it as the file's
+  window and the merge vote reads the re-tiered ledger. The reasons name the "batch-pooled
+  calibrated window". Replayed offline on the stored field runs, merge vote included: the 65-120
+  batches calibrate (15-20 ions) and every merged row gets a level (557 rows over 8 batches; on
+  the two current-code batches 46 of 80 truth lines at the truth claim, 19 above, 10 below); no
+  merged reading changes there and 2 single-file rows leave Assigned on the z-tail; the 40-600 and
+  NO+ batches stay unlevelled (0-10 ions) and now say why (a WARNING, the pool's reason). Where only
+  some files fell short (an older 128-600 run: 16 of 103 files; on the current code every file of
+  the two such batches checked calibrates alone) the pooled files now apply the degeneracy cap
+  their batch-mates already applied: of 10,665 merged rows 151 leave Assigned and 38 change
+  reading; truth-checked, 61 correct A/B and 22 correct grade-C (line, zone) pairs leave
+  Assigned, 17 wrong Assigned rows go and 1 comes (a single-file reading that now wins the
+  evidence-first vote). Recorded as `tier_calibration` on the per-file M0 rows the tier stage
+  judged and on the merged rows (`per_file` / `pooled` / `none`; a merged row the source of the
+  row that donated its tier; reset on a cleared or displaced row), on each `per_file` stats row,
+  and in batch_summary (`tier_calibration`: the batch's weakest `source`, the files per source and
+  the pool, with the width lent). Not re-run: the off-calibration re-arbitration (it picks
+  winners) and the pass engine's scoring (a Low / Suspect confidence stays).
+
+- **Heteroatom routes and exemptions: an element enters by its own evidence.** (1) The
+  element-budget demote (`plausibility.demote_off_budget`) keeps a commit whose every
+  over-budget Cl / Br / S shows its own 37Cl / 81Br / 34S line in the file, on an
+  Orbitrap-class run (`satellites.own_line`: within 1 ppm of the exact offset, at 0.5-2x the
+  first-order prediction, fitting the ion's count better than one atom fewer and one atom more);
+  the kept row names the line, the stage counts it
+  (`budget_iso_kept`). Before, only a committed CF2 step exempted anything, so pass-7
+  certificates of chlorinated thiazolinone-like ions on a positive source sat at Candidate with a
+  clean 37Cl line (replayed on a field campaign's stored uronium ledgers: their per-file rows keep
+  their tier in every zone; a Cl1 reading under a Cl2 line does not). (2) Uronium and EasyIC open
+  two isotope-gated families (`iso_gate`), claimed LAST -- in pass 3's late series phase, after
+  passes 4/5/7 and every other family -- on Orbitrap-class runs only, opening no element space
+  for the degeneracy count or the evidence level: `organochlorine` (Cl1-3, `iso_gate: "Cl"`)
+  reads only peaks with a picked 37Cl-offset partner, lifts the context's Cl cap (0) for its own
+  filter only and commits a winner only on the ion's own 37Cl line; `organosulfur_34s` (S1-2,
+  `iso_gate: "S"`) refuses a winner whose 34S line is predicted at >= 2x the file's floor and not
+  seen, and commits one whose line is predicted under that -- which the tier engine then holds
+  at Candidate whatever 13C child, second channel or series step it has (`tiers.GATED_HOLD`).
+  The labelled-ammonium source keeps its ungated `organosulfur` family where it was. (3) DMMP (C3H9O3P) and TCPP (C9H18Cl3O4P) join the
+  positive organophosphate list behind its unchanged gate (>= 2 channels or a 37Cl / 34S / 81Br
+  envelope). (4) The carbon-cluster rule spares a formula whose O / N carry its unsaturation
+  (`hetero_unsaturated`: no F / Si, H/C >= 0.35, (O+N)/C >= 0.3, `skeleton_dbe` -- the DBE less the
+  most C=O / N=O its oxygen can form -- under 1.0 per carbon): oxalic acid, glyoxal,
+  nitrooxyacetic acid, croconic acid, a pyrimidinone and dinitrophenol are no longer demoted on
+  any run, while C24H2, C12HF, C15HFO2, C2O, C4H2O and the Si-N fits still are. (5) A reagent
+  profile's `ranges` string is documented as what it is -- documentation; enumeration reads
+  `build_ranges` and the families (a test pins it). Two NOx-skeleton test fixtures moved to
+  H-poor nitro fits, the only clusters the skeleton alone can still spare.
+
+- **A reading Assigned in at most two files is held at Candidate when, in each of them, it sits on the
+  isotopologue line of a brighter Assigned row; beside a tracking satellite partner it is noted only**
+  (`batch/sideband.py`, merge step 4d, `tables/sideband_holds.csv`, `merge_gates.sideband`). The tier
+  reads the ion, so one or two files can carry a reading to Assigned on its own pattern and mass. Held
+  (`isotopologue risk`): in every such file a brighter Assigned M0 row puts its 13C / 15N / 18O / 34S /
+  37Cl line on the row (1.5 ppm plus the file's sigma) and the row reads <= 1.5x that line's predicted
+  height. Noted (`satellite risk`, tier kept): on an Orbitrap-class batch a line >= 10x brighter within
+  +-4.0 mDa that the row's height follows (within 2x of the median ratio in >= 80 % of the batch spectra
+  holding both). On uronium field batches such partners sit at a constant +3.9 mDa, a formula spacing
+  (C5 vs N2O2), so whether they are side bands is left open. A row with its own 13C line at its own
+  carbon count's share in every such file is neither held nor noted.
+
 ### Changed
 
 - **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm
@@ -76,8 +213,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O
   amines/amides as often or more. Now only a weak X (<= 1 O or <= 4 C, `cleanup.nh4_weak_neutral`)
   is re-read (and, on a side channel such as uronium's, an X whose parent channels are absent from
-  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading capped Candidate and no longer
-  earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
+  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading (with the
+  ion-level tiers below, its tier too, and a note that the split is open) and no longer earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
   all weak), and the evidence scale's `AmineGate` mirrors both (split open).
 - **The merge vote gives an aromatic-heteroatom neutral at the dimer mass no evidence class**
   (`plausibility.aromatic_heteroatom`: C >= 20, DBE/C >= 0.5, N/S/P). Its isotope "confirmation"
@@ -85,9 +222,118 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C20H30O11 `[M+^NO3]-` (C8 S = H ^N O7), and MS2 read the dimer.
 - **A reading the label twins refute is capped Candidate** (`label_twins.demote_vetoed`,
   `merge_gates.label_veto`), not only rejected at 5b: 5 of the 6 14N organonitrates MS2 read as
-  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters.
-- **Urea adducts of hydrocarbons and N-rich neutrals are capped Candidate**
-  (`cleanup.cap_implausible_urea_adducts`, `merge_gates.urea`): the same ion as protonated X+urea.
+  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters. With the ion-level tiers this holds for a refutation
+  that names another ion (the 13C shadow, a `[Y+^NO3]-` reading with no 14N twin); an `[X+NO3]-` line
+  that is "cluster or organonitrate undecided" is the organonitrate's ion too, so it keeps its tier
+  and says so (`merge_gates.label_veto.noted`); on a 15N-nitrate field campaign that cap kept 4 truth
+  A/B lines off Assigned and caught no wrong ion.
+- **Urea adducts of hydrocarbons and N-rich neutrals are noted** (`cleanup.note_implausible_urea_adducts`,
+  `merge_gates.urea.noted`): the same ion as protonated X+urea, so the split is open. (First built as a
+  Candidate cap; with the ion-level tiers below it is a note and the tier stands.)
+
+- **The tier answers "is the ion right?"; a doubt about the neutral / adduct split goes to
+  the claim.** Three positive-mode rules capped the tier at Candidate although the ion was
+  established and only its split was open: the reagent-N isobar (an N-free neutral on
+  `[M+NH4]+` / urea is the same ion as a protonated N-richer neutral, `tiers._reagent_n_isobar`,
+  from either side), the merge's amine gate (`cleanup.prefer_amine_over_ammonium`: an
+  unconfirmed `[M+NH4]+` re-read as the `[M+H]+` amine, and the amine-impossible keep) and the
+  merge's hydrocarbon-on-N-cluster re-read (`cleanup.relabel_reagent_n_adducts`, which also
+  set the confidence to "Low (reagent-N re-read)" and a tentative lead). None of them moves
+  the tier now. An isobar row is tiered on its ion's own evidence: its isotope lines count
+  again, and a row with no isotope line, second channel or series anchor is no longer capped
+  -- it reads Assigned wherever no other rule holds it, on mass uniqueness alone (nine in ten
+  of the per-file rows that move on a uronium field campaign). One ion-level bar stays on
+  these rows: an ion that carries at least three analyte nitrogens in every stored reading
+  and has nothing but its mass is Candidate (`nitrogen-rich ion on mass alone`,
+  `tiers.REAGENT_N_RICH_MIN`, the speculative-residual demote's N >= 3 bar). The row says
+  `reagent-N split open: ...` (`tiers.REAGENT_N_OPEN_MARK`) where the split-aware verdict --
+  the rules as the cap read them -- differs; a resolved count keeps its `nitrogen count fixed
+  by ...` wording, and a row another rule holds keeps its reason. The re-reads change the
+  label only and keep the tier the vote gave the ion; the labels they write are unchanged.
+  The merge vote ranks by a private `vote_tier` (Candidate where a file's reagent-N split is
+  open), so the label of a same-ion pair is still decided by the files that could fix the
+  nitrogen count and the best-row pick is the one it was; the merged tier is the winning
+  ion's best per-file tier, whichever label a file read it with, and the losers' description
+  prints their tier. A batch-level re-read row is now levelled from the pooled pair it
+  replaced (the same ion): 4b with its split open where that pair established the ion, 5a
+  where it left a competitor, still no level from a 5b pair (`evidence.stamp_merged`,
+  `cleanup.reread_source`). Negative-mode runs are byte-identical. Replayed offline on the
+  stored ledgers of a uronium Orbitrap field campaign (12 batches), against its synthetic
+  truth set (ion-level): truth A/B ions Assigned in some batch 2186 -> 2593 of 2671, per
+  batch 10 642 -> 14 688 of 15 711 pairs, none lost; Assigned readings 2825 -> 3860 at
+  precision 0.984 -> 0.984 (0 wrong ions, wrong role 1.4 -> 1.4 %); unlevelled merged rows
+  3592 -> 67. On the release acceptance set the uronium run gains 4 true readings (34 -> 38
+  of 42) and 0 of its 8 known-false ones; the negative-mode runs do not move. Known limits:
+  Assigned no longer implies that the neutral is identified (read `claim`: Assigned + `ion`
+  is an established ion whose split is open). At the reading level (the neutral / adduct
+  written) the amine gate's default re-reads ("only weak tracking", "parent flat") write the
+  amine where the truth set decides the split for the ammonium adduct in 412 of the 558 such
+  readings that move to Assigned on a decided line; over all three rules the truth A/B lines
+  whose Assigned reading writes a split the truth decides otherwise go 43 -> 167. On a
+  uronium decoy file (its mass axis shifted by +9 and by -9 ppm, every Assigned reading
+  wrong) the two shifted arms together Assign 18 -> 28 readings against 461 -> 621 on the
+  unshifted file before the post-tier demotes, 12 -> 17 against 460 -> 616 after them
+  (without the nitrogen bar 18 -> 44 and 12 -> 23).
+  Merged with the amine gate by oxygen count (a multifunctional X keeps its `[M+NH4]+` reading
+  by default, so fewer readings are re-read at all). Its two same-ion caps follow the same rule
+  and became notes: a tracking weak X kept as `[M+NH4]+` (`cleanup.nh4_weak_tracked`) and a urea
+  adduct of a hydrocarbon or an N-rich X (`cleanup.note_implausible_urea_adducts`) keep their tier
+  and say the split is open. Kept as caps they would have taken 33 truth A/B lines of a uronium
+  field campaign off Assigned for one wrong-ion line. The numbers above were measured before that gate.
+
+- **Fluorine by evidence: a CF2 ladder lifts the fluorine refusals, its 15N alias's 14N twin
+  and its own 13C line refute it, the fluorinated family reaches F25, and the family's sub-mDa
+  aliases answer to their 13C line (`assignment/fluorine.py`).** 19F has no minor isotope, so a
+  partially fluorinated reading (F < 2H) was capped at Candidate and an F >= 4 reading flagged
+  below assignability ("unconfirmed fluorine", hard 5b) whatever the spectrum showed -- on a
+  15N-nitrate field batch's 128-600 window 52 truth lines sitting on CF2 ladders were refused
+  that way. A reading whose ion +/- k CF2 (k <= 3, every member still fluorinated) shows as >= 2
+  picked lines of its file, one of them a +/-1 neighbour (at the row's own m/z +/- k x 49.99681,
+  inside the exact-offset window on a calibrated Orbitrap, at 1/30-30x its height), is no longer
+  refused: it is Candidate, without the flag, until >= 3 members of its ladder are committed, and
+  then takes the tier the normal rules give it; the element-budget demote keeps such a full
+  ladder member as it keeps a committed CF2 step. Two lines refute a ladder and the refusal then
+  stands, saying why: on a 15N-nitrate ledger the 14N twin of the reading's C2F3 -> H2^NO4 alias
+  (0.21 mDa; a line 0.99703 Da below at 0.5-5x the reagent's 14N share f, tested only on a
+  reading that carries no ^N: a labelled reading's own twin cannot be told from its alias's, it
+  read up to 5x f on that batch), and the row's own 13C line when it contradicts the carbon
+  count. The 13C line cannot split that alias (the swap moves two carbons), so on a 15N-nitrate
+  ledger a ladder whose alias no line tested -- the reading carries ^N, or the alias's twin would
+  read under the floor -- stays Candidate however many members are committed
+  (`ALIAS_UNTESTED_HOLDS`); an alias that cannot exist (the swap lowers the DBE by one: a DBE-0
+  reading has none) is not held. The `fluorinated` family's F ceiling is 25 (was 17: the chain
+  propagation stopped at the first F18 member, whose C+8 H+1 F-5 alias then took the line) and
+  the degeneracy / level space's F ceiling follows it where the family opened; a context that
+  leaves max_F uncapped (food, none) is still enumerated to F17 until it does. In pass 3's
+  fluorinated arbitration the readings within 1 mDa of the top one are aliases; where the peak's
+  13C line (unexplained or an earlier pass's M0, never another row's isotope) is testable and its
+  carbon count sits clearly nearer one alias -- by >= max(2, 2 sigma) carbons, sigma 12 % of the
+  count plus the line's S/N -- each farther one pays 0.30 effective score (C12H9F15 against
+  C20H8F10 had been settled by a 0.3-ppm mass term; the comparison reaches C15 against C23, where
+  the audit's 0.35 n tolerance cannot). Replayed offline on that batch's stored per-file ledgers
+  (the tier stages, the merge vote and the stored pass-3 alternatives; no re-scoring, so the F18
+  members are not in it): 17,270 per-file F rows lose the below flag and 41 become Assigned; the
+  merged Assigned rows went 4184 -> 4195 (+21, all 13 verifiable ones the truth's reading; -10,
+  where the vote now picks the unflagged F reading of a line at Candidate), the verifiable
+  precision 92.66 -> 92.76 %, and 4 of the 52 refused truth lines are Assigned in at least one
+  zone (13 line-zone pairs) -- without the hold 30 (73), at 15 new merged rows against the
+  truth's reading compared with the code before (16 more than with the hold), 8 of them exactly
+  the alias. The 13C term moved 262 per-file winners onto the truth reading and none off it;
+  only pass 3's fluorinated arbitration reads it (pass 2's GKA and pass 4's deep-series
+  proposals settle the same aliases on the mass term). On the finish-line runs no row's verdict
+  moves (H1, H2 and H3 unchanged in the replay); the 15N-nitrate run's merged Assigned goes
+  641 -> 645 and the TOF run's 785 -> 787 (F readings with full ladders: C2F5-, C3F7-, C4F9-),
+  and the F25 ceiling rewrites the degeneracy count and note of a labelled-nitrate run's heavier
+  rows. The labelled rescue (`labeled.rescue_labeled`) still re-reads a partially fluorinated
+  fit as a 15N product whatever its ladder. The GKA figure (`reporting/gka_figure.py`) still
+  drops an unanchored F >= 4 neutral by formula, but now draws one the ledger did not refuse (no
+  below flag, or Assigned). A reading the ladder does not lift keeps the flag, which the
+  evidence scale reads alone as the fluorine 5a ceiling, not a rejection (see "Unconfirmed
+  fluorine is a 5a ceiling" above); a reading whose ladder a line refutes is refuted, not only
+  unconfirmed: its refusal note is a second below-assignability setter (`refuted fluorine
+  ladder`), so it stays 5b; a reading whose ladder lifts the refusal but is not full (fewer than 3
+  committed members, or an untested 15N alias; Candidate) takes the same 5a ceiling (`fluorine ladder
+  incomplete`, the pair fact `f_ladder_lift`).
 
 ### Added
 
@@ -194,6 +440,204 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `target_collection_ids` and replaces the batch's collections with them; `update_batch` sent
   none, so the server refused the rename. It now reads the batch's current collections and sends
   them back, unless `target_collection_ids=` is given.
+
+- **The evidence scale opens a contaminant family only on real evidence, without cross-family
+  mixtures.** A family opened the level space (its competitors for every pair) from committed
+  `contaminant:<family>` rows in two files, Candidate junk included, and any competitor left
+  forces 5a: on a uronium batch a few Candidate fluorinated rows opened `fluorinated`, and the
+  C2H-6N2O2 == FPSi alias (0.064 mDa) of every CHO urea adduct (C15H32FPSi [M+H]+ beside
+  C16H22O·urea H+) parked hundreds of ions at 5a 'tentative'. A row-opened family now counts for
+  a file only when a row of it is Assigned or its own diagnostic line (34S, 29Si / 30Si, 37Cl,
+  81Br in any of the ledger's spellings, of an element the row's neutral carries and its adduct
+  does not) is committed;
+  `fluorinated`, whose rows no isotope can confirm, needs a CF2-step chain of
+  3 Assigned F neutrals on any adduct (a perfluoroacid series counts, also split between [M-H]- and
+  a nitrate cluster); it must hold in two files,
+  as before (`context.level_families`, `family_evidence`). The context's declared pass-3 families
+  stay. A family's profile keeps another heteroatom of the context's budget only when an open
+  family brings it (`space.level_profiles`): no F+P / F+S on a uronium run, no F+Cl / F+Br on
+  ambient air. The ions only the former space proposes are listed in `competitors_left` as `not
+  counted (element family not open on evidence)` (every one) and counted in the evidence text,
+  never a competitor; they still vouch for their own isotope lines in test (b), so a refutation
+  through one stands. A committed reading the narrower space does not admit (it needs such a
+  family, or is such a mixture; a curated formula is judged by its heteroatoms, so a registry
+  perfluoroacid on a run whose fluorine has no evidence counts) is levelled in the former space
+  exactly as before (`space.space_of`), so a fluorine reading meets its own family's
+  competitors. A committed reading carrying a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
+  in-band lines confirms (a line of an element its adduct adds is not its own) takes no competitor
+  away either (`competitors.unconfirmed_heteroatoms`):
+  an Si2 reading of a CHO urea adduct (Si2H4 == CO3) beside an unevidenced fluorine reading stays
+  5a. The former space is enumerated only where its profiles differ. `scripts/level_ledger.py`
+  restates the record. The degeneracy audit and every tier are
+  unchanged. The labelled-nitrate level fixture's expected table and vector are re-pinned
+  (`tests/fixtures/levels/README.md` lists the diff); the uronium fixture does not move.
+
+- **One commit contract for the heteroatom routes: a reading shows its own isotope line, or it is
+  not committed.** The per-peak grid proposes C / H / N / O only, so an S, Cl, Br or Si reading
+  comes from a widened route, and those routes committed with weaker evidence than pass 1. On a
+  15N-nitrate field batch, pass-7 certificates committed P / S / Cl readings of fluorinated lines
+  whose 34S / 37Cl line was predicted at 2-4x the noise edge and absent in every file; contaminant
+  families committed at `tau_suspect` 0.50 (a siloxane Si3 reading took a bright S line whose 29Si
+  line no file showed); the isotope-gated recovery took another ion's M0 5.6 mDa off as a 37Cl line;
+  the envelope sweep, the final satellite reclaim and the scorer's lines of a certificate attached
+  neighbour ions 2.6-4.8 ppm off a predicted 34S / 18O / 37Cl / 29Si position, or at 2-3.7x the
+  ratio. Now, on an Orbitrap-class run: (1) `satellites.own_line_verdict`: a reading whose neutral
+  carries S / Cl / Br / Si must show its own 34S / 37Cl / 81Br / 29Si / 30Si line at the exact
+  offset (the twin window floored at 2 ppm) where the line is predicted at 2x the resolved height
+  gate or more; absent there (and no neighbour within one FWHM of the run's own width model,
+  `cfg.width_model`, could hold it as a blend) the commit is refused and the peak's row says why
+  (`REFUSED (own_line: ...)`). Untestable lines (dim, masked by the reagent's halogen, held by a
+  taller line) keep today's outcome; a route that declares `line_gate='strict'` commits them at Low
+  at most. Applied in `commit_winners` (passes 1-3, 5), pass 7 (pooled over the certificate's
+  members: one member showing the line is enough), the residual's iso-pair and series stages, pass
+  6's ladder gap-fill, the reference-list and labelled rescues, the off-cal re-arbitration's
+  alternatives, and pass 0 (a refused known species leaves a `deferred` lead under 4x the gate,
+  `refuted` from 4x). (2) The pass-3 contaminant families commit at `tau_low` (0.70), pass 1's bar.
+  (3) The isotope-gated recovery reads each candidate's M+2 at its own offset within max(2 ppm, 3
+  sigma) at 0.5-2x its prediction; the envelope sweep, `cleanup.reclaim_satellites` and the
+  scorer's lines a commit attaches after calibration (passes 2, 3, 5 and 7) take a heteroatom M+1 /
+  M+2 line as the parent's own only there (0.3-2x where the line is predicted under 4x the gate);
+  the 2-ppm floor is the satellite's own scatter (a weak line on the shoulder of a taller
+  fine-structure line is picked up to ~1.7 ppm toward it). (4) The batch's known-species cap is
+  monotone: the neutral's own 13C line counts toward the two lines, and where the vote reads the
+  species, one whose pass-0 rule demands corroboration (now with the silanediols, whose Si M+1 gate
+  is such a rule) is capped on exact mass alone too, while a family whose rule is exact mass is
+  never capped; a species that locks over the vote's reading needs two lines whatever its family.
+  Off an Orbitrap (TOF, unknown class, the trace sample) items 1 and 3 are inert. Offline replay on
+  the stored ledgers of that campaign: 1,280 per-file heteroatom rows refused (6 Assigned, each still
+  Assigned in other files), 6,961 per-file contaminant-family rows under 0.70 no longer committed
+  (all Candidate), 841 of 7,692 heteroatom M+1 / M+2 lines left as their own peaks (694 sweep, 108
+  reclaim, 39 scorer lines; the reclaim re-attaches none of them); the known-species cap
+  lifts five truth lines to Assigned (2-(methylthio)benzothiazole x2, tetramethylthiourea, dimethyl
+  sulfoxide, a malathion transformation product) and drops one (sulfuric acid, Assigned only where no
+  file showed its 34S line). The release acceptance rows touched by the contract (a chlorinated
+  product, the D5 siloxane) show their lines.
+
+- **A sub-ppm lock model is applied without the locks that disagree with their neighbours.** A
+  smoothing spline (GCV) drawn through every lock bends towards a few co-located locks that read
+  0.6-0.9 ppm off their neighbours (a lock on a line blended with a brighter ion's 13C line, a
+  labelled alias): on a labelled-nitrate batch the sub-ppm branch applied a model that rose
+  +0.10..+0.15 ppm over m/z 261-269 and corrected a true cluster line by +0.23 ppm, out of Good in
+  all 7 files it was Good in before the branch existed. On that branch only, after the verdict
+  (which stays the as-built model's), each spline segment is refitted on its non-bright locks less
+  the ones more than `LOCK_REFIT_PPM` (0.5) off a Theil-Sen line through their 6 nearest, dropped
+  one at a time, the worst first (`axislock.AxisModel.refit`); line segments, domains and the grid
+  stay as built, a model that drops nothing is applied as built, and the edge carry is read off
+  the kept locks. Replayed with the built code on the stored as-built models: the labelled-nitrate
+  batch drops 12 of 297 locks (its correction at the line +0.227 -> +0.056 ppm), a positive
+  benchmark batch 26 of 634, a field campaign's five sub-ppm batches 0, 0, 0, 1 and 47 (the last a
+  uronium batch whose lower edge carry moves -0.277 -> -0.205 ppm toward an independent axis,
+  -0.199); held-out error on all segment locks 0.094 -> 0.090, 0.072 -> 0.064, 0.0705 -> 0.0623
+  ppm. `mass_axis.refit` records the dropped locks.
+
+- **A line just outside the batch axis model's scope is judged at the model's edge, not at a centre
+  read off the corrected axis.** The lock model corrects peak m/z only inside its scope, but a
+  file's centres -- the scorer's `mu` (the anchors' median, or zero for an `axis` file) and
+  calibrate's `cal_mu` -- are fitted on the mostly corrected peaks, so a peak beyond the model's
+  first or last lock, still on the measured axis, was judged against a centre from the other axis:
+  on an EasyIC batch the sub-ppm bar newly corrects (locks up to m/z 129, -0.73 ppm there) the
+  C9-C12 hydrocarbons above it fell from 373 to 35 Assigned per-file rows. A model applied through
+  the sub-ppm branch (largest correction and the locks' raw median under 1 ppm) now CARRIES the
+  axis at its first and its last lock into the scoring centre of every line up to
+  `assign_batch.EDGE_CARRY_DA` (30 Da) beyond it, each end's value read off its end locks (the
+  model there plus the median residual of the end segment's non-bright locks within
+  `axislock.EDGE_LOCK_DA`, 5 Da, at least three, else the model's own end value: a spline's end
+  knot can leave its own locks) (`AxisModel.edge_carry_record`,
+  `masscal.edge_carry_at`, `PassConfig.axis_edge_carry`): the local scorer judges each matched line
+  at the file's centre plus that value (`score_candidates_local(centre_offset=)`, per line), and
+  every calibrated centre at a line's m/z adds it -- `cal_center` / `z_of`, the isotope-gated
+  recovery, the speculative-residual demote, the labelled and reference-list rescues, the tier
+  calibration (`_calibrate`, `_cal_z`, `ppm_error_cal`), the off-calibration re-arbitration and the
+  degeneracy window -- while every centre fitted on the file's own rows reads a row past the edge
+  on the carried scale: calibrate's backbone and mass-trend rows, the tier calibration, a `fitted`
+  file's anchors (`sample_mass_errors(carry=)`), an uncalibrated file's display centre (the
+  Assigned rows' median) and a batch's pooled tier calibration (its core, `pool_calibration(carry=)`,
+  and the file's own centre it lends a window about; the lent window takes the file's carry). No
+  m/z moves. In
+  scope, in gaps and holes (a step there is unseen), past the reach (a curved labelled-nitrate axis
+  bends 0.2-0.4 ppm away from its edge value further out), and on every batch whose model is
+  applied at 1 ppm or more or by the reference ions, nothing changes: those batches run
+  byte-identically, their out-of-scope lines still judged against the in-scope centre. Past the
+  reach a line is judged at the file's centre as calibrate and the tier calibration now fit it,
+  on the carried scale: a few hundredths of a ppm off where it was. Records:
+  `mass_axis.edge_carry` (also on the model, `wave.stats.edge_carry`; each end `{mz, ppm,
+  model_ppm, n_locks}`), `pattern_scoring.axis_edge_carry` (with `share` and `anchors`),
+  `per_file.axis_edge_carry` (`reach_da`, `m0_carried`); a stand-in inherits it with the snapshot.
+  Replayed offline through the built code on a field campaign's stored runs (truth A/B M0 lines
+  outside the scope, file x line rows passing score >= 0.70 and the mass gate; at score >= 0.80,
+  the Assigned-level reading, in brackets): on the five batches the carry reaches 2,570 -> 3,606
+  rows (2,157 -> 3,326; main 1,816 / 1,566), 408 of the 447 rows lost against main recovered (all
+  370 on the EasyIC field batch: 61 -> 437, main 404). Newly lost against main: 4 (6): 3 marginal z
+  flips past the reach through calibrate's refit (z 1.94-1.99 -> 2.00-2.01, score < 0.80), a line 0.04
+  Da below a uronium model's first lock in one file (score 0.91 -> 0.74; its edge value -0.28 ppm, the model's
+  end knot -0.41, an independent axis -0.20), and at 0.80 three uronium lines above the model's
+  last lock in four files (one lock within 5 Da: the model's end value, -0.33 ppm, carried; score
+  0.83-0.98 -> 0.74-0.78) and an EasyIC C11H18+ line reading 0.45 ppm off its axis (score 0.95 ->
+  0.78). Of those batches' in-scope rows none loses status and 1 (7 at 0.80) gains (an isotope
+  line outside the scope). Batches with no carry (axis not applied, applied at 1 ppm or more, the
+  stepped sentinel axes) replay byte-identically: scored frames, calibration and tiers.
+
+- **A 14N line that is the 13C shadow of a brighter ion is no reading's own ion (rule K, labelled
+  nitrate, Orbitrap-class).** A 14N line CxHyNOz- sits 8.106 mDa (13C + H - N) below the 13C line of
+  P = C(x+1)H(y+1)Oz-. On a 15N-labelled nitrate benchmark batch (R ~125k at m/z 200) the
+  `[M+NO3]-` reading C10H18NO7- was Assigned although the line is a fixed 0.11x of the 13C line of
+  C11H19O7- above it (sd(log) 0.10, r 0.96 over 209 spectra) and its 15N cluster is read elsewhere;
+  rule K's cluster-k test read it as tracking its 15N twin (sd 0.14-0.17). `label_twins.measure`
+  now runs a 13C-shadow test on every 14N line whose P ion is committed (Orbitrap-class batches,
+  `klass`): over >= 50 spectra holding both lines, median ratio <= 1/3, sd(log) <= 0.15, r(log) >=
+  0.9, the +8.1 mDa line confirmed as P's 13C line by its ratio to P's 12C line (0.5-1.6x the
+  natural share), and a tighter fit to that 13C line than to its own 15N twin (the cluster-k sd,
+  else the raw sd of log(14N / 15N)). Such a line reads `line_verdict` `shadow`, which outranks
+  every other verdict: refuted (5b, `label_veto`) and alien, never untied, and out of the cluster-k
+  reference pool (the test is re-run without it). A veto alone leaves the merged tier, which is the
+  vote's, so a new merged-ledger gate (`label_twins.shadow_gate`, MERGE.md §3 step 6c) makes every
+  Assigned merged reading within the merge window of a shadow line Candidate, with no re-vote and a
+  `tier_reason` that names the parent. `tables/label_twins.csv` gains `shadow_parent`, `shadow_mz`,
+  `shadow_n`, `shadow_ratio`, `shadow_sd`, `shadow_r`, `shadow_c13`, `shadow_twin_sd` and `shadow`;
+  the summary gains `lines_shadow`; `batch_summary.json["merge_gates"]["label_shadow"]` records
+  `ran`, `lines`, `demoted` and `demoted_rows`. Replayed on the stored runs: on the benchmark
+  batch 2 lines are shadows (the reading above, now Candidate, and the uncommitted 14N line of a
+  C10H18O6 15N cluster, out of the reference pool: one other line goes consistent -> tracks), 1
+  merged row changes; on six labelled-nitrate field batches (R ~175k) no line is a shadow and the
+  table is unchanged; unlabelled and TOF batches are out of scope.
+
+- **A series step no longer corroborates an organosulfur or fluorinated reading that its 15N
+  alias could be standing in for (`fluorine.series_alias_holds`).** On a 15N-nitrate run C8S and
+  H ^N O7 differ by 0.27 mDa (as C2F3 and H2 ^N O4 do by 0.21 mDa), so every organosulfur reading
+  with C >= 8 has a same-ion reading with one more ^N -- the [M+^NO3]- cluster of its neutral
+  minus C8S plus O4 -- and the swap keeps every CH2 / O / H2O step. A pass-6 gap-fill or pass-4
+  series step off a pass-3 organosulfate Candidate made such a reading Assigned on the series
+  credit alone (its 34S line under the floor), and the merge vote's private class counted the
+  same step ("formula confirmed"), so one file's alias outvoted the truth's [M+^NO3]- reading in
+  3-5 files. On a 15N-nitrate ledger a row with series credit (`anchor_peak_id` / `series_unit`)
+  whose ion carries C8S -- its S count untested: no line at the 34S position within 2.5x the 34S
+  line's prediction (`fluorine.S_LINE_HIGH_X`, the envelope predicate's own bound
+  `satellites.EE_RATIO_HIGH`: the 34S verdict takes any line picked there as support, and a
+  line 10-300x its prediction is another ion's), none refuted -- or C2F3, and whose alias can
+  exist and is untested, or has its 14N twin seen, by the ladder's own test, now takes no series
+  credit: the tier engine drops it and says why ("series step not counted for the S count: its
+  15N alias (C8S -> H^NO7, 0.27 mDa) takes the same series steps and is untested -- ..."), reads
+  another ion's line at the 34S position as no S envelope line (`fluorine.s_line_read`), and the
+  evidence scale's `anchor` axis reads that mark (a `trim` frame carries it as `series_held`),
+  so neither the level nor the vote class counts the step. The
+  C8S alias joins the alias table (`fluorine.LABEL_ALIASES`; `alias_admissible` and the twin
+  test take the alias); `ALIAS_SERIES_HOLDS` is the switch. Off a 15N-nitrate ledger nothing
+  changes. Replayed offline on the stored per-file ledgers of a 15N-nitrate field campaign (the
+  held rows' tier verdicts, then the merge vote as the batch casts it; the base replay gives
+  1390 of the 1392 stored merged rows of a 128-600 batch): there 28 per-file rows
+  lose their series credit (5 of them only once another ion's line at the 34S position no
+  longer counts as the S count's) and 10 merged rows leave Assigned (649 -> 639), every one of
+  them wrong-ion or unverifiable -- the seven C8S aliases of the truth's readings among them. The
+  wrong-ion Assigned rows go 13 -> 5 (organosulfur 11 -> 3, C8S aliases 7 -> 0); three truth
+  lines take back the truth's reading (at Candidate, as its own files read it) and no line
+  Assigned before is lost. Either half alone falls short: the tier half leaves those three
+  lines to the alias (as Candidate), the evidence half leaves four alias rows Assigned. The
+  batch's zero-air run (3 per-file rows held), its 40-600 and 65-120 windows, the uronium and
+  NO+ batches and seven 14N sentinel runs move no merged row. On the finish-line runs no
+  truth-set row moves (H1 and H2 as before); the two builds of the 15N-nitrate run hold 5
+  per-file rows each, and 3 merged rows outside the truth set (a gap-filled C12H6OS / C12H8OS
+  [M-H]-, a gap-filled C15H6N2O4S [M-H]-, a series-step C14H10ClNO5S [M+NO3]-) go Assigned ->
+  Candidate.
 
 ### Added
 

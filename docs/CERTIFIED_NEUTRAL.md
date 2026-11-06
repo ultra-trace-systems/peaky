@@ -76,6 +76,24 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    on an Orbitrap-class run, no S / Cl / Br / Si winner none of whose elements
    the predicate confirms (`gated` in the pass summary). The P / I forms stay
    in the ranking, so a tie is still a tie.
+   **The commit contract** ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)
+   §3.6c). On an Orbitrap-class run the winner's own S / Cl / Br / Si line is
+   then asked of every member ion (`satellites.own_line_verdict`, pooled by
+   `pool_line_verdicts`): an element any member shows stands; one that no
+   member shows while a member's line is predicted at ≥ 2× the resolved height
+   gate and absent (or, from 4×, under 0.6 of its prediction) refuses the
+   certificate -- nothing is committed or displaced, the unexplained members'
+   rows say why (`REFUSED (own_line: …)`), and the pass summary counts
+   `line_refused`. A member whose line is masked by the reagent's own halogen,
+   dim or held by a taller line neither shows nor refuses. Two co-varying
+   lines one H¹⁵NO₃ apart in a fluorinated forest had certified P / S / Cl
+   readings whose ³⁴S / ³⁷Cl line was predicted at 2-4× the floor and absent
+   in every file; refused here, the lines are left to the late families. A
+   committed certificate attaches a member's scored heteroatom line only where
+   the envelope sweep would read it as that member's own (within max(2 ppm,
+   3σ) of its position, at 0.5-2× its prediction; `iso_not_own` in the
+   summary): the scorer's window took a line 2.5-3.2 ppm off a P/S
+   certificate's ³⁴S position as its ³⁴S line.
 5. **Commit** (`method=certified:multi-channel`): the same certified neutral
    is committed onto *every* member peak under its own channel label — so the
    tier engine's cross-channel corroboration sees the certificate. Ladder

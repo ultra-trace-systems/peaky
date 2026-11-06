@@ -190,8 +190,9 @@ class AmineGate:
             v, r, ov = self.verdict(X)
             weak = CU.nh4_weak_neutral(X)
             if v == "keep" and CU.nh4_weak_tracked(X):
-                # the engine keeps the reading capped Candidate: a source-made amide of a small or
-                # mono-oxygenated carbonyl tracks it too, so tracking pins nothing
+                # the engine keeps the reading and its tier with a note that the split is open: a
+                # source-made amide of a small or mono-oxygenated carbonyl tracks it too, so tracking
+                # pins nothing
                 g = dict(kept=True, track=False, pin=False, verdict="keep-weak", r=r, ov=ov,
                          how=f"tracks its own [M+H]+/urea parent (r {r:.2f} over {ov} 2-h bins), but X is "
                              f"small or mono-oxygenated: its amide X+NH3 [M+H]+ tracks it too")

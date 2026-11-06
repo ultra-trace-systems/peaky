@@ -38,6 +38,7 @@ import os
 import warnings
 from dataclasses import dataclass
 
+from peaky.assignment import masscal as MC
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.lists import lock as LK
@@ -45,7 +46,7 @@ from peaky.lists import snapshot as SN
 from peaky.lists.lock import SnapshotIntegrityError  # noqa: F401  (re-exported for callers)
 from peaky.paths import pkg_data
 
-__version__ = "0.2.0"   # schema-v2 snapshots, catalog.lock verification, user dir, lists_record
+__version__ = "0.3.0"   # + the commit contract on the rescue (satellites.own_line_verdict); 0.2.0 schema-v2 snapshots, catalog.lock verification, user dir, lists_record; 0.1.1 the rescue skips a locked unexplained peak (an element-evidence clear)
 
 # Bundled peaklist catalog. Resolved from the package root (paths.pkg_data), not
 # this module's __file__, so it survives `reflists` moving into a sub-package.
@@ -583,7 +584,12 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     # a sub-floor TOF centroid matched to a list formula is a lead, never Assigned
     from peaky.assignment import tiers as _T
     tof_floor = _T.tof_assign_floor(cfg)
-    rescued = tentative = 0
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert
+    # elsewhere): a list formula carrying S / Cl / Br / Si shows its own line
+    # where the file would show it, whatever its 13C says
+    from peaky.assignment import satellites as _SAT
+    gate = _SAT.LineGate(ledger, cfg)
+    rescued = tentative = refused = 0
     for pid, (formula, adduct, lid, aliases) in want.items():
         idx = ledger.index[ledger["peak_id"] == pid]
         if not len(idx) or ledger.at[idx[0], "role"] != L.ROLE_UNEXPLAINED:
@@ -599,7 +605,10 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
         top = base.sort_values("ion_score", ascending=False).iloc[0]
         score = float(top["ion_score"])
         ppm = float(top["ppm_error"]) if pd.notna(top["ppm_error"]) else None
-        z = abs((ppm - mu) / sigma) if (mu is not None and ppm is not None) else 0.0
+        # at the peak's m/z: a peak just outside the batch axis model's scope is judged at
+        # the centre plus the model's edge (masscal.carried_centre)
+        z = (abs((ppm - MC.carried_centre(getattr(cfg, "axis_edge_carry", None), mu, mz)) / sigma)
+             if (mu is not None and ppm is not None) else 0.0)
         if score < floor or ppm is None or z > z_acc:
             continue                                   # poor mass match / off-cal -> leave
         # isotope confirmation: a confirmed satellite sits at the M+1/M+2 mass, not
@@ -626,6 +635,10 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                       "the decomposition-alias policy), the covalent reading is its alias -- "
                       "no mass or isotope evidence can separate them.")
         sub_floor = tof_floor is not None and h < tof_floor
+        if gate.refuse(ledger, pid, formula, str(top["ion_formula"]), reading=f"{formula} {adduct}",
+                       route=f"reflist-rescue:{lid}"):
+            refused += 1
+            continue
         # runs AFTER apply_tiers (like the F/carbon demotes), so set tier explicitly.
         if iso_ok and not sub_floor:
             L.commit_assignment(ledger, pid, neutral_formula=formula, adduct=adduct,
@@ -660,8 +673,12 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
             tentative += 1
         # else: bright enough to show isotopes but none confirmed -> mass coincidence, leave
     log(f"[reflist] rescue-verify: {rescued} confirmed + {tentative} tentative "
-        f"(of {len(want)} reference-matched unexplained)")
-    return {"rescued": rescued, "tentative": tentative}
+        f"(of {len(want)} reference-matched unexplained)"
+        + (f"; {refused} refused (own line absent)" if refused else ""))
+    out = {"rescued": rescued, "tentative": tentative}
+    if refused:
+        out["own_line_refused"] = refused
+    return out
 
 
 def match_by_mass(mz_values, lists, adducts, *, tol_ppm: float = 5.0,

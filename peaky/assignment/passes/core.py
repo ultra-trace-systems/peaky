@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.assignment import blocked as BL
+from peaky.assignment import fluorine as FL
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import satellites as SAT
 from peaky.assignment import series_gka as G
 
 
@@ -106,6 +110,15 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         .astype(bool)
     )
     ppm = m0.loc[(score >= cfg.tau_good) & chon, "ppm_error"].astype(float)
+    # the batch axis model's edge carry: a backbone row outside its scope within reach
+    # sits on the measured axis; on the carried scale (its ppm less the model's edge
+    # value) it measures the same centre as the corrected rows
+    carry = getattr(cfg, "axis_edge_carry", None)
+    n_carried = 0
+    if carry:
+        shift = MC.edge_carry_at(carry, m0.loc[ppm.index, "mz"].astype(float).to_numpy())
+        n_carried = int(np.count_nonzero(shift))
+        ppm = ppm - shift
     if len(ppm) < cfg.cal_min_n:
         log(
             f"[calibrate] backbone too small (n={len(ppm)} < {cfg.cal_min_n}); "
@@ -120,6 +133,8 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         f"-> accept |z|<={cfg.cal_z_accept} ({mu - cfg.cal_z_accept * sigma:+.2f}"
         f"..{mu + cfg.cal_z_accept * sigma:+.2f} ppm), pattern-evidence up to "
         f"|z|<={cfg.cal_z_pattern}"
+        + (f"; {n_carried} backbone rows outside the axis model's scope read on the carried "
+           "scale (the model's edge removed)" if n_carried else "")
     )
     # MASS-DEPENDENT centre (masscal): the Orbitrap's low-mass residual is an
     # absolute offset, i.e. ppm ~ 1/mz. Fitted on the same backbone; accepted
@@ -145,9 +160,12 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
     kids = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
     tested = m0["peak_id"].map(kids).fillna(0) >= 1
     trend_rows = m0.loc[(tsel >= cfg.tau_good) & chon & tested]
+    trend_mz = trend_rows["mz"].astype(float).to_numpy()
+    trend_ppm = trend_rows["ppm_error"].astype(float).to_numpy()
+    if carry:
+        trend_ppm = trend_ppm - MC.edge_carry_at(carry, trend_mz)
     fit = MC.fit_mass_trend(
-        trend_rows["mz"].astype(float).to_numpy(),
-        trend_rows["ppm_error"].astype(float).to_numpy(),
+        trend_mz, trend_ppm,
         min_n=cfg.cal_min_n, sigma_floor=cfg.cal_sigma_floor)
     if fit is not None:
         cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend = fit.a, fit.b, fit.sigma
@@ -178,13 +196,20 @@ def _has_trend_at(cfg: PassConfig, mz) -> bool:
 def cal_center(cfg: PassConfig, mz=None) -> float | None:
     """The calibrated ppm centre: mass-dependent at `mz` when the trend is fitted
     (masscal.centre, clamped to the backbone's m/z coverage), else the constant
-    cal_mu; None when uncalibrated."""
+    cal_mu; None when uncalibrated. At a line outside a sub-ppm batch axis model's
+    scope within its reach (cfg.axis_edge_carry) the model's correction at the
+    nearer end is added (masscal.carried_centre): that line was not corrected."""
     if cfg.cal_mu is None:
         return None
     if _has_trend_at(cfg, mz):
-        return MC.centre(cfg.cal_a, cfg.cal_b, mz,
-                         getattr(cfg, "cal_mz_lo", None), getattr(cfg, "cal_mz_hi", None))
-    return cfg.cal_mu
+        c = MC.centre(cfg.cal_a, cfg.cal_b, mz,
+                      getattr(cfg, "cal_mz_lo", None), getattr(cfg, "cal_mz_hi", None))
+    else:
+        c = cfg.cal_mu
+    carry = getattr(cfg, "axis_edge_carry", None)
+    if carry and mz is not None and not pd.isna(mz):
+        return MC.carried_centre(carry, c, float(mz))
+    return c
 
 
 def cal_sigma_at(cfg: PassConfig, mz=None) -> float | None:
@@ -315,11 +340,17 @@ def _nitrate_twin_first(grp: pd.DataFrame, profile) -> tuple[pd.DataFrame, objec
     return grp, None
 
 
-def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
+def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None, *,
+              c13_alias: dict | None = None) -> dict:
     """Decide a single best M0 owner per peak from the flat per-isotopologue
     scored table, with complexity-penalised effective scores. ``profile`` (the
     run's ContextProfile) turns on the NOx-skeleton twin tie-break
     (`_nitrate_twin_first`) when its ``nox_skeleton`` switch is set.
+    ``c13_alias`` ({peak_id: its 13C line}, fluorine.c13_lines; pass 3 hands it
+    for the fluorinated family) adds the 13C carbon-count term between a peak's
+    sub-mDa aliases (fluorine.c13_alias_penalties): where the line is testable,
+    a reading whose carbon count it contradicts pays an effective-score charge
+    -- the C8 vs H1F5 alias (0.16 mDa) is otherwise settled by the mass term.
 
     Returns:
       {
@@ -474,6 +505,14 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
     winners = []
     for pid, grp in base.groupby("sample_peak_id"):
         grp = grp.sort_values("eff_score", ascending=False)
+        c13_note = None
+        if c13_alias is not None:
+            pen, c13_note = FL.c13_alias_penalties(grp, c13_alias.get(pid), cfg)
+            if pen:
+                grp = grp.assign(eff_score=grp["eff_score"] - pd.Series(pen).reindex(grp.index).fillna(0.0))
+                grp = grp.sort_values("eff_score", ascending=False)
+                if grp.index[0] in pen:
+                    c13_note = None            # the term did not decide this peak
         grp, demoted = _nitrate_twin_first(grp, profile)
         top = grp.iloc[0]
         n_iso = int(iso_count.get((top["compound_formula"], top["ion_formula"]), 0))
@@ -516,6 +555,8 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
                 "alternatives": alts,
             }
         )
+        if c13_note:
+            winners[-1]["_c13_note"] = c13_note
     win_df = pd.DataFrame(winners)
 
     # iso children attributed to the winning (compound, ion) pairs only
@@ -674,10 +715,22 @@ def commit_winners(
     confidence_suffix: str = "",
     claim_unexplained_only: bool = False,
     only_peaks: set | None = None,
+    line_gate: str | None = "refuse",
 ) -> dict:
     """Commit arbitration winners + their isotope children into the ledger.
     Skips peaks that are locked or already own a better assignment. Returns a
-    summary dict."""
+    summary dict. A winner a gate refuses (the score floor, the calibrated mass
+    gate, the minor-channel corroboration, a Reject confidence) is noted as the
+    peak's blocked reading (blocked.note_winner; a no-op outside a run).
+
+    `line_gate` applies the commit contract (satellites.own_line_verdict) to a
+    winner whose neutral carries S / Cl / Br / Si: 'refuse' (the default) does
+    not commit one whose own line, predicted at >= COMMIT_LINE_X_FLOOR x the
+    resolved height gate, is absent -- the reason goes on the peak's row
+    (satellites.record_refusal) and into rejected['own_line'] -- and keeps
+    today's outcome where the line is untestable; 'strict' also commits an
+    untestable one at Low confidence at most (Candidate); None skips the
+    contract. Inert off an Orbitrap-class run (satellites.LineGate)."""
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     if len(win):
@@ -686,6 +739,22 @@ def commit_winners(
         win = win.sort_values("eff_score", ascending=False, na_position="last")
     committed, locked_ids = [], []
     rejected = {"nan_ppm": 0, "mass_gate": 0, "minor_channel": 0}
+    gate = None            # the file's commit contract, built on the first heteroatom winner
+    n_own_line = n_line_capped = 0
+    # the scorer's heteroatom lines are the parent's own only by the envelope
+    # sweep's test (postprocess.scored_line_is_own: a calibrated Orbitrap-class
+    # run; passes 0 and 1 run uncalibrated and keep the scorer's reading): a
+    # line that fails it is neither recorded on the parent nor attached to it
+    n_not_own = 0
+    if len(kids) and len(win) and SAT.orbitrap_class(cfg) and SAT.calibrated_sigma(cfg) is not None:
+        from .postprocess import scored_line_is_own
+        ion_of = dict(zip(win["peak_id"], win["ion_formula"]))
+        cache: dict = {}
+        keep = [scored_line_is_own(ledger, k["parent_peak_id"], k["peak_id"], ion_of.get(k["parent_peak_id"]),
+                                   k["iso_label"], cfg, cache=cache) for _, k in kids.iterrows()]
+        n_not_own = len(keep) - sum(keep)
+        if n_not_own:
+            kids = kids[pd.Series(keep, index=kids.index)]
     # series/GKA proposals and known-neutral completions carry structural
     # evidence by construction (chain membership / an already-assigned neutral)
     series_like = ("series" in method) or ("gka" in method) or ("completion" in method)
@@ -694,11 +763,14 @@ def commit_winners(
         if only_peaks is not None and pid not in only_peaks:
             continue  # evidence-scoped pass: only its own member peaks
         if w["raw_score"] is None or w["raw_score"] < min_raw_score:
+            if w["raw_score"] is not None and BL.active():
+                BL.note_winner(w, f"score<min_raw {w['raw_score']:.2f}<{min_raw_score:.2f} (pass {pass_no})")
             continue
         # A match with no mass error at all carries no mass evidence -- the 9
         # score-only bromides of v13 came through here. Never commit.
         if w["ppm_error"] is None or pd.isna(w["ppm_error"]):
             rejected["nan_ppm"] += 1
+            BL.note_winner(w, f"no ppm (pass {pass_no})")
             continue
         # Calibrated mass gate: judge the ppm error against the instrument's
         # real accuracy, not a fixed window. Pattern evidence (a Mascope-
@@ -709,6 +781,8 @@ def commit_winners(
             pattern = (w["n_iso"] or 0) >= 1 or series_like
             if z > cfg.cal_z_pattern or (z > cfg.cal_z_accept and not pattern):
                 rejected["mass_gate"] += 1
+                BL.note_winner(w, f"mass-gate z={z:.1f}>{cfg.cal_z_pattern if pattern else cfg.cal_z_accept:.1f}"
+                                  + ("" if pattern else " without pattern") + f" (pass {pass_no})")
                 continue
         # Minor-channel corroboration gate: a CO3-/O2-/M-. winner must be Good+
         # on raw score, or come from series evidence, or have its neutral
@@ -736,6 +810,7 @@ def commit_winners(
             ]
             if len(others) == 0:
                 rejected["minor_channel"] += 1
+                BL.note_winner(w, f"minor channel uncorroborated (pass {pass_no})")
                 continue
         # Reagent-halogen decomposition policy: covalent X(Br)[M-H]- and
         # Y.Br- / Y.HBr.Br- produce the IDENTICAL ion, so no spectral evidence
@@ -768,7 +843,23 @@ def commit_winners(
             mz=w.get("sample_peak_mz"),
         )
         if conf == "Reject":
+            BL.note_winner(w, f"confidence Reject {w['raw_score']:.2f}<{cfg.tau_suspect:.2f} (pass {pass_no})")
             continue
+        if line_gate and any(C.parse_formula(str(w["neutral"])).get(el, 0)
+                             for el in SAT.COMMIT_LINE_ELEMENTS):
+            gate = gate or SAT.LineGate(ledger, cfg)
+            lv = gate.row_verdict(ledger, pid, str(w["neutral"]), w.get("ion_formula"))
+            if lv["verdict"] == SAT.LG_REFUSED:
+                n_own_line += 1
+                SAT.record_refusal(ledger, pid, reading=f"{w['neutral']} {w['adduct']}",
+                                   route=f"pass {pass_no} {method}", why=lv["why"],
+                                   ion=w.get("ion_formula"), score=w.get("raw_score"),
+                                   ppm=w.get("ppm_error"))
+                continue
+            if lv["verdict"] == SAT.LG_UNTESTABLE and line_gate == "strict" \
+                    and not conf.startswith(("Low", "Suspect")):
+                conf = "Low" + conf[len(conf.split(" ")[0]):]
+                n_line_capped += 1
         commentary = _commentary(w, pass_no, method)
         try:
             L.commit_assignment(
@@ -852,13 +943,21 @@ def commit_winners(
                 continue
     if locked_ids:
         L.lock_peaks(ledger, locked_ids)
-    return {
+    # the contract's counts, only where it acted (a summary it never touched reads as before)
+    if n_own_line:
+        rejected["own_line"] = n_own_line
+    if n_line_capped:
+        rejected["own_line_untestable_low"] = n_line_capped
+    out = {
         "committed": len(committed),
         "locked": len(locked_ids),
         "iso_attached": n_iso_attached,
         "iso_displaced": n_displaced,
         "rejected": rejected,
     }
+    if n_not_own:
+        out["iso_not_own"] = n_not_own
+    return out
 
 
 _RI_CACHE: set | None = None
@@ -1000,5 +1099,8 @@ def _commentary(w, pass_no, method) -> str:
             )
     note = w.get("_relabel_note") if hasattr(w, "get") else None
     if note:
+        base += note
+    note = w.get("_c13_note") if hasattr(w, "get") else None
+    if isinstance(note, str) and note:
         base += note
     return base

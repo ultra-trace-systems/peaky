@@ -171,3 +171,70 @@ def sigma_at(sigma_ppm: float, mz: float, abs_floor_mda: float = ABS_FLOOR_MDA) 
     ppm at m/z 61 against a 0.25 ppm trend sigma) errs toward admitting such an
     ion rather than rejecting it on a centre the backbone never measured."""
     return max(float(sigma_ppm), float(abs_floor_mda) * 1000.0 / float(mz))
+
+
+# ---------------------------------------------------------------------------
+# the batch axis model's EDGE CARRY: the scoring centre just outside its scope
+# ---------------------------------------------------------------------------
+def edge_carry_at(rec, mz) -> np.ndarray:
+    """The ppm the scoring centre of a line at `mz` moves by under the batch axis
+    model's edge carry `rec` (batch.axislock.AxisModel.edge_carry_record;
+    batch_summary['mass_axis']['edge_carry']).
+
+    The lock model corrects peak m/z only inside its scope; a peak outside it keeps
+    the measured m/z while the file's centres are fitted on the corrected ones. A
+    sub-ppm model (assign_batch._lock_model grants the record) therefore carries its
+    correction at its first lock to every line up to rec['reach_da'] below it, and its
+    correction at its last lock to every line up to that far above it: that line's
+    centre is the file's centre plus the edge's value. 0 in the scope, in the model's
+    gaps and holes (a step between segments is unseen), beyond the reach, at a NaN or
+    None m/z and without a record.
+
+    `mz` is on the SERVED axis (the peak tables and ledgers a run reads: corrected in
+    the scope, as measured outside it). A line counts as outside only where no
+    in-scope peak's corrected m/z can land -- the model's own inverse
+    (AxisModel.invert) reads it the same way. Same shape as `mz` (0-d for a scalar)."""
+    if mz is None:
+        return np.zeros(())
+    try:
+        m = np.asarray(mz, dtype=float)
+    except (TypeError, ValueError):            # None / pd.NA entries: not an m/z
+        m = np.array([_as_float(v) for v in np.ravel(np.asarray(mz, dtype=object))],
+                     dtype=float).reshape(np.shape(mz))
+    out = np.zeros(m.shape)
+    if not rec:
+        return out
+    reach = float(rec["reach_da"])
+    s = float(rec.get("slack_ppm") or 0.0) * 1e-6
+    below, above = rec.get("below"), rec.get("above")
+    with np.errstate(invalid="ignore"):
+        if below:
+            edge, v = float(below["mz"]), float(below["ppm"])
+            # the served image of the scope's low end: an in-scope peak's corrected m/z
+            # never sits under it
+            out = np.where((m < edge * (1 - s) * (1 - v * 1e-6)) & (m >= edge - reach), v, out)
+        if above:
+            edge, v = float(above["mz"]), float(above["ppm"])
+            out = np.where((m > edge * (1 + s) * (1 - v * 1e-6)) & (m <= edge + reach), v, out)
+    return out
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def carried_centre(rec, centre, mz):
+    """`centre` (a calibrated ppm centre: a constant or the trend's value at `mz`) at the
+    line `mz` under the edge carry `rec` (`edge_carry_at`): the centre plus the carry.
+    `centre` itself -- the same object -- without a record, a centre or an m/z, or where
+    the carry is 0 everywhere asked, so a run with no carry computes exactly as before.
+    A scalar `mz` gives a float, an array one an array."""
+    if rec is None or centre is None or mz is None:
+        return centre
+    c = edge_carry_at(rec, mz)
+    if not np.any(c):
+        return centre
+    return centre + (float(c) if c.ndim == 0 else c)

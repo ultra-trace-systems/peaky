@@ -22,9 +22,11 @@ CLASS wins -- each ion takes the best per-file vote class of its readings
 (neutral backed > formula confirmed > unconfirmed; `evidence.vote_classes`,
 private to the vote and never a user-facing level) -- and among ions of one class the ion carried by the
 most files (tier and ion_score break ties); among that ion's labels -- the same
-ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one Assigned in the
-most files wins, because on such a pair Assigned means a discriminating channel
-was present and Candidate means the file had nothing to decide with. The losing
+ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one the most files
+could fix wins: it ranks by the vote's private tier (VOTE_TIER), which reads a
+file's Assigned reading as Candidate where the file left its reagent-N split open
+(the tier itself answers "is the ion right?", and a reagent-N pair is one ion).
+The merged tier is the best per-file tier of the winning ion. The losing
 readings stay on the merged row (`alternatives`, `n_files_ion`, `n_files_winner`,
 `ion_agree`) as well as in jitter.csv (with each file's own vote class).
 The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
@@ -62,9 +64,17 @@ from peaky.chem import profiles as P
 from peaky.batch import iso_checks as _IC
 from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
+from peaky.batch import sideband as _SB
 from peaky.batch import sampling as SS
 
-__version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
+__version__ = "0.12.1"  # + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
+                        #   tables/sideband_holds.csv, merge_gates["sideband"])
+                        # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
+                        # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
+                        # the monotone known-species cap (own 13C counts; an exact-mass-only pool of a
+                        # corroboration-demanding species is capped)
+                        # 0.11.1: + tables/unexplained_blocked.csv (why the unexplained lines are unexplained, blocked.py)
+                        # 0.11.0: the merged-ledger isotopologue gate and the element-signature
                         # removal (one curated exempt set, reconciled: 'parent removed';
                         # the per-file ledgers record both decisions -- the gate's lines,
                         # a removed reading released --, the parent's merged row lists
@@ -107,8 +117,10 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "resolvability", "sep_hwhm",   # the winner file's peak separability (assignment/resolvability.py), when present
             "ts_disposition", "ts_cv_norm",  # the winner file's time-series label (batch/timeseries.py): flatness is a
                                              # label, never a tier, so the merged row must carry it, when present
-            "vote_class"]   # the reading's vote class (0 / 1 / 2, evidence.vote_classes; computed in the parent,
+            "vote_class",   # the reading's vote class (0 / 1 / 2, evidence.vote_classes; computed in the parent,
                             # never written to a ledger): `_vote` ranks ions by it before the count, when present
+            "tier_calibration"]   # where the winner file's tier calibration came from (per_file / pooled /
+                                  # none: tiers.TIER_CALIBRATION, assignment/calpool.py), when present
 
 # THE VOTE'S EVIDENCE CLASS of one per-file reading (the key after the ion-only
 # rule and before the file count in `_vote`): 2 = neutral backed (the formula
@@ -129,6 +141,15 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
 # silicon formula.
 VOTE_CLASS = "vote_class"
 _OWN_VOTE_CLASS = "__own_vote_class"   # a ledger's vote class carried through a merge (trace-first), never written
+# THE TIER THE VOTE RANKS BY (`_m0`, from the file's own tier and tier_reason; never
+# written to a ledger or the merged row): the reading's tier, but Candidate where
+# the file left the reading's reagent-N split open (tiers.split_open: the nitrogen
+# count not fixed). The tier answers "is the ion right?" and a reagent-N pair is one
+# ion, so such a reading is Assigned on its ion's evidence -- while the vote's label
+# stage asks which LABEL of the ion a file could fix, and the best-row pick keeps
+# the row it took before. The merged `tier` is the best per-file TIER of the winning
+# ion (any of its labels). Frames without the column vote on the tier exactly as before.
+VOTE_TIER = "vote_tier"
 
 
 def _evidence_class(level, axes) -> int:
@@ -249,13 +270,16 @@ def _vote(g: pd.DataFrame):
 
     2. WHICH LABEL of that ion -- the same ion read as C13H14O4 [M+NH4]+ or as
        C13H17NO4 [M+H]+ (the reagent-N isobar) -- is decided by corroboration,
-       not by count: the tier engine marks such a reading Assigned only when a
-       discriminating channel was present in that file (an N-free sibling, the
-       joint NH4+urea pair, a series anchor) and Candidate when it had nothing
-       to decide with, so counting Candidate files would be counting silence.
-       The label Assigned in the most files wins; file count and score break
-       ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
-       label nobody had corroborated against a minority label some file had."""
+       not by count. The tier no longer says it (it reads the ion, and the pair
+       is one ion), so the stage ranks by the vote's tier (`_r`, VOTE_TIER):
+       Assigned only where the file's reading is Assigned AND its reagent-N
+       split was not left open (an N-free sibling, the joint NH4+urea pair or a
+       series anchor fixed the nitrogen count, or the file saw no same-ion
+       alias), Candidate where the file had nothing to decide with -- counting
+       those files would be counting silence. The label Assigned in the most
+       files wins; file count and score break ties. On the 15-file uronium run
+       16 of the 43 same-ion splits had a majority label nobody had corroborated
+       against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
     # the vote class of every per-file reading (0 everywhere when the frames
     # carry none: a pure `align()` caller without the parent's class)
@@ -280,12 +304,16 @@ def _vote(g: pd.DataFrame):
     # must not outvote the files that read the organonitrate.
     io = (g["ion_only_of"].notna() if "ion_only_of" in g.columns
           else pd.Series(False, index=g.index))
+    # the TIER (not the vote's tier, `_r`): what the losers' description prints
+    tiered = (g["_rt"] if "_rt" in g.columns else g["_r"]) >= TIER_RANK[TIER_ASSIGNED]
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
+                  _tsrc=g["src"].where(tiered),
                   _reg=(~io).astype(int),                # 1 = a regular reading in this file
                   _cls=cls)
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
              .agg(n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
+                  n_tier_assigned=("_tsrc", "nunique"),
                   best_ion=("ion_score", "max"), regular=("_reg", "max"),
                   best_cls=("_cls", "max"))
              .reset_index())
@@ -307,7 +335,7 @@ def _vote(g: pd.DataFrame):
 def _describe(r) -> str:
     """One losing reading for the merged row: 'C15H25N [M+H]+ x1 Candidate 0.97'
     (the best tier and score any file gave it)."""
-    tier = TIER_ASSIGNED if int(r["n_assigned"]) > 0 else "Candidate"
+    tier = TIER_ASSIGNED if int(r.get("n_tier_assigned", r["n_assigned"])) > 0 else "Candidate"
     score = "" if pd.isna(r["best_ion"]) else f" {float(r['best_ion']):.2f}"
     return f"{r['_nf']} {r['_ad']} x{int(r['n_files'])} {tier}{score}"
 
@@ -359,7 +387,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     for src, df in per_file.items():
         if df is None or not len(df):
             continue
-        d = df[[c for c in _M0_COLS if c in df.columns]].dropna(subset=["mz"]).copy()
+        d = df[[c for c in (*_M0_COLS, VOTE_TIER) if c in df.columns]].dropna(subset=["mz"]).copy()
         d["src"] = src
         off = float(offsets.get(src, 0.0) or 0.0)
         d["_mz_adj"] = d["mz"] * (1.0 - off / 1e6)   # offset-corrected for alignment
@@ -379,7 +407,13 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
 
     merged_rows, jitter_rows = [], []
     for cid, g in allm.groupby("cluster"):
-        g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)),
+        # `_r` = the vote's tier (VOTE_TIER where a file carries it: the label
+        # stage, the ion count's tie-break and the best-row pick read it), `_rt`
+        # = the tier itself (the merged tier and the losers' description)
+        _rt = g["tier"].map(lambda t: TIER_RANK.get(str(t), 0))
+        _vt = (g[VOTE_TIER].where(g[VOTE_TIER].notna(), g["tier"]) if VOTE_TIER in g.columns
+               else g["tier"])
+        g = g.assign(_r=_vt.map(lambda t: TIER_RANK.get(str(t), 0)), _rt=_rt,
                      _nf=g["neutral_formula"].map(_s), _ad=g["adduct"].map(_s))
         g["_ion"] = [_ion_key(a, b) for a, b in zip(g["_nf"], g["_ad"])]
         ions, lab = _vote(g)
@@ -419,10 +453,25 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         same = lab[lab["_ion"] == win_ion["_ion"]]
         if len(same) > 1 and int(same["n_files"].max()) > int(win["n_files"]):
             big = same.iloc[1:].sort_values("n_files", ascending=False, kind="mergesort").iloc[0]
+            # where a file of this ion left its reagent-N split open, the label stage
+            # counted the files Assigned with the split not left open (VOTE_TIER)
+            gi = g[g["_ion"] == win_ion["_ion"]]
+            how = ("Assigned, nitrogen count not left open, in"
+                   if bool((gi["_r"] != gi["_rt"]).any()) else "Assigned in")
             notes.append(f"same ion {win_ion['_ion']} read two ways: kept {win['_nf']} "
-                         f"{win['_ad']} (Assigned in {int(win['n_assigned'])} of its "
+                         f"{win['_ad']} ({how} {int(win['n_assigned'])} of its "
                          f"{int(win['n_files'])} files) over the {int(big['n_files'])}-file "
-                         f"{big['_nf']} {big['_ad']} (Assigned in {int(big['n_assigned'])})")
+                         f"{big['_nf']} {big['_ad']} ({how} {int(big['n_assigned'])})")
+        # the best per-file TIER of the winning ION, whichever label a file read
+        # it with (the tier answers "is the ion right?"): the best row's own
+        # unless the vote's tier set a file's reagent-N reading back, or a file
+        # Assigned the ion under the label the vote did not keep -- then that
+        # file's row is the one the tier (and its calibration footing) comes from
+        gi_win = g[g["_ion"] == win_ion["_ion"]]
+        tier = (TIER_ASSIGNED if int(gi_win["_rt"].max()) >= TIER_RANK[TIER_ASSIGNED] else best["tier"])
+        tier_row = best if str(best["tier"]) == str(tier) else (
+            gi_win[gi_win["_rt"] == gi_win["_rt"].max()]
+            .sort_values(["ion_score", "src"], ascending=[False, True], kind="mergesort").iloc[0])
         mz_raw = g["mz"].to_numpy(); mz_adj = g["_mz_adj"].to_numpy()
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
@@ -430,7 +479,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         srcs = sorted(set(g["src"]))
         rec = dict(
             mz=float(g["mz"].mean()), neutral_formula=best["neutral_formula"],
-            adduct=best.get("adduct"), tier=best["tier"],
+            adduct=best.get("adduct"),
+            tier=tier,
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             ion_only_of=best.get("ion_only_of", pd.NA),
@@ -447,6 +497,10 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             # alone was found by the residual stage
             rec["stage"] = (STAGE_COVER if any(stages.get(x, STAGE_COVER) == STAGE_COVER
                                                for x in srcs) else STAGE_RESIDUAL)
+        if "tier_calibration" in g.columns:
+            # the tier's footing: where the calibration of the file whose row
+            # donated it came from (its own core, the batch's pooled core, none)
+            rec["tier_calibration"] = tier_row.get("tier_calibration", pd.NA)
         rec.update(ion_agree=(len(ions) <= 1),
                    formula_agree=(len(forms) <= 1),
                    mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
@@ -598,11 +652,17 @@ def _recount_roles(st: dict, ledger: pd.DataFrame, gate: dict | None = None, *,
 
 
 def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
-    """Extract the M0 (assigned-compound) rows in the _M0_COLS schema."""
+    """Extract the M0 (assigned-compound) rows in the _M0_COLS schema, plus the
+    vote's private `VOTE_TIER` where the ledger carries tier and tier_reason."""
     role = ledger["role"] if "role" in ledger.columns else None
     m = ledger[role == "M0"] if role is not None else ledger
     cols = [c for c in _M0_COLS if c in m.columns]
-    return m[cols].copy()
+    out = m[cols].copy()
+    if {"tier", "tier_reason"} <= set(m.columns):
+        from peaky.assignment import tiers as _TI
+        out[VOTE_TIER] = [TIER_CANDIDATE if _TI.split_open(why) and _s(t) == TIER_ASSIGNED else t
+                          for t, why in zip(m["tier"], m["tier_reason"])]
+    return out
 
 
 # provenance prefixes whose neutral identity is established independently of the
@@ -697,6 +757,25 @@ def _own_satellites(neutral: str, isotopologues, kid_labels=()) -> list[str]:
     return [lab for lab in seen.values() if _counts(lab)]
 
 
+#: the label of a row's own 13C line (one line; a '13C+34S' line is the 34S line's)
+_C13_LABEL = "13C"
+
+
+def _own_c13(isotopologues, kid_labels=()) -> int:
+    """1 when the row records its own 13C line -- an `isotopologues` entry or an
+    iso_child labelled exactly '13C' -- else 0. It counts toward the known
+    species' two lines (`lock_known_species`): the carbon count is the
+    composition's own, a line no mass fit forges."""
+    try:
+        entries = (json.loads(isotopologues) if isinstance(isotopologues, str)
+                   else (isotopologues or []))
+    except (TypeError, ValueError):
+        entries = []
+    labs = [str(d.get("label", "")) for d in entries if isinstance(d, dict)]
+    labs += [str(k[1] if isinstance(k, tuple) else k) for k in kid_labels]
+    return int(any(lab.strip() == _C13_LABEL for lab in labs))
+
+
 def _known_route(commentary: str, neutral: str, isotopologues, *, n_channels: int = 0,
                  kid_labels=()) -> str | None:
     """The evidence a `known:` commit rests on, read off its own row: a second
@@ -733,8 +812,9 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
     Record: src, neutral, adduct, mz, family, label, verdict, why, summary (the
     reason without this file's numbers -- what the merged row counts files by),
     n_channels (the neutral's ion channels in that ledger), n_satellites (its
-    recorded own-element diagnostic lines), ion_score, tier, admitted_by,
-    occurrence (the last three None on a lead)."""
+    recorded own-element diagnostic lines), n_c13 (1 when its own 13C line is
+    recorded, `_own_c13`), ion_score, tier, admitted_by, occurrence (the last
+    three None on a lead)."""
     out: list[dict] = []
     if ledger is None or not len(ledger) \
             or not {"neutral_formula", "adduct", "mz"} <= set(ledger.columns):
@@ -780,6 +860,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 label=lab.group(1).strip() if lab else "",
                 verdict="confirmed", why=why, summary=why,
                 n_channels=n_ch, n_satellites=len(_own_satellites(nf, iso_cell, kid_labels)),
+                n_c13=_own_c13(iso_cell, kid_labels),
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
@@ -798,7 +879,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 family=_s(d.get("family")), label=_s(d.get("label")),
                 verdict=_s(d.get("verdict")) or "deferred", why=_s(d.get("why")),
                 summary=_s(d.get("summary")) or _s(d.get("why")),
-                n_channels=int(d.get("channels") or 0), n_satellites=0,
+                n_channels=int(d.get("channels") or 0), n_satellites=0, n_c13=0,
                 ion_score=_num(d.get("ion_score")), tier=None, admitted_by=None,
                 occurrence=None))
     return out
@@ -869,13 +950,26 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         a PFCA `[M-H]-` on-cal in two files of a ~4k TOF cannot displace an
         11-file, 81Br-corroborated CHOS `[M+Br]-` reading 6 ppm away; the row
         notes it, the vote stands;
-      * a species of a family that demands corroboration is Assigned only when
-        some confirming file holds TWO independent lines of evidence beyond
-        the exact mass -- a second ion channel, or two own-element diagnostic
-        satellites (`n_channels >= 2 or n_satellites >= 2`); one channel and one
-        satellite line in every confirming file is capped at Candidate, locked
-        or kept (the D7 cyclosiloxane: two files, one channel, the 29Si line
-        alone, the 30Si line never testable at that intensity -- J12).
+      * TWO independent lines of evidence beyond the exact mass, in some
+        confirming file, are a second ion channel or two of the neutral's own
+        lines -- its diagnostic satellites and its own 13C line (`n_channels
+        >= 2 or n_satellites + n_c13 >= 2`). A species that LOCKS over the
+        vote's reading takes the confirmed files' best tier only with two
+        lines, whatever its family; with fewer it is locked at Candidate (an
+        exact-mass-only species never locks, above). Where the vote already
+        reads the species, the cap applies to a species whose pass-0 rule
+        demands corroboration (directors.known_demands_corroboration: the
+        organophosphates, the organo(thio)phosphates, the indoor organosulfur,
+        the cyclosiloxanes, the chlorinated paraffins, the silanediols -- their
+        Si M+1 gate --, H2SO4 and MSA): one line in every confirming file is
+        capped at Candidate (the D7 cyclosiloxane: two files, one channel, the
+        29Si line alone, the 30Si line never testable at that intensity --
+        J12), and so is exact mass alone in every one. The cap is MONOTONE: a
+        pool with more confirming lines never ranks below one with fewer (a
+        pure exact-mass H2SO4 pool had escaped it while one with a 34S line in
+        a file was capped). A species whose family's rule is exact mass (the
+        PFCAs, the nitroaromatics, the C0 acids, reactive iodine) is never
+        capped where the vote reads it, at any line count.
 
     The merged row a pooled reading belongs to is found by MEMBERSHIP -- the
     row whose own reading or whose `alternatives` lists it (the vote names
@@ -892,6 +986,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
     from peaky.assignment.cleanup import _note
     from peaky.assignment.mass_only import KNOWN_DECIDED
+    from peaky.assignment.passes.directors import known_demands_corroboration
     counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
                              "lead_only", "mass_only_outvoted", "no_cluster")}
     if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
@@ -934,10 +1029,28 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         same = _s(merged.at[i, "neutral_formula"]) == nf and _s(merged.at[i, "adduct"]) == ad
         n_c = len({r["src"] for r in conf})
         mass_only = bool(conf) and all((r.get("summary") or r.get("why")) == MASS_ONLY_ROUTE for r in conf)
-        two_lines = any(int(r.get("n_channels") or 0) >= 2 or int(r.get("n_satellites") or 0) >= 2
-                        for r in conf)
-        weak_note = ("; capped Candidate (one ion channel and one satellite line in every "
-                     "confirming file: two independent lines are needed for Assigned)")
+        # the cap's domain is the species' own rule (monotone: the lines it counts
+        # are a second channel, the neutral's diagnostic satellites and its 13C)
+        demands = known_demands_corroboration(
+            next((str(r.get("family")) for r in recs if r.get("family")), ""), nf)
+        lines = max((2 if int(r.get("n_channels") or 0) >= 2
+                     else int(r.get("n_satellites") or 0) + int(r.get("n_c13") or 0) for r in conf), default=0)
+        two_lines = lines >= 2
+        # the cap's note names what it counted: a diagnostic satellite, the
+        # row's own 13C line where no confirming file recorded a satellite, or
+        # no line at all (exact mass, or a corroboration the rows did not record)
+        if lines >= 1:
+            one_line = ("one satellite line" if any(int(r.get("n_satellites") or 0) for r in conf)
+                        else "its own 13C line alone")
+            weak_note = (f"; capped Candidate (one ion channel and {one_line} in every "
+                         "confirming file: two independent lines are needed for Assigned)")
+        else:
+            weak_note = ("; capped Candidate ("
+                         + ("exact mass alone in every confirming file" if mass_only else
+                            "no second ion channel or own isotope line recorded in any confirming file")
+                         + (": the species' rule demands corroboration, and two independent lines are "
+                            "needed for Assigned)" if demands else
+                            ": two independent lines are needed to override the vote)"))
         # every confirming file holds the reading at Candidate (its own tier rules:
         # the lock score floor, the counting-detector floor) -- say so on the row
         cand_note = ("; Candidate: no confirming file holds it at Assigned (see the "
@@ -953,7 +1066,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
             if same:
-                capped = (not mass_only and not two_lines and "tier" in merged.columns
+                capped = (demands and not two_lines and "tier" in merged.columns
                           and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
                 if capped:
                     merged.at[i, "tier"] = TIER_CANDIDATE
@@ -983,6 +1096,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                        else max(n_in, old_n))
             merged.at[i, "neutral_formula"] = nf
             merged.at[i, "adduct"] = ad
+            # overriding the vote takes two lines whatever the species' family: a
+            # species outside the cap's domain (exact mass is its rule) that
+            # displaces the majority reading on one line is the KNOWN-LOCK-DECOY
             merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if two_lines else TIER_CANDIDATE
             if "ion_score" in merged.columns:
                 scores = [r["ion_score"] for r in conf if r.get("ion_score") is not None]
@@ -1089,11 +1205,13 @@ def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None, axis
           "base_kw": base_kw, "ts_path": ts_path, "ts": None}
 
 
-def _assign_one(sid: str) -> dict:
+def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
     """Top-level (spawn-picklable) worker: assign ONE sample and return the
     picklable pieces the parent reduces. The parent writes the per-file CSV and
     computes the offset -- in sample order -- so all disk I/O and the align() input
-    order stay single-writer and deterministic."""
+    order stay single-writer and deterministic. `keep_pool_inputs`: the run keeps
+    what a batch-pooled tier calibration re-applies (assign.run; off once the
+    batch's pool is known to have no calibration)."""
     import copy
     from peaky.assignment import assign as A
     kw = dict(_W["base_kw"])
@@ -1105,13 +1223,29 @@ def _assign_one(sid: str) -> dict:
         kw["ts_peaks"] = _W["ts"]
     lines: list = []
     res = A.run(sid, context=_W["context"], reflists_active=_W["reflists_active"],
-                log=lines.append, **kw)
+                log=lines.append, keep_pool_inputs=keep_pool_inputs, **kw)
     return {"sid": sid, "ledger": res["ledger"],
             "plausibility_audit": res.get("plausibility_audit") or [],
             "stats": dict(res.get("stats", {})), "log": lines,
             # what the worker scored at: a mass trend its calibration set lives
             # in the worker's process only (C42), so the parent cannot re-read it
-            "pattern_scoring": res.get("pattern_scoring")}
+            "pattern_scoring": res.get("pattern_scoring"),
+            # an uncalibrated file's inputs to the batch-pooled tier calibration
+            # (calpool.apply_pool); None on a calibrated file
+            "pool_inputs": res.get("pool_inputs")}
+
+
+def _tier_cal_source(per_stats: list) -> str | None:
+    """The batch's tier calibration in one word (batch_summary
+    `tier_calibration.source`): the weakest of its files' `tier_calibration` --
+    'none' when any file stayed uncalibrated, else 'pooled' when any file was lent
+    the batch's pooled core (assignment/calpool.py), else 'per_file'; None when no
+    file records one (a run made before the key existed)."""
+    seen = {x.get("tier_calibration") for x in per_stats} - {None}
+    for word in ("none", "pooled", "per_file"):
+        if word in seen:
+            return word
+    return None
 
 
 def _physical_cores() -> int:
@@ -1191,6 +1325,39 @@ LOCK_MAX_CORRECTION_PPM = 7.0
 #: half their raw error: a raw median alone read a calibrated body with a stepped top as
 #: 'unpredictive' (raw 0.02 ppm) and left 2-3.5 ppm steps uncorrected
 LOCK_CV_OK_PPM = 0.3
+#: the lock model is applied once its largest correction (or the locks' raw median) reaches
+#: this (ppm): about 0.7x the Orbitrap score width (0.58 ppm), where a pattern-perfect M0
+#: already drops below Good. The reference ions' 1 ppm bar (massqc.ORBI_OFFSET_FLAT_PPM)
+#: left +0.5..+0.8 ppm plateaus uncorrected, and on a labelled-nitrate batch the whole
+#: correction hung on one lock reading 1.08 ppm against it
+LOCK_APPLY_PPM = 0.4
+#: a correction under massqc.ORBI_OFFSET_FLAT_PPM is applied only when the model predicts
+#: held-out locks to within this share of it: the predictive bar above would let a model
+#: with a 0.3 ppm held-out error correct a 0.4 ppm axis, i.e. add about as much as it removes
+LOCK_SMALL_CV_SHARE = 0.5
+#: a model applied through that sub-ppm branch is refitted, after its verdict, without the
+#: locks that sit more than this (ppm) off a Theil-Sen line through their axislock.LOCAL_K
+#: nearest locks, dropped one at a time, the worst first (axislock.AxisModel.refit; spline
+#: segments only, every domain as built). A few co-located locks 0.6-0.9 ppm off their
+#: neighbours (a lock on a line blended with a brighter ion's 13C line, its labelled alias)
+#: bumped a labelled-nitrate batch's spline by +0.1..+0.15 ppm over m/z 261-269 -- +0.23 ppm
+#: of correction at a true cluster line that then fell out of Good in every file. 0.4 starves
+#: the GCV fit there (its smoothing collapsed 297 -> 47); 0.75 leaves the bump
+LOCK_REFIT_PPM = 0.5
+#: a model applied through that sub-ppm branch carries the axis at its first and its last
+#: lock (the model there, put back on its end locks: axislock.EDGE_LOCK_DA) into the scoring
+#: centre of the lines up to this far (Da) beyond them
+#: (axislock.AxisModel.edge_carry_record; masscal.edge_carry_at). Peaks outside the
+#: scope keep their measured m/z while a file's centres are fitted on the corrected
+#: ones, so without it a line just past the last lock was judged against a centre read
+#: off the other axis (an EasyIC batch: the C9-C12 hydrocarbons above it, 0.7 ppm off,
+#: out of Assigned). Measured against an independent axis: within 30 Da of the edge its
+#: value is the axis to ~0.1 ppm on the flat EasyIC axes; further out a curved
+#: labelled-nitrate axis bends away from it (0.2 -> 0.4 ppm), so past the reach, and in
+#: the gaps between segments, nothing is carried. A model at 1 ppm or more -- one the
+#: reference bar applied before the sub-ppm branch existed -- carries nothing: those
+#: batches run as before
+EDGE_CARRY_DA = 30.0
 
 
 def _roster_class(table) -> str | None:
@@ -1447,15 +1614,62 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
     if cv is None or raw is None:
         info["verdict"] = "locks_unvalidated"
         return None, True
-    if peak is not None and peak < MQ.ORBI_OFFSET_FLAT_PPM and raw < MQ.ORBI_OFFSET_FLAT_PPM:
+    if peak is not None and peak < LOCK_APPLY_PPM and raw < LOCK_APPLY_PPM:
         info["verdict"] = "axis_ok"
-        log(f"[mass-axis] axis_ok: no lock reads {MQ.ORBI_OFFSET_FLAT_PPM:g} ppm off; nothing to correct")
+        log(f"[mass-axis] axis_ok: no lock reads {LOCK_APPLY_PPM:g} ppm off; nothing to correct")
         return None, True
     if cv > max(LOCK_CV_OK_PPM, 0.5 * raw):
         info["verdict"] = "locks_unpredictive"
         log("[mass-axis] the lock model does not predict held-out locks: not applied")
         return None, True
+    small = peak is not None and peak < MQ.ORBI_OFFSET_FLAT_PPM and raw < MQ.ORBI_OFFSET_FLAT_PPM
+    if small and cv > LOCK_SMALL_CV_SHARE * peak:
+        # a sub-ppm correction its own held-out locks do not resolve: the axis is flat
+        # within what the model can tell
+        info["verdict"] = "axis_ok"
+        log(f"[mass-axis] axis_ok: the largest correction ({peak:g} ppm) is under "
+            f"{MQ.ORBI_OFFSET_FLAT_PPM:g} ppm and the model predicts held-out locks only to "
+            f"{cv:g} ppm (more than {LOCK_SMALL_CV_SHARE:g}x it); nothing to correct")
+        return None, True
     info["verdict"] = "axis_steps" if li.get("steps") else "axis_trend"
+    if small:
+        # the sub-ppm branch: the verdict above is the as-built model's; the model applied is
+        # its splines refitted without the locks that disagree with their neighbours
+        # (LOCK_REFIT_PPM; a model that drops nothing is the as-built model)
+        built_peak = round(model.max_abs_ppm(), 3)
+        model, gone = model.refit(table, off_ppm=LOCK_REFIT_PPM, k=AL.LOCAL_K)
+        kept = table.drop(index=gone) if gone else table
+        dropped = [{"mz": float(table.at[i, "mz"]), "ion": str(table.at[i, "ion"]) if "ion" in table.columns else "",
+                    "ppm": float(table.at[i, "ppm"])} for i in gone]
+        if dropped:
+            off = {round(d["mz"], 5): d for d in dropped}
+            for seg in model.segments:
+                if seg.get("refit_dropped"):
+                    for d in off.values():
+                        if seg["lo"] - AL.REFIT_SEL_DA <= d["mz"] <= seg["hi"] + AL.REFIT_SEL_DA:
+                            d["off_ppm"] = round(abs(d["ppm"] - float(model._eval(seg, d["mz"]))), 3)
+        refit = {"off_ppm": LOCK_REFIT_PPM, "k": int(AL.LOCAL_K), "n_dropped": len(dropped), "dropped": dropped,
+                 "max_abs_ppm_built": built_peak, "max_abs_ppm": round(model.max_abs_ppm(), 3)}
+        model.stats["refit"] = refit
+        info["refit"] = refit
+        log(f"[mass-axis] refit (sub-ppm): {len(dropped)} lock(s) more than {LOCK_REFIT_PPM:g} ppm off their "
+            f"{AL.LOCAL_K} nearest dropped, worst first"
+            + (": " + ", ".join(f"m/z {d['mz']:.4f} {d['ion']} {d['ppm']:+.2f}" for d in dropped[:12])
+               + (" ..." if len(dropped) > 12 else "")
+               + f"; the spline refitted (largest correction {built_peak:g} -> {refit['max_abs_ppm']:g} ppm)"
+               if dropped else "; the model stands as built"))
+        # its correction at the first and the last lock is carried into the scoring centre
+        # of the lines up to EDGE_CARRY_DA beyond them (no m/z moves); recorded on the model,
+        # so every worker and a re-read run judge alike (the value at each end: the model
+        # there, put back on its kept end locks; axislock.EDGE_LOCK_DA)
+        rec = model.edge_carry_record(EDGE_CARRY_DA, locks=kept)
+        model.stats["edge_carry"] = rec
+        info.update(wave=model.as_dict(), edge_carry=dict(rec))
+        log(f"[mass-axis] edge carry: a line outside the model's scope within {EDGE_CARRY_DA:g} Da "
+            f"of its first / last lock is scored at the axis there, read off its end locks (m/z "
+            + "; m/z ".join(f"{e['mz']:.1f}: {e['ppm']:+.2f} ppm (the model {e['model_ppm']:+.2f}, "
+                            f"{e['n_locks']} locks)" for e in (rec["below"], rec["above"]))
+            + "); no m/z is moved, gaps carry nothing")
     return model, True
 
 
@@ -1788,7 +2002,11 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     On an Orbitrap, 'auto' and 'locks' model the axis from the batch's own peaks
     (batch.axislock: calibration-free locks, a smoothing spline, the steps the
     instrument's axis takes); it is applied when it predicts held-out locks to
-    within half the raw error and some lock reads >= 1 ppm off. 'auto' falls back
+    within half the raw error and its largest correction (or the locks' raw
+    median) reaches LOCK_APPLY_PPM (0.4 ppm) -- a correction under 1 ppm only when
+    held-out locks sit within half of it (LOCK_SMALL_CV_SHARE), and such a model
+    carries the axis at its first / last lock (read off its end locks) into the scoring centre of the
+    lines up to EDGE_CARRY_DA beyond them (`info['edge_carry']`; no m/z moves). 'auto' falls back
     to the reagent's reference ions (batch.massqc, the instrument's own rules)
     only when the locks could not build a model; 'reference' goes there directly,
     and a TOF always does (it is measured there, never corrected).
@@ -1953,6 +2171,26 @@ def _measure_axis(ts, reagent, klass, *, hold, mode, polarity, reagent_elements,
              "axis is left as is")
     ts = _apply_axis(ts, fit, info, where, log)
     return ts, info, table
+
+
+def scoring_centres(scorings: dict) -> dict:
+    """batch_summary['scoring_centres'] from the per-file scoring snapshots
+    (`pattern_scoring`): `by_mu_source` (files per centre source: `fitted` anchors,
+    the batch's `axis`, a `self`-centre, a `trend`, `inherited`, `assumed_zero`;
+    `unrecorded` for a file with no snapshot) and `self` (`{sample id: centre ppm}`
+    of the files scored at their self-centre). A self-centred file whose own
+    calibration then accepted a mass trend was scored at the trend: it counts as
+    `trend` and is not listed (its per-file `self_centre` keeps the measurement).
+    The merge does not read the self-centre: it aligns the files on their
+    pre-calibration offset (`per_file.offset_ppm`, io_mascope.estimate_offset)."""
+    by: dict = {}
+    own: dict = {}
+    for sid, snap in (scorings or {}).items():
+        src = (snap or {}).get("mu_source") or "unrecorded"
+        by[src] = by.get(src, 0) + 1
+        if src == "self":
+            own[sid] = (snap or {}).get("mu_ppm")
+    return {"by_mu_source": dict(sorted(by.items())), "self": own}
 
 
 def _reparsed(frame: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -2197,7 +2435,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     (PEAKY_LOCAL_SCORING=0), which scores the server's own peaks. A series that
     carries an earlier run's correction is restored first (`restore_axis`).
     batch_summary['mass_axis'] records the model and what moved (`offsets_ppm`
-    and the per-file scoring are then read on the corrected axis);
+    and the per-file scoring are then read on the corrected axis; a file with no
+    anchors the correction reached is scored at zero there, `mu_source` "axis",
+    and one it did not reach measures its own centre, "self":
+    batch_summary['scoring_centres'] counts the files per source);
     tables/mass_axis_locks.csv the locks, tables/mass_axis.csv the reference
     ions when probed. Trace-first keeps its own wave
     (batch.tracefirst) and 'off' reproduces a run without the step.
@@ -2569,6 +2810,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
     scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
+    # the batch-pooled tier calibration (assignment/calpool.py): decided ONCE, the
+    # first time a per-file stage returns a file its own core could not calibrate,
+    # from every per-file ledger assigned so far; then lent to every such file
+    pool_ledgers: dict = {}        # sid -> the per-file stages' ledgers, as their runs returned them
+    pool_cals: dict = {}           # sid -> (mu, sigma) of each file that calibrated alone
+    pool_state: dict = {"pool": None, "files": {}}   # the Pool; sid -> what apply_pool did
+
+    def _keep_pool_inputs() -> bool:
+        """Whether a per-file run keeps what the pooled calibration re-applies
+        (assign.run keep_pool_inputs: an uncalibrated file's tier-time ledger
+        copy): until the batch's pool is decided, and after only when it has a
+        calibration to lend."""
+        return pool_state["pool"] is None or pool_state["pool"].cal is not None
 
     def _vote_class(led, stats):
         """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
@@ -2647,6 +2901,82 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         per_stats.append(st)
         log(f"[assign_batch]   {sid}: offset={offsets[sid]}")
 
+    def _pool_tiers(runs: list) -> None:
+        """The batch-pooled tier calibration over one per-file stage's results
+        (`runs`: dicts of sid, ledger, plaus, stats, pool_inputs, in sample_ids
+        order), before they are folded: every file whose own core did not
+        calibrate the tier engine (stats `degeneracy_cal` null) is given the
+        batch's pooled calibration (calpool.apply_pool) when the pool has one --
+        its degeneracy, tiers, degeneracy-keyed flags and its own evidence level
+        re-applied, its stats saying so (`tier_calibration` 'pooled', the lent
+        `degeneracy_cal`, which the pooled levels then read as its window). The
+        width lent is the run sigma of the files that calibrated alone, when any
+        did (`Pool.run_window`). A calibrated file is untouched; with no
+        uncalibrated file the pool is never built. Every run's `pool_inputs`
+        (the tier-time ledger copy) is released here, before the fold."""
+        try:
+            _pool_tiers_apply(runs)
+        finally:
+            for r in runs:
+                r["pool_inputs"] = None
+
+    def _pool_tiers_apply(runs: list) -> None:
+        from peaky.assignment import calpool as _CP
+        from peaky.assignment import ledger as _L
+        from peaky.assignment import tiers as _TP
+        from peaky.chem import reagents as _RGP
+        for r in runs:
+            pool_ledgers[r["sid"]] = r["ledger"]
+            _own = (r["stats"] or {}).get("degeneracy_cal")
+            if _own is not None:
+                pool_cals[r["sid"]] = (float(_own["mu"]), float(_own["sigma"]))
+        need = [r for r in runs if "degeneracy_cal" in (r["stats"] or {}) and r["stats"]["degeneracy_cal"] is None]
+        if not need:
+            return
+        if pool_state["pool"] is None:
+            _key = _RGP.reagent_for_adducts(list(prof.adducts or []))
+            _masses = [m for (_l, m, _f) in _RGP.build_library(_key)] if _key else []
+            pool_state["pool"] = _CP.pool_calibration(
+                pool_ledgers, polarity="positive" if prof.polarity == "+" else "negative",
+                reagent_masses=_masses, abs_floor_mda=_TP._abs_floor(cfg), klass=cfg.instrument_class,
+                # the batch axis model's edge carry: a core row past its edge on the carried scale
+                carry=axis_info.get("edge_carry"))
+            if pool_cals:
+                # the files that calibrated alone measure one file's width directly
+                pool_state["pool"].run_window = (float(np.median([c[0] for c in pool_cals.values()])),
+                                                 float(np.median([c[1] for c in pool_cals.values()])),
+                                                 len(pool_cals))
+            log(f"[calpool] {'' if pool_state['pool'].cal is not None else 'WARNING: '}{len(need)} file(s) "
+                f"uncalibrated on their own core: {pool_state['pool'].describe()}")
+        elif pool_state["pool"].cal is None:
+            log(f"[calpool] WARNING: {len(need)} more file(s) uncalibrated on their own core; the batch's "
+                f"pool is not used: {pool_state['pool'].reason}")
+        pool = pool_state["pool"]
+        if pool.cal is None:
+            return
+        for r in need:
+            res_p = (_CP.apply_pool(r["ledger"], pool, r["pool_inputs"], audit=r["plaus"],
+                                    log=lambda m, _s=r["sid"]: log(m.replace("[calpool]  ", f"[calpool]   {_s}:", 1)))
+                     if r.get("pool_inputs") is not None else {})
+            if not res_p:
+                log(f"[calpool]   {r['sid']}: no pooled re-tier (its run kept no tier-time ledger)")
+                continue
+            st_ = r["stats"]
+            # the window the file was lent: the lent width about its own centre
+            st_["degeneracy_cal"] = {"mu": res_p["cal"]["mu"], "sigma": res_p["cal"]["sigma"]}
+            st_["tier_calibration"] = _TP.CAL_SOURCE_POOLED
+            st_["tier_pool"] = {"centre": res_p["cal"]["centre"], "width": res_p["cal"]["width"],
+                                "retiered": res_p["tiers"]["retiered"], "demoted": res_p["tiers"]["demoted"],
+                                "kept": res_p["tiers"]["kept"], "below": res_p["below"],
+                                "o_monster": res_p["o_monster"],
+                                "degenerate": res_p["degeneracy"]["degenerate"]}
+            st_["by_tier"] = _L.stats(r["ledger"]).get("by_tier", st_.get("by_tier"))
+            if st_.get("nox_skeleton_gate") is not None:
+                # the skeleton cap as the pooled tier stage left it (taken where the
+                # run takes it: before later stages rewrote rows)
+                st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
+            pool_state["files"][r["sid"]] = st_["tier_pool"]
+
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
         """Assign `ids` -- the TAIL of `sample_ids`, which already holds them, so
         the (i/N) progress lines count on through the run whichever stage is on --
@@ -2664,6 +2994,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             cfg.noise_edge_batch_cps = batch_noise_edge(client, ids)
             log(f"[assign_batch] batch detection edge (median of {len(ids)} files' own): "
                 f"{cfg.noise_edge_batch_cps if cfg.noise_edge_batch_cps is None else round(cfg.noise_edge_batch_cps, 4)} cps")
+        runs: list = []      # the stage's results, folded (_apply) after the pooled calibration
         if n_jobs <= 1:
             for i, sid in enumerate(ids, offset + 1):
                 log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
@@ -2674,10 +3005,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # smaller than cal_min_n -- so one shared object would gate file
                 # N+1's mass z-scores on file N's calibration.
                 kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
-                res = A.run(sid, context=context, log=log,
-                            reflists_active=reflists_active, **kw)
-                _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
-                       dict(res.get("stats", {})), stage, res.get("pattern_scoring"))
+                res = A.run(sid, context=context, log=log, reflists_active=reflists_active,
+                            keep_pool_inputs=_keep_pool_inputs(), **kw)
+                runs.append({"sid": sid, "ledger": res["ledger"], "plaus": res.get("plausibility_audit") or [],
+                             "stats": dict(res.get("stats", {})), "scoring": res.get("pattern_scoring"),
+                             "pool_inputs": res.pop("pool_inputs", None)})
                 # same line the parallel branch logs per completed future: it is what
                 # advances a progress reader's samples bar (peaky/progress.py)
                 log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
@@ -2706,7 +3038,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     initializer=_worker_init,
                     initargs=(context, reflists_active, base_kw, ts_path,
                               P.registry_extras(), axis_args)) as ex:
-                futs = {ex.submit(_assign_one, sid): sid for sid in ids}
+                keep = _keep_pool_inputs()
+                futs = {ex.submit(_assign_one, sid, keep): sid for sid in ids}
                 for done, fut in enumerate(as_completed(futs), offset + 1):
                     out = fut.result()
                     results[out["sid"]] = out
@@ -2717,8 +3050,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 out = results[sid]
                 for ln in out["log"]:              # replay worker logs, grouped per sid
                     log(ln)
-                _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage,
-                       out.get("pattern_scoring"))
+                runs.append({"sid": sid, "ledger": out["ledger"], "plaus": out["plausibility_audit"],
+                             "stats": out["stats"], "scoring": out.get("pattern_scoring"),
+                             "pool_inputs": out.pop("pool_inputs", None)})
+        # the batch-pooled tier calibration for the files that could not calibrate
+        # alone (calpool), then the fold, in sample_ids order either path
+        _pool_tiers(runs)
+        for r in runs:
+            _apply(r["sid"], r["ledger"], r["plaus"], r["stats"], stage, r["scoring"])
 
     if trace_sample is not None:
         from peaky.batch import tracefirst as TFT
@@ -2846,8 +3185,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
                 merged, ts_peaks=ts_peaks, r_min=amine_r_min,
                 protected=protected_neutrals, nh4_main=(prof.detect_adduct == "[M+NH4]+"), log=log)
-            # urea adducts of hydrocarbons / N-rich neutrals: the same ion as a protonated N-richer compound
-            merge_gates["urea"] = cleanup.cap_implausible_urea_adducts(merged, log=log)
+            # urea adducts of hydrocarbons / N-rich neutrals: the same ion as a protonated N-richer
+            # compound -- a note on the split, the tier kept
+            merge_gates["urea"] = cleanup.note_implausible_urea_adducts(merged, log=log)
         # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing
         # sidelobe of a saturating neighbour keeps its formula (the neutral is usually
         # corroborated on another channel) but its HEIGHT is the neighbour's, not the
@@ -2916,11 +3256,20 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
+        # A reading Assigned in no more than two files, on a brighter Assigned row's
+        # isotopologue line in each of them and with no 13C line of its own, is held at
+        # Candidate; beside a tracking satellite partner (Orbitrap-class: within +-4 mDa,
+        # 10x brighter) it is only noted (batch/sideband.py; tables/sideband_holds.csv)
+        _sig = {str(st_.get("sample_id")): (st_.get("degeneracy_cal") or {}).get("sigma")
+                for st_ in per_stats if isinstance(st_.get("degeneracy_cal"), dict)}
+        sb_rows, merge_gates["sideband"] = _SB.hold_low_file_promotions(
+            merged, full_ledgers, ts_peaks, tol_ppm=scale.merge_ppm, sigma_ppm=_sig,
+            orbitrap=(cfg.instrument_class == "orbitrap"), log=log)
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
                "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
-               "isotopologue": iso_rows}
+               "isotopologue": iso_rows, "sideband": sb_rows}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -3088,8 +3437,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # rule K (label_untie / label_veto): on a 15N-labelled
     # nitrate channel the 14N and 15N lines of one cluster arbitrate each other's
     # reading on the same series; written for every run (empty out of scope)
-    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
+    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties,
+                              klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
+    # ... and its 13C-shadow lines (Orbitrap-class): a 14N line that follows the 13C line
+    # of the committed ion 8.1 mDa above it is no reading's own ion -- every Assigned
+    # merged reading on it is Candidate (label_twins.shadow_gate; no re-vote, as the TOF
+    # gates below); the pooled pair's label veto alone leaves the vote's tier
+    merge_gates["label_shadow"] = _LT.shadow_gate(merged, twins_table, mass_scale=scale, log=log)
     # the isotope checks (iso_veto): rule C, REQ and HIGH read each committed
     # formula's isotope claims off the same stamped series (the instrument class
     # the batch resolved once, cfg.instrument_class: a TOF roster wins), rule H its exact halogen line (a lock,
@@ -3111,8 +3466,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                                         merge_gates["element_signature"].get("pairs"), log=log)
     if isinstance(merge_gates.get("isotopologue"), dict):
         merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
-    # rule K's refutation also caps the TIER (label_twins.demote_vetoed): a reading the
-    # twins refute is 5b and no longer the vote's Assigned
+    # rule K's refutation on the merged tier (label_twins.demote_vetoed): a refutation that
+    # names another ion (a 13C shadow, an [Y+^NO3]- reading with no 14N twin) caps an Assigned
+    # reading Candidate; an [X+NO3]- line "cluster or organonitrate undecided" is the same ion
+    # as the organonitrate, so the row keeps the vote's tier with a note (the pair stays 5b)
     merge_gates["label_veto"] = _LT.demote_vetoed(merged, twins_table, exempt=curated, log=log)
     # ... and the per-file ledgers RECORD the decision (iso_checks.reconcile_per_file):
     # a stripped reading's M0 row in a file becomes the parent's iso_child where that
@@ -3147,6 +3504,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         for st_ in per_stats:
             if str(st_.get("sample_id")) == str(sid):
                 _recount_roles(st_, _led, _rw_summ["files"].get(sid), signature=_sg_summ["files"].get(sid))
+    # why the batch's unexplained lines are unexplained (blocked.py): the per-file
+    # ledgers as the merged-ledger gates left them, pooled by m/z at the merge's
+    # window (offset-corrected, as align does) -- a diagnostic table, read by nothing
+    from peaky.assignment import blocked as _BL
+    try:
+        _BL.batch_table(full_ledgers, tol_ppm=getattr(scale, "merge_ppm", DEFAULT_TOL_PPM),
+                        offsets=offsets).to_csv(os.path.join(TAB, "unexplained_blocked.csv"), index=False)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING tables/unexplained_blocked.csv not written: {type(e).__name__}: {e}")
     # the parent rows name the lines the gate gave them (one row per parent ion)
     merged = _IC.parent_lines(merged, res_m.get("isotopologue"))
     # the NOx-skeleton tier cap, said on the merged row: how many of the files that
@@ -3199,7 +3565,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the stamped time series, the merged ledger (the NH4 rule's ion index), the
     # protected neutrals, the per-file gates and degeneracy calibrations, and the
     # batch checks' vetoes. Stamped on the merged ledger by (neutral, adduct); a
-    # merged row no pooled pair holds (a batch-level re-read) gets no level.
+    # merged row no pooled pair holds (a batch-level re-read) takes the level of the
+    # pooled pair it replaced, the same ion (4b with its split open, or 5a), and
+    # gets no level only where that pair is 5b or absent (evidence.stamp_merged).
     from peaky.assignment.levels import lists as _LS
     rl_context = _LS.reflists_context(reflists_active, rl_record)
     # the run-level switches of the batch's context profile, derived by the very
@@ -3282,6 +3650,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # row by row in the evidence column
     levels_na_reason = (EV.levels_not_assessed_reason(levels["evidence"], levels["evidence_level"])
                         if len(levels) and {"evidence", "evidence_level"} <= set(levels.columns) else None)
+    if levels_na_reason and pool_state["pool"] is not None and pool_state["pool"].cal is None:
+        # ... and the batch-pooled core (calpool) could not stand in: say why
+        levels_na_reason += (" A core pooled over the batch's files was tried and not used: "
+                             f"{pool_state['pool'].reason}.")
     if levels_na_reason:
         log(f"[assign_batch] WARNING: {levels_na_reason}")
     # the claim each level supports, tallied beside the tier (never read off it)
@@ -3327,6 +3699,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the isotopologue rows the merged ledger gave to their parent, and the mixed /
     # exempt lines it only noted (always written: header only when none)
     res_m["isotopologue"].to_csv(os.path.join(TAB, "isotopologue_rows.csv"), index=False)
+    res_m.get("sideband", _SB.empty_table()).to_csv(os.path.join(TAB, "sideband_holds.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:
@@ -3410,6 +3783,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if side_opened:
         log(f"[assign_batch] side channels opened: "
             + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
+    _centres = scoring_centres(scorings)
+    if axis_info.get("edge_carry"):
+        log(f"[assign_batch] axis edge carry: "
+            f"{sum(int((x.get('axis_edge_carry') or {}).get('m0_carried', 0)) for x in per_stats)} committed "
+            f"M0 rows outside the model's scope judged at its edge, in "
+            f"{sum(1 for x in per_stats if x.get('axis_edge_carry'))} of {len(per_stats)} files")
+    log("[assign_batch] scoring centres: "
+        + ", ".join(f"{n} {src}" for src, n in _centres["by_mu_source"].items())
+        + (f"; self-centred: " + ", ".join(f"{s} {v:+.2f} ppm" for s, v in _centres["self"].items()
+                                           if v is not None) if _centres["self"] else ""))
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
         # the context profile's run-level switches ({} = the named context as is)
@@ -3463,6 +3846,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # correction applied to it before the cover was picked (measure_axis)
         "mass_axis": axis_info,
         "pattern_scoring": scorings,
+        # where each file's scoring centre came from (its snapshot's mu_source),
+        # counted, and the files that measured their own (selfcentre.py)
+        "scoring_centres": _centres,
         # which scorer judged the candidates: 'local' (in-process, the default) or
         # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
         "scorer": "local" if IO._local_scoring_enabled() else "server",
@@ -3499,6 +3885,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "claims": claims_summary,
         # why the scale assessed nothing on this run (no file calibrated), else null
         "levels_not_assessed_reason": levels_na_reason,
+        # where each file's tier calibration came from (its own core, the batch's
+        # pooled core, none): the batch's weakest in one word, the files per
+        # source, and the pooled core itself (assignment/calpool.py; null when
+        # every file calibrated alone and no pool was built)
+        "tier_calibration": {
+            "source": _tier_cal_source(per_stats),
+            "files": {k: sum(1 for x in per_stats if x.get("tier_calibration") == k)
+                      for k in ("per_file", "pooled", "none")},
+            "pool": (dict(pool_state["pool"].record(), retiered_files=dict(pool_state["files"]))
+                     if pool_state["pool"] is not None else None)},
         # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels

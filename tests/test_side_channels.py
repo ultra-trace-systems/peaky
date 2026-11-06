@@ -334,8 +334,11 @@ def test_the_batch_records_the_side_channels_and_the_amine_gate_acts_on_their_re
     real = merged[(merged.neutral_formula == REAL) & (merged.adduct == NH4)]
     assert len(real) == 1 and real.tier.iloc[0] == "Assigned"
     amine = merged[(merged.neutral_formula == "C10H19NO") & (merged.adduct == "[M+H]+")]
-    assert len(amine) == 1 and amine.tier.iloc[0] == "Candidate"
+    # the same ion as the reading it replaced: the vote's tier stands, the split is open
+    assert len(amine) == 1 and amine.tier.iloc[0] == "Assigned"
     assert "not confirmed (independent time trace" in str(amine.tier_reason.iloc[0])
+    assert amine.evidence_level.iloc[0] in ("4b", "5a") and "batch-level re-read of the pooled pair " \
+        f"{REJ} {NH4}" in str(amine.evidence.iloc[0])
     assert merged[(merged.neutral_formula == REJ) & (merged.adduct == NH4)].empty
     # ... and on the evidence scale (the same gate, AmineGate, over the pooled per-file pairs)
     ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)

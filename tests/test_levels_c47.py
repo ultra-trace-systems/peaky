@@ -136,3 +136,98 @@ class TestFluorineCeiling:
         assert TD._one(dict(TD.ACID, below=True, iso_veto=True), below=below).evidence_level == "5b"
         both = {self.K: dict(setters=["carbon cluster", "unconfirmed fluorine"])}
         assert TD._one(dict(TD.ACID, below=True), below=both).evidence_level == "5b"
+
+    def test_a_reading_whose_cf2_ladder_a_line_refutes_is_refuted_not_capped(self):
+        """The fluorine ceiling meets the CF2 ladder: a ladder its own 13C line refutes
+        (fluorine.verdicts' veto) keeps the unconfirmed-fluorine flag, and its refusal note
+        is a second setter, so the reading is refuted (5b), not only unconfirmed (5a). The
+        same reading with the flag alone stays at the ceiling."""
+        import test_fluorine as TF
+        from peaky.assignment import cleanup as CL
+        from peaky.assignment import fluorine as FL
+        from peaky.assignment import ledger as L
+        h0 = 400.0
+        led = TF._ledger(TF.SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"},
+                         extra=[("c13", TF._mz("C8H5F11O2") + FL.IR.D13C, h0 * 0.0107 * 3)])
+        L.attach_isotopologue(led, "c13", "C8H5F11O2", iso_label="13C")
+        TF.T.apply_tiers(led, cfg=TF._cfg(floor=5.0))
+        CL.demote_unconfirmed_fluorine(led, cfg=TF._cfg(floor=5.0), log=lambda *a: None)
+        assert bool(TF._row(led, "C8H5F11O2")["below_assignability"])
+        k = ("C8H5F11O2", TF.ADD)
+        setters = DC.below_classes({"s01": led})[k]["setters"]
+        assert setters == ["refuted fluorine ladder", "unconfirmed fluorine"]
+        K = self.K
+        assert TD._one(dict(TD.ACID, below=True), below={K: dict(setters=setters)}).evidence_level == "5b"
+        assert TD._one(dict(TD.ACID, below=True),
+                       below={K: dict(setters=["unconfirmed fluorine"])}).evidence_level == "5a"
+
+    def test_a_lifted_but_incomplete_cf2_ladder_takes_the_fluorine_ceiling(self):
+        """A CF2 ladder that lifts the fluorine refusal but has fewer than 3 committed members
+        keeps the reading at Candidate with the lift note: its F count is not confirmed, so the
+        evidence scale reads it at main's fluorine 5a ceiling (the stricter outcome where the
+        ladder admits the reading). A full ladder's note does not; nor does the bare fact off."""
+        import sys
+        from pathlib import Path
+        import test_fluorine as TF
+        from peaky.assignment import cleanup as CL
+        from peaky.assignment import evidence as EV
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import level_ledger as LLG
+        led = TF._ledger(TF.SERIES, {"C6H5F7O2"})                    # one committed member: lifted, not full
+        TF.T.apply_tiers(led, cfg=TF._cfg())
+        led.loc[led["peak_id"] == "C6H5F7O2", "tier"] = "Assigned"
+        CL.demote_unconfirmed_fluorine(led, cfg=TF._cfg(), log=lambda *a: None)
+        assert not bool(TF._row(led, "C6H5F7O2")["below_assignability"])          # not refused
+        held = EV.trim(led).set_index("peak_id")[EV.LADDER_HELD]
+        assert bool(held["C6H5F7O2"])
+        facts = EV._measure(EV.trim(led).assign(__file="s01"), halogen=None).set_index("neutral_formula")
+        assert bool(facts.loc["C6H5F7O2", "f_ladder_lift"])                      # the pair fact the scale reads
+        full = TF._ledger(TF.SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"})       # a full ladder
+        TF.T.apply_tiers(full, cfg=TF._cfg())
+        CL.demote_unconfirmed_fluorine(full, cfg=TF._cfg(), log=lambda *a: None)
+        assert not EV.ladder_held(full).any()
+        base = TD._one(dict(TD.ACID))
+        assert base.evidence_level != "5a"
+        r = TD._one(dict(TD.ACID, f_ladder_lift=True))
+        assert r.evidence_level == "5a" and r.would_lift == DC.FLUORINE_CEILING_WHY
+        assert "fluorine 5a ceiling" in r.tag_kinds.split("|")
+        # beside another rejection it is still refuted
+        assert TD._one(dict(TD.ACID, f_ladder_lift=True, iso_veto=True)).evidence_level == "5b"
+        # the executable reference reads the same fact the same way
+        rej, _o11 = LLG.rejections({"f_ladder_lift": True}, {})
+        assert rej == [DC.FLUORINE_LADDER_REASON] and LLG.lowconf_alone(rej)
+        assert LLG.ceiling_why(rej) == DC.FLUORINE_CEILING_WHY
+
+    def test_every_non_full_lift_note_carries_the_mark_and_any_file_sets_the_pair_fact(self):
+        """Both lift notes of a ladder that is not full -- fewer than 3 committed members, and
+        enough members but an untested 15N alias -- carry fluorine.LIFT_HELD_MARK (a full ladder's
+        does not), and the pair fact f_ladder_lift is set when ANY file's row carries one."""
+        import pandas as pd
+        from peaky.assignment import evidence as EV
+        from peaky.assignment import fluorine as FL
+        from peaky.chem import chemistry as C
+        steps = ((-1, True), (1, True), (2, False))
+        alias = FL.Ladder(4, 3, steps, None, "its 14N twin would read under the floor")
+        short = FL.Ladder(3, 1, ((-1, False), (1, False)), None, None)
+        full = FL.Ladder(4, 3, steps, None, None)
+        assert alias.lift and not alias.full and short.lift and not short.full and full.full
+        assert "while its 15N alias" in FL.lift_note(alias) and "until 3 members" in FL.lift_note(short)
+        assert FL.LIFT_HELD_MARK in FL.lift_note(alias) and FL.LIFT_HELD_MARK in FL.lift_note(short)
+        assert FL.LIFT_HELD_MARK not in FL.lift_note(full)
+        nf, ad = "C8H5F11O2", "[M-H]-"
+
+        def row(pid, sid, why):
+            return dict(role="M0", peak_id=pid, neutral_formula=nf, adduct=ad, ion_formula="C8H4F11O2-",
+                        mz=C.ion_mz(nf, ad), height=1e4, tier="Candidate", tier_reason=why, method="x",
+                        confidence="Good", __file=sid)
+        for lad in (alias, short):
+            frame = pd.DataFrame([row("a", "s01", "partially-fluorinated reading: " + FL.lift_note(lad)),
+                                  row("b", "s02", "")])
+            facts = EV._measure(EV.trim(frame.drop(columns="__file")).assign(__file=["s01", "s02"]),
+                                halogen=None).set_index("neutral_formula")
+            assert bool(facts.loc[nf, "f_ladder_lift"])                      # one file of the two is enough
+        frame = pd.DataFrame([row("a", "s01", "partially-fluorinated reading: " + FL.lift_note(full)),
+                              row("b", "s02", "")])
+        facts = EV._measure(EV.trim(frame.drop(columns="__file")).assign(__file=["s01", "s02"]),
+                            halogen=None).set_index("neutral_formula")
+        assert not bool(facts.loc[nf, "f_ladder_lift"])

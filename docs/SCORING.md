@@ -116,6 +116,139 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   same wrong species, the median landed at −10.4 ppm for a source the engine
   measures within 0.3 ppm of calibration.
 
+  **Below five anchors the centre has two more sources before zero.** `mu_source`
+  reads, in order: `fitted` (the sample's own anchors); `axis` (none, but the
+  batch's m/z-axis correction reached the sample — `peaky batch --mass-axis`, its
+  peaks moved onto the model's axis, so zero is right where the model reaches; the
+  snapshot adds `axis_scope_share`, the share of the sample's peaks inside the
+  model's scope); `self` (none, and no axis correction: an Orbitrap-class file
+  scored locally measured its own centre before pass 0, `assignment/selfcentre.py`;
+  the measurement is under `self_centre`); else `assumed_zero`. A run that then
+  accepts a mass trend says `trend`; a stand-in says `inherited`. The self-centre
+  reads a backbone chosen without the mass term: the file's bright unexplained
+  peaks (≥ 10× its noise edge, under 100× its median height, the 150 brightest),
+  enumerated as pass 1 enumerates them (the CHON grid of the run's context and its
+  channels, ±`search_ppm` around the raw m/z) and judged by the pattern-only score;
+  a peak counts where exactly one ion formula's pattern holds there
+  (`ion_score_massfree` ≥ `tau_suspect`), and that reading is a CHO/CHON ion with
+  C ≥ 1, pattern-Good (≥ `tau_good`) and 13C-confirmed (its 13C line matched in
+  ratio within 1.5 ppm of the M0's error). The backbone's median raw error is the
+  centre when at least 8 points agree (scaled MAD ≤ 0.6 ppm), their bulk (centre ±
+  2 spreads) lies inside the search window and it sits ≥ 0.1 ppm from zero; the
+  file is then scored at it from pass 0 on, the isotope-response re-run included,
+  until a mass trend its calibration accepts takes over (`trend`), and the pass-0
+  known-species gate keeps its own centre (`prior_offset`). The batch's merge does
+  not read it: the files are aligned on their pre-calibration offset
+  (`per_file.offset_ppm`, `estimate_offset`), null below eight anchors. Zero was
+  the only honest reading only while nothing else had been measured: scored there, an
+  anchorless file 0.6 ppm off commits almost nothing at the class width, and the
+  pass-1 calibration cannot see why — its backbone is what the zero-centred score
+  let through. `PassConfig.self_centre = False` scores such a file at zero.
+
+  **Outside the axis model's scope no m/z is moved; near its ends the centre
+  carries the model's edge.** The model corrects only where its locks reach;
+  below or above them, and in a gap or hole between its segments, every sample's
+  peaks keep the server's m/z, an anchored sample's included, because nothing
+  measured the axis there. A sample's centres are fitted on the mostly corrected
+  peaks -- the scorer's `mu` (the anchors' median, or zero for an `axis` file) and
+  calibrate's `cal_mu` -- so a peak the model did not reach was judged against a
+  centre read off the other axis (an NO+ batch whose locks stop near m/z 129: its
+  C9-C12 hydrocarbons above it read 0.7 ppm off and fell out of Assigned). A
+  model the batch applies through the sub-ppm branch (`assign_batch._lock_model`:
+  its largest correction and the locks' raw median both under 1 ppm) therefore
+  CARRIES the axis at its first lock and at its last into the scoring centre of
+  every line up to `assign_batch.EDGE_CARRY_DA` (30 Da) below / above it
+  (`AxisModel.edge_carry_record`, `masscal.edge_carry_at`; the line's m/z is read
+  on the served axis, as the model's own inverse reads it). Each end's value is
+  read off the END LOCKS: the model there plus the median residual of the end
+  segment's non-bright locks within `axislock.EDGE_LOCK_DA` (5 Da) of it, at least
+  `EDGE_LOCKS_MIN` (3) of them, else the model's own end value -- a spline's end
+  knot can leave its own locks (a uronium axis: -0.41 ppm at its first lock, its
+  locks there -0.15..-0.25, an independent axis -0.20; read -0.28), and a median of
+  three ignores one stray lock (2.5 % of the locks of a field campaign's lock models
+  read more than 0.5 ppm off their model):
+  * the local scorer judges each MATCHED line at the file's centre plus the carry
+    at that line's peak (`score_candidates_local(centre_offset=)`, per line: an M0
+    in scope whose 13C line lies outside is judged on both axes as they are);
+  * every calibrated centre at a line's m/z adds it: `cal_center` / `z_of` (the
+    commit gate, the mass-gate audit, the residual and siloxane gates), the direct
+    `cal_mu` readers (the isotope-gated recovery, the speculative-residual demote,
+    the labelled rescue, the reference-list rescue), the tier calibration
+    (`tiers._calibrate` / `_cal_z`, and `ppm_error_cal`; a batch-pooled calibration
+    lent to an uncalibrated file, `calpool.apply_pool`, takes the file's carry too),
+    the off-calibration re-arbitration (which reads the tier calibration) and the
+    degeneracy window;
+  * calibrate (its backbone and its mass-trend rows) and the tier calibration
+    read a backbone row outside the scope on the carried scale (its ppm less the
+    carry), so the out-of-scope rows they recover measure the same centre as the
+    corrected ones; so do the centres fitted on a file's own rows elsewhere: the
+    scorer's `mu` of a `fitted` file (an anchor past the edge, `sample_mass_errors
+    (carry=)`; `pattern_scoring.axis_edge_carry.anchors` counts them), an
+    uncalibrated file's display centre (`stamp_calibrated_ppm`: the Assigned rows'
+    median), and the batch-pooled calibration: its core (`calpool.pool_calibration
+    (carry=)`, the batch's record) and the file's own centre it lends a window about
+    (the Assigned rows' median, `apply_pool`).
+
+  The ledger's m/z and every line in scope are unchanged. Nothing is carried past
+  the reach (measured against an independent
+  axis: within 30 Da the edge's value is the axis to ~0.1 ppm on the flat NO+
+  axes, while a curved labelled-nitrate axis bends 0.2-0.4 ppm away from it
+  further out), in a gap or hole (a step there is unseen), or by a model applied
+  at 1 ppm or more: those batches, which the reference bar corrected before the
+  sub-ppm branch existed, run exactly as before, and their out-of-scope lines are
+  still judged against the in-scope centre. A line past the reach of a carried
+  model is judged at the file's centre as it stands, and that centre is now fitted
+  on the carried scale: it moves by the carried rows' weight in the fit (a few
+  hundredths of a ppm on a field campaign's batches), enough to take a line that
+  sat on a gate across it (z 1.99 -> 2.01). The record rides on the model
+  (`mass_axis.wave.stats.edge_carry`, also `mass_axis.edge_carry`) to every
+  worker (each end `{mz, ppm, model_ppm, n_locks}`: the value carried, the model's
+  own end value, the locks it was read off), on each file's snapshot
+  (`pattern_scoring.axis_edge_carry`, with `share`, the share of the file's peaks it
+  reaches, and `anchors`, the anchors read on the carried scale) and, as
+  `PassConfig.axis_edge_carry`,
+  on the file's run (`per_file.axis_edge_carry`: `reach_da`, `m0_carried`, the
+  committed M0 rows it judged); a stand-in registered with that snapshot (a decoy
+  arm) inherits it. The network scorer (`PEAKY_LOCAL_SCORING=0`) judges one
+  constant offset, so there the carry reaches the gates only; the trace-first
+  sample is not under the batch's correction and carries nothing; the evidence
+  levels' per-file window (`degeneracy_cal`) stays one constant. Moving the
+  out-of-scope peaks instead, by the model's in-scope correction at the file's
+  anchors (an earlier build), fixed the NO+ batch and broke a curved one (a
+  labelled-nitrate batch whose correction swings from -2.5 ppm at m/z 45 through
+  +0.9 at m/z 100 to +0.2 at its edge, m/z 173: the peaks above it moved
+  0.25-0.36 ppm off their file's centre), and it moved the gaps too.
+
+  **A sub-ppm model is applied without the locks that disagree with their
+  neighbours.** The branch's verdict is the as-built model's (`_lock_model`: the
+  apply bar, the predictive bar and the half-the-correction cv test read the model
+  `axislock.fit` built); the model then APPLIED is its spline segments refitted
+  (`AxisModel.refit`, `assign_batch.LOCK_REFIT_PPM` = 0.5): each segment's
+  non-bright locks lose, one at a time and the worst first, the lock furthest
+  off a Theil-Sen line through its `axislock.LOCAL_K` (6) nearest locks while it
+  sits more than 0.5 ppm off, and the smoothing spline (GCV) is redrawn through the
+  rest on the segment's own grid. A smoothing spline drawn through a few
+  co-located locks that read 0.6-0.9 ppm off their neighbours -- a lock on a line
+  blended with a brighter ion's 13C line, its labelled alias -- bends towards them:
+  on a labelled-nitrate batch (cv 0.094 ppm, largest correction 0.90) it rose
+  +0.10..+0.15 ppm over m/z 261-269 and corrected a true cluster line by +0.23 ppm,
+  which then fell out of Good in all 7 files it was Good in before the branch
+  existed; the refit drops 12 of its 297 locks and corrects that line by +0.06.
+  Worst first, because judged all at once a cluster of high locks drags its good
+  neighbours' lines up with it (two good locks, +0.006 and -0.159 ppm, went that
+  way). Line (walk) segments, every domain, the grid and the verdict stay as
+  built; a segment that drops nothing, or whose refit would bend faster than
+  `SPLINE_MAX_SLOPE`, is the as-built segment, so a model that drops nothing is
+  applied byte for byte as built (on a field campaign's five sub-ppm batches: 0,
+  0, 0, 1 and 47 locks dropped). The edge carry is read off the KEPT locks. 0.4 ppm
+  starves the GCV fit (its smoothing parameter fell 297 -> 47 on that batch);
+  0.75 leaves the bump. `mass_axis.refit` (also `mass_axis.wave.stats.refit`)
+  records `off_ppm`, `k`, `n_dropped`, `dropped` (`mz`, `ion`, `ppm` and `off_ppm`,
+  how far off the refitted model each sat), `max_abs_ppm_built` and `max_abs_ppm`
+  (the refitted model's); `mass_axis.max_abs_ppm` stays the verdict's, and
+  `tables/mass_axis_locks.csv` keeps every lock the fit found. A model at 1 ppm or
+  more is never refitted.
+
   **An offline sample has neither a record nor anchors.** A table served from
   memory (`register_offline_sample`: a scorecard decoy arm, the trace-first
   synthetic sample, a test) has no server record to name its class and usually

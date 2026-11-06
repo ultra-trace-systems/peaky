@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from peaky.assignment import admission
+from peaky.assignment import blocked
 from peaky.assignment import cleanup
 from peaky.chem import contexts
 from peaky.assignment import degeneracy
@@ -32,6 +33,7 @@ from peaky.chem import reagents
 from peaky.chem import resolution as RES
 from peaky.assignment import reflists
 from peaky.assignment import resolvability
+from peaky.assignment import selfcentre
 from peaky.assignment import sidelobe_guard
 from peaky.assignment import residual
 from peaky.assignment import siloxane
@@ -39,7 +41,9 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.7.1"  # + the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
+__version__ = "0.7.2"  # + every unexplained row says why (blocked.py: blocked_reading / blocked_by);
+#                        + cfg.width_model: the run's width model for every stage's commit contract
+#                        0.7.1 the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
 #                        context profile (the NOx-skeleton switches) and the
 #                        element_evidence stage (clears and locks a heteroatom
 #                        reading the file's own lines contradict)
@@ -170,11 +174,30 @@ def _stage_degeneracy(st):
     # kept on the run state: the per-file evidence level's step-1 window is this
     # SAME (mu, sigma), and the run's stats persist it (`degeneracy_cal`)
     cal = tiers._calibrate(st.led[st.led["role"] == ledger.ROLE_M0],
-                       st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts())
+                       st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts(),
+                       carry=getattr(st.cfg, "axis_edge_carry", None))
     st.degeneracy_cal = None if cal is None else (float(cal[0]), float(cal[1]))
+    if cal is None and getattr(st, "keep_pool_inputs", False):
+        # the ledger as the degeneracy and tier stages see it: a batch that lends
+        # this file its pooled calibration re-runs both on it (calpool.apply_pool);
+        # kept only when the caller asked for it (a batch's per-file run)
+        st.at_tiers = st.led.copy(deep=True)
     degeneracy.apply_degeneracy(st.led, cal=cal, context=st.profile, adducts=st.adducts,
                                 families=families, curated=curated, log=st.log)
     return _degen_summary(st.led, st.adducts, families)
+
+
+def _pool_inputs(st):
+    """calpool.PoolInputs of a run whose degeneracy stage ran uncalibrated: the
+    ledger as that stage found it, the final cfg and profile, the channels, the
+    families the stage opened, the curated formulas and the evidence stage's
+    run inputs. None otherwise (a calibrated file, or the stage did not run)."""
+    if getattr(st, "degeneracy_cal", "absent") is not None or getattr(st, "at_tiers", None) is None:
+        return None
+    from peaky.assignment import calpool
+    fams = (st.summaries.get("degeneracy") or {}).get("families") or ()
+    return calpool.PoolInputs(at_tiers=st.at_tiers, cfg=st.cfg, profile=st.profile, adducts=list(st.adducts or []),
+                              families=tuple(fams), curated=_curated(st), level_inputs=st.level_inputs)
 
 
 def _module_hashes() -> dict:
@@ -249,6 +272,15 @@ class _RunState:
     # mass sigma and the scorer's match window size the TOF ion-M+2 test's
     # search window (tiers.apply_tof_m2); None = the scorer's TOF window alone
     scoring: object = None
+    # the run inputs the `evidence` stage levelled the file with (a batch
+    # re-levels an uncalibrated file in its pooled window: calpool.apply_pool)
+    level_inputs: object = None
+    # keep what a batch-pooled tier calibration re-applies (`run(keep_pool_inputs=)`):
+    # a batch's per-file runs only; a single-sample run is never pooled
+    keep_pool_inputs: bool = False
+    # an uncalibrated file's ledger as the degeneracy stage found it (None on a
+    # calibrated one, or when not kept): what a batch-pooled calibration re-tiers it on
+    at_tiers: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -356,12 +388,14 @@ def _stage_plausibility(st):
     demote: a commit whose neutral lies outside the run context's element budget
     (contexts.element_budget) and that no curated list names -- the pass-0
     registry for this polarity/context or an active reference list -- is
-    Candidate + tentative_lead (plausibility.demote_off_budget)."""
+    Candidate + tentative_lead (plausibility.demote_off_budget), unless every
+    over-budget Cl / Br / S shows its own isotope line (an Orbitrap-class run:
+    the run's cfg)."""
     label = getattr(st.profile, "label", None)
     # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
         st.led, audit=st.plaus_audit, log=st.log, context=st.profile if label else None,
-        curated=_curated(st))
+        curated=_curated(st), cfg=st.cfg)
 
 
 def _curated(st) -> frozenset:
@@ -460,6 +494,7 @@ def _stage_evidence(st):
         degeneracy_cal=getattr(st, "degeneracy_cal", "absent"),
         activation=getattr(st, "reflists_context", None),
         reagent_halogen=getattr(st, "reagent_halogen", evidence.DETECT_HALOGEN))
+    st.level_inputs = ri
     s = evidence.apply_levels(st.led, cfg=st.cfg, run_inputs=ri)
     claims = s.get("claims") or {}
     inst = s.get("instrument") or {}
@@ -638,7 +673,7 @@ _STAGES = [
     # report tier, then the post-tier de-risking demotes (each gets the last word).
     _Stage("tiers", _stage_tiers, safe=False, store=False),
     _Stage("demote_fluorine",
-           lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
+           lambda st: cleanup.demote_unconfirmed_fluorine(st.led, cfg=st.cfg, log=st.log),
            safe=False, store=False),
     _Stage("demote_carbon",
            lambda st: cleanup.demote_implausible_carbon(st.led, log=st.log),
@@ -796,7 +831,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
         reagent_n_relabel: bool = True, peaks=None, corroborate=None,
         resolving_power=None, log=print, checkpoint_dir=None, scoring=None,
-        reagent_profile=None, reflists_context=None) -> dict:
+        reagent_profile=None, reflists_context=None, keep_pool_inputs: bool = False) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
@@ -818,7 +853,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
     to every file. `scoring` (offline runs only) is what the offline sample is
     judged at -- a measured sample's `pattern_scoring` snapshot, a
     `PatternScoring` or an instrument class (`io_mascope.register_offline_sample`);
-    None leaves an offline sample at the forgiving class fallback."""
+    None leaves an offline sample at the forgiving class fallback.
+    `keep_pool_inputs` (a batch's per-file runs): the result also carries
+    `pool_inputs` -- for a file its own core could not calibrate, what a
+    batch-pooled tier calibration re-applies (calpool.PoolInputs, with a copy of
+    the ledger as the degeneracy stage found it), else None. Off, the result has
+    no such key and no copy is taken."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -847,6 +887,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
     width_model = _width_model(resolving_power, client, sample_id, raw, log)
+    # every stage's commit contract reads the run's width model off the cfg
+    # (satellites.LineGate: the blend guard's reach is one FWHM of THIS file)
+    cfg.width_model = width_model
     # The sample's noise edge (p1 of its picked heights) anchors every height
     # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
     # thresholds do not transfer between instruments/modes (see passes.config).
@@ -970,6 +1013,17 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # systematic offset is invisible to pass 0.
     prior = io_mascope.estimate_offset(raw)
     cfg.prior_offset = prior if prior is not None else 0.0
+    # the batch axis model's edge carry (a sub-ppm lock model; io_mascope.axis_edge_carry):
+    # every calibrated centre at a line just outside the model's scope adds the model's
+    # correction at the nearer end (None: nothing carried). Before the C42 / isotope-
+    # response snapshot below, so a re-run keeps it.
+    cfg.axis_edge_carry = io_mascope.axis_edge_carry(sample_id)
+    if cfg.axis_edge_carry:
+        _ec = cfg.axis_edge_carry
+        log(f"[run] axis edge carry: a line outside the batch axis model's scope within "
+            f"{_ec['reach_da']:g} Da of m/z {_ec['below']['mz']:.1f} / {_ec['above']['mz']:.1f} is "
+            f"judged at the centre {_ec['below']['ppm']:+.2f} / {_ec['above']['ppm']:+.2f} ppm off "
+            "(peaks are not moved)")
     log(f"[run] {len(led)} unique peaks; context={profile.label}; "
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
         f"adducts={adducts}; mechanisms={sorted(mech_map)}"
@@ -981,6 +1035,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # this run fits its own (C42). A stand-in's inherited trend stays.
     io_mascope.reset_scoring_trend(sample_id)
     io_mascope.reset_iso_scoring(sample_id)
+    # ... and so is a self-centre (measured below, before pass 0)
+    io_mascope.reset_self_centre(sample_id)
     scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
@@ -1075,8 +1131,29 @@ def run(sample_id: str, context: str = "ambient-air", *,
         io_mascope.set_iso_scoring(sample_id, col="area" if iso_area else "height")
         if iso_area:
             log(f"[run] isotope lines read by area ({'response fitted after calibrate' if iso_mode == 'auto' else 'no response'})")
+    # The SELF-CENTRE (assignment/selfcentre.py): an Orbitrap-class file with no centre
+    # of its own (no anchors, no batch axis correction: `assumed_zero`) measures it once,
+    # here, on a backbone chosen without the mass term, and every pass from pass 0 on --
+    # the isotope-response re-run included: the centre lives in the io registry, which
+    # the re-run's restore of led / cfg does not touch -- judges its lines against it,
+    # until a mass trend this run's calibration accepts (C42) takes over the centre.
+    # Reads the ledger, changes nothing in it or the cfg.
+    self_centre = None
+    why_not = selfcentre.eligibility(scoring_snapshot, cfg, inherited=inherited, local=local)
+    if why_not is None:
+        self_centre = selfcentre.measure(client, sample_id, led, profile, pre, cfg, adducts, log=log)
+        if self_centre["applied"]:
+            io_mascope.set_self_centre(sample_id, self_centre)
+            scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
+            scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
+            log(f"[run] scoring {io_mascope.describe_scoring(scoring)} (self-centre)")
+    elif scoring_snapshot.get("mu_source") == "assumed_zero":
+        self_centre = {"applied": False, "why": why_not}
     while True:
         cfg.iso_response_fit, cfg.iso_area = iso_fit, iso_area
+        # the exits of THIS pass through the stages (a re-run starts afresh):
+        # what each gate stopped, stamped on the unexplained rows at the end
+        blocked_rec = blocked.start()
         st = _RunState(
             client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
             cfg=cfg, adducts=adducts, reagent=reagent, has_halogen=has_halogen_adduct,
@@ -1089,7 +1166,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
             reagent_halogen=reagent_halogen,
             reagent_profile=(getattr(reagent_profile, "name", None) or reagent_profile
                              or _profile_name_for(analyte_adducts)),
-            reflists_context=reflists_context, scoring=scoring_snapshot)
+            reflists_context=reflists_context, scoring=scoring_snapshot,
+            keep_pool_inputs=bool(keep_pool_inputs))
         restart = False
         for stg in _STAGES:
             if not stg.when(st):
@@ -1155,6 +1233,16 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the FINAL pass's state: its degeneracy calibration is the one the stats persist
     run_state = st
     led, summaries, plaus_audit = st.led, st.summaries, st.plaus_audit
+    # why each unexplained row is unexplained: the best reading a gate stopped on
+    # it and the gate (blocked.py) -- two columns appended after every other one,
+    # NA on every row that is not unexplained; nothing else is read or changed.
+    # A diagnostic: a failure is logged, never the file's run lost
+    try:
+        blocked.stamp(led, blocked_rec, client=client, sample_id=sample_id, cfg=cfg, log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"[blocked] WARNING the unexplained rows were not stamped: {type(e).__name__}: {e}")
+    finally:
+        blocked.stop()
     # the record of what the candidates were scored at, the trend included
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     tc = led.loc[led["role"] == ledger.ROLE_M0, "tier"].value_counts().to_dict()
@@ -1179,6 +1267,21 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the TOF ion-M+2 test's counts (tiers.apply_tof_m2; `skipped` says why it did not run)
     st["tof_m2"] = summaries.get("tof_m2")
     st["snr_source"] = scoring_snapshot.get("snr_source")
+    # the centre the file's mass errors were judged at and where it came from
+    # ("fitted" anchors, the batch's "axis", the file's own "self"-centre, a "trend",
+    # "inherited", "assumed_zero"); `self_centre` the self-centre's measurement, or why
+    # it was not measured, on a file with no other centre (None elsewhere)
+    st["mu_source"] = scoring_snapshot.get("mu_source")
+    st["mu_ppm"] = scoring_snapshot.get("mu_ppm")
+    st["self_centre"] = self_centre
+    # the batch axis model's edge carry (a sub-ppm model only; no key otherwise): its reach
+    # and the committed M0 rows it judged at the carried centre
+    if cfg.axis_edge_carry:
+        _m0 = led[led["role"] == ledger.ROLE_M0]
+        st["axis_edge_carry"] = {
+            "reach_da": cfg.axis_edge_carry["reach_da"],
+            "m0_carried": int((masscal.edge_carry_at(
+                cfg.axis_edge_carry, pd.to_numeric(_m0["mz"], errors="coerce").to_numpy(dtype=float)) != 0).sum())}
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.
@@ -1197,6 +1300,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if run_state.degeneracy_cal != "absent":
         cal = run_state.degeneracy_cal
         st["degeneracy_cal"] = None if cal is None else {"mu": float(cal[0]), "sigma": float(cal[1])}
+        # where the tier engine's calibration came from: the file's own core, or
+        # none (a batch may then lend it the pooled one: calpool, 'pooled')
+        st["tier_calibration"] = tiers.CAL_SOURCE_NONE if cal is None else tiers.CAL_SOURCE_PER_FILE
     # the reagent halogen of the declared channels (C43) this file's evidence
     # read: a batch's merge vote computes the file's class in the parent with it
     st["reagent_halogen"] = reagent_halogen
@@ -1223,7 +1329,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
             # cannot be read without it: the same envelope scores differently at
             # 0.3 ppm and at 3, and a published run carries it into the store.
             "pattern_scoring": scoring_snapshot,
-            "sample_id": sample_id}
+            "sample_id": sample_id,
+            # a batch's per-file run (keep_pool_inputs) of an uncalibrated file:
+            # what the steps a batch-pooled calibration re-applies read
+            # (calpool.apply_pool); None on a calibrated one; no key otherwise
+            **({"pool_inputs": _pool_inputs(run_state)} if keep_pool_inputs else {})}
 
 
 def main(argv=None):

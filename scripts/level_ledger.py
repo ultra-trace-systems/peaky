@@ -51,7 +51,13 @@ The scale, in the order the outcomes are tried (the first that applies):
              committed reading's own isotope lines contradict it), or nothing
              could be enumerated or tested
     5a       a competitor ion is left in the calibrated window (after the
-             isotope tests and the CH2 / CF2 series exclusion)
+             isotope tests and the CH2 / CF2 series exclusion); an ion only
+             the shadow space proposes (a contaminant family no file holds
+             real evidence for, a cross-family mixture) is none: it is listed
+             in competitors_left after ' || ', never counted -- unless the
+             committed neutral carries a heteroatom (S, P, Si, F, Cl, Br, I)
+             none of its own in-band lines confirms (a line of an element its
+             adduct adds is not its own): then it counts
     4b       the channel reads the ion only
     3c       split pinned and a NAMED context-list entry names the neutral
     4a       split pinned and a positive fact (an own in-band isotope line of
@@ -184,6 +190,8 @@ def rejections(row: dict, below: dict) -> tuple[list[str], bool]:
         else:
             # a below flag no setter explains is rejected too (as built)
             out.append("below: " + (" & ".join(setters) if setters else "setter not found"))
+    if on(row.get("f_ladder_lift")):
+        out.append(DC.FLUORINE_LADDER_REASON)      # a lifted, not full, CF2 ladder: the fluorine 5a ceiling
     if on(row.get("committed_contradicted")):
         out.append("own isotopes: " + txt(row.get("committed_reasons"))[:OWN_REASONS_MAX])
     return out, o11
@@ -388,6 +396,32 @@ def _left(S, keys) -> dict:
     return out
 
 
+#: D4: the competitor rows only the shadow space proposes -- no competitor, every one named
+UNCOUNTED_STATUS = "uncounted"
+UNCOUNTED_TEXT = "element family not open on evidence"
+
+
+def _uncounted(S, keys) -> dict:
+    """{pair index: [the names of the competitor rows only the shadow space proposes]} (D4: never a competitor)."""
+    pos = {k: i for i, k in enumerate(keys)}
+    out = defaultdict(list)
+    if S.comps is None or not len(S.comps):
+        return out
+    for r in S.comps.to_dict("records"):
+        i = pos.get((str(r["neutral_formula"]), str(r["adduct"])))
+        if i is not None and str(r["status"]) == UNCOUNTED_STATUS:
+            out[i].append(str(r["competitor"]))
+    return out
+
+
+def competitors_text(left, uncounted) -> str:
+    """The competitors left, '; '-joined; then the uncounted ones after ' || ' (or alone)."""
+    t = "; ".join(c["name"] for c in left)
+    if uncounted:
+        t += (" || " if t else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(uncounted)
+    return t
+
+
 def _route_anchored(S, rows, keys, f, partners) -> np.ndarray:
     """Pairs with two routes (both route ions of an own route-class pair in the same file in >= 2 files, 1 on a
     one-file source; no alias of a committed neutral explains both -- the aliases are locked side channels by
@@ -415,7 +449,7 @@ def _route_anchored(S, rows, keys, f, partners) -> np.ndarray:
                 if base not in (A, B):
                     continue
                 Y = RT.fsub(RT.fcounts(nn), L)
-                if Y and S.ctx.space.plausible_neutral(Y)[0] and C.format_formula(Y) in committed_ok:
+                if Y and SP.space_of(S.ctx, nn).plausible_neutral(Y)[0] and C.format_formula(Y) in committed_ok:
                     explained = True
                     break
             own = own or not explained
@@ -488,7 +522,7 @@ def lowconf_alone(rejected) -> bool:
 
 def ceiling_why(rejected) -> str:
     """The 5a ceiling's text: the fluorine one when unconfirmed fluorine is among the reasons."""
-    return DC.FLUORINE_CEILING_WHY if DC.FLUORINE_REASON in (rejected or []) else DC.LOWCONF_CEILING_WHY
+    return DC.FLUORINE_CEILING_WHY if DC.FLUORINE_CEILINGS & set(rejected or []) else DC.LOWCONF_CEILING_WHY
 
 
 def level_of(f: dict) -> str:
@@ -584,6 +618,7 @@ def decide(S, partners=None) -> pd.DataFrame:
     if S.arm:
         partners = None
     left_of = _left(S, keys)
+    unc_of = _uncounted(S, keys)
     routes = _route_anchored(S, rows, keys, f, partners) if n else np.zeros(0, bool)
     member = np.array(f["member"], dtype=bool)
     member_ions = {k for i in np.flatnonzero(member)
@@ -633,7 +668,7 @@ def decide(S, partners=None) -> pd.DataFrame:
             pf.append("NH4 adduct tracks its parent")
         recs.append(dict(
             neutral_formula=keys[i][0], adduct=keys[i][1], evidence_level=lv, claim=EV.claim_class(lv),
-            would_lift=would_lift(lv, g), competitors_left="; ".join(c["name"] for c in lefts[i]),
+            would_lift=would_lift(lv, g), competitors_left=competitors_text(lefts[i], unc_of.get(i, [])),
             n_left=len(lefts[i]), reagent_identity=f["reagent"][i], rejected_by="; ".join(f["rej"][i]),
             o11_tag=f["o11"][i], untestable=f["untestable"][i], ion_only=f["ion_only"][i],
             split_pinned=sp["pinned"], split_rule=sp["rule"], split_text=sp["text"], positive_fact="; ".join(pf),

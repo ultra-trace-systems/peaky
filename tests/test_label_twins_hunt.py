@@ -211,7 +211,7 @@ def test_the_log_counts_the_untied_lines():
     LT.measure(_series(spec), _frames(list(spec), no3=[x], tied=[x]), LABEL,
                alias_ties={"f1": LT.alias_only_ties(_alias_ledger(x))}, log=logs.append)
     assert logs == ["[label_twins] 1 committed [M+NO3]- lines: 1 tracks, 0 consistent, 0 excess, 0 absent, "
-                    "0 untestable (1 untie); 7 [M+^NO3]- readings: 0 refuted by their 14N twin "
+                    "0 shadow, 0 untestable (1 untie); 7 [M+^NO3]- readings: 0 refuted by their 14N twin "
                     "(f 0.0204, 0 untestable)"]
 
 

@@ -58,7 +58,10 @@ import numpy as np
 import pandas as pd
 
 from peaky import paths as PT
+from peaky.assignment import fluorine as FL
 from peaky.assignment.ledger import lead_setters
+from peaky.assignment.tiers import CAL_MIN_N as _CAL_MIN_N
+from peaky.assignment import calpool as _CP
 from peaky.assignment.levels import scale as SCALE
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
@@ -143,6 +146,43 @@ PREDICATE_COLUMNS = (
     # before it has no such column
     "lead_by",
 )
+#: the row's series credit was withheld by the tier stage (fluorine.series_alias_holds:
+#: its 15N alias takes the same series steps). `trim` carries it as this flag --
+#: read off the tier_reason mark, and only where a row carries one -- so the
+#: per-file frames a batch keeps hold no reason text
+SERIES_HELD = "series_held"
+
+
+#: the row's fluorine is read off a CF2 ladder that is lifted but not full (fluorine.LIFT_HELD_MARK in
+#: its tier_reason or commentary): the reading is not refused, but its F count is not confirmed --
+#: the evidence scale's fluorine 5a ceiling applies (levels.decide.FLUORINE_LADDER_REASON). `trim`
+#: carries it as this flag
+LADDER_HELD = "fl_ladder_held"
+
+
+def ladder_held(frame: pd.DataFrame) -> pd.Series:
+    """Per row: its fluorine rests on a CF2 ladder that lifted the refusal but is not full.
+    Read off the LADDER_HELD flag a `trim` frame carries, else off the tier_reason /
+    commentary text (fluorine.LIFT_HELD_MARK); False where none is present."""
+    if LADDER_HELD in frame.columns:
+        return frame[LADDER_HELD].map(truthy).astype(bool)
+    out = pd.Series(False, index=frame.index, dtype=bool)
+    for c in ("tier_reason", "commentary"):
+        if c in frame.columns:
+            out |= frame[c].astype(str).str.contains(FL.LIFT_HELD_MARK, regex=False)
+    return out
+
+
+def series_held(frame: pd.DataFrame) -> pd.Series:
+    """Per row: the tier stage withheld its series credit (the `anchor` axis
+    does not count it). Read off the SERIES_HELD flag a `trim` frame carries,
+    else off the tier_reason mark (fluorine.SERIES_ALIAS_MARK); False where
+    neither column is present."""
+    if SERIES_HELD in frame.columns:
+        return frame[SERIES_HELD].map(truthy).astype(bool)
+    if "tier_reason" in frame.columns:
+        return frame["tier_reason"].astype(str).str.contains(FL.SERIES_ALIAS_MARK, regex=False)
+    return pd.Series(False, index=frame.index, dtype=bool)
 
 # Natural abundance of the heavy isotope relative to the light one, for the
 # satellite the audit looks for. 13C is per carbon and computed from the ion.
@@ -446,7 +486,8 @@ LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
 #: to confirm its isotopes and -- only where the locked halogen is its sole
 #: violation (`budget_ok`, the CF2 analogue) -- a commit outside the element
 #: budget. The radical anion and the reagent-N re-read are never lifted: their
-#: neutrals carry no halogen, and their Low confidence stays hard.
+#: neutrals carry no halogen, and the radical anion's Low confidence stays hard
+#: (the reagent-N re-read is a lead only on a ledger written before cleanup 0.7).
 LIFTABLE_LEADS = frozenset({"spec_n3", "spec_gapfill", "spec_minor", "reflist_dim", "off_budget"})
 
 
@@ -591,9 +632,11 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
     m0["__flagged"] = m0["__below"] | m0["__lead"]
     m0["__lead_by"] = m0["lead_by"].map(lead_setters)
     m0["__lowconf"] = m0["confidence"].map(first_word).isin(LOW_CONFIDENCE)
+    m0["__fl_held"] = ladder_held(m0)
     m0["__deg"] = pd.to_numeric(m0["degeneracy_density"], errors="coerce")
     m0["__sat"] = m0["degeneracy_note"].astype(str).str.contains("MASS-SATURATED", regex=False)
-    m0["__anchor"] = m0["anchor_peak_id"].notna() | m0["series_unit"].notna()
+    # a series step or ladder anchor, unless the tier stage withheld its credit
+    m0["__anchor"] = (m0["anchor_peak_id"].notna() | m0["series_unit"].notna()) & ~series_held(m0)
     m0["__res"] = m0["resolvability"].map(
         lambda v: str(v).strip() if pd.notna(v) and str(v).strip() and str(v).strip().lower() != "nan" else "")
     m0["__mz"] = pd.to_numeric(m0["mz"], errors="coerce")
@@ -669,6 +712,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
             lead_lift=lifted,
             lock_note=str(spec.get("note", "") or "") if lifted else "",
             lowconf=bool(g["__lowconf"].all()),
+            # its fluorine rests on a lifted, not full, CF2 ladder in some file (the 5a ceiling)
+            f_ladder_lift=bool(g["__fl_held"].any()),
             degeneracy=float(g["__deg"].median()) if g["__deg"].notna().any() else np.nan,
             saturated=bool(g["__sat"].any()),
             # resolvability is measured on the trace-first path only; a source
@@ -976,10 +1021,18 @@ def _series_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None,
 def trim(ledger: pd.DataFrame) -> pd.DataFrame:
     """The M0 + isotope rows and the predicate columns of a ledger -- what the
     batch checks (iso_checks, label_twins, neutral_pairs) and the vote class
-    read per file (the rest of the ledger is on disk)."""
+    read per file (the rest of the ledger is on disk) -- plus the SERIES_HELD
+    flag where a row's tier_reason carries the series hold's mark."""
     role = _col(ledger, "role").astype(str)
     keep = ledger[role.isin(["M0", "iso_child"])]
-    return keep[[c for c in PREDICATE_COLUMNS if c in keep.columns]].copy()
+    out = keep[[c for c in PREDICATE_COLUMNS if c in keep.columns]].copy()
+    held = series_held(keep)
+    if held.any():
+        out[SERIES_HELD] = held.to_numpy()
+    lad = ladder_held(keep)
+    if lad.any():
+        out[LADDER_HELD] = lad.to_numpy()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1228,6 +1281,17 @@ NO_WINDOW_TEXT = ("no level · the file is uncalibrated (no calibration core for
 NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calibration core for the degeneracy audit "
                       "in any file): no run window to enumerate competitors in")
 
+#: the `would_lift` of a pair with no level because no file is calibrated: what the
+#: calibration needs (tiers.CAL_MIN_N core rows, the degeneracy window's minimum, in
+#: one file; or the batch-pooled core calpool.py lends when no file has them) -- on
+#: every pair of a pooled source none of whose files is calibrated and whose pooled
+#: core fell short, and on every committed row of an uncalibrated file levelled
+#: alone (NO_WINDOW_LIFT)
+NO_RUN_WINDOW_LIFT = (f"no file of this source calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows in a file, "
+                      f"or a batch-pooled core of ≥ {_CP.POOL_MIN_IONS} distinct carbon-bearing ions isotope-backed "
+                      f"in ≥ {_CP.POOL_MIN_FILES} files)")
+NO_WINDOW_LIFT = f"the file is not calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows)"
+
 #: why such a source, named by --corroborate, gives no other-source partners (the batch and
 #: scripts/level_ledger.py log it and skip the source: its pairs carry no level, so none anchors a partner)
 NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): its pairs carry no level, "
@@ -1365,6 +1429,8 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
             why = NO_WINDOW_TEXT
     if why:
         ledger.loc[m0, "evidence"] = why
+        if why == NO_WINDOW_TEXT:
+            ledger.loc[m0, "would_lift"] = NO_WINDOW_LIFT
     else:
         if pairs is None:
             pairs = level_source(src)
@@ -1378,19 +1444,85 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
 
 #: the evidence text of a merged row whose reading no pooled pair holds
 NO_POOLED_PAIR_TEXT = "no pooled pair: a batch-level re-read"
+#: ... and its `would_lift`
+NO_POOLED_PAIR_LIFT = "batch-level re-read: the re-read pair is not levelled"
+
+#: the levels of a re-read's pooled pair that the re-read row takes: an ION
+#: established (3c / 4a / 4b: the re-read row is 4b, its split open) or a
+#: competitor ion left (5a, as the pair). A rejected pair (5b) is not carried --
+#: its reasons belong to the replaced reading (the hydrocarbon a re-read retires
+#: is 5b for being a hydrocarbon on an N-cluster) -- nor a bucket.
+REREAD_ION_LEVELS = ("3c", "4a", "4b")
+REREAD_CARRIED_LEVELS = REREAD_ION_LEVELS + ("5a",)
+
+
+def _segment(evidence: str, key: str) -> str:
+    """The text of the `<key>: ...` segment of an evidence string ('' if none)."""
+    for seg in str(evidence or "").split(" · "):
+        if seg.startswith(key + ": "):
+            return seg[len(key) + 2:]
+    return ""
+
+
+def _reread_level(pair: pd.Series, source: tuple[str, str]) -> dict:
+    """The COLUMNS of a batch-level re-read row from the pooled pair of the
+    reading it replaced (`source`): the same ion, so the ion step's outcome is
+    the pair's; the split is the re-read's own, and open."""
+    lvl = str(pair["evidence_level"])
+    ev = str(pair.get("evidence") or "")
+    what = f"batch-level re-read of the pooled pair {source[0]} {source[1]}, the same ion"
+    pair_split = _segment(ev, "split")
+    split = f"{what} (that pair's split: {pair_split})" if pair_split else what
+    out = {c: pair.get(c, pd.NA) for c in ("competitors_left", "tags", "context_source")}
+    out["context"] = pd.NA            # the pair's list matches name ITS neutral, not this one
+    if lvl in REREAD_ION_LEVELS:
+        out["evidence_level"] = "4b"
+        out["evidence"] = " · ".join([
+            "4b", f"ion: {_segment(ev, 'ion')}", f"split: open -- {split}", "positive fact: none",
+            "named list: none", f"context source: {pair.get('context_source') or ''}",
+            f"tags: {pair.get('tags') or 'none'}"])
+        out["would_lift"] = f"split not pinned: {split}"
+    else:
+        segs = [(f"split: {split}" if s.startswith("split: ") else s) for s in ev.split(" · ")]
+        out["evidence_level"] = lvl
+        out["evidence"] = " · ".join(segs)
+        out["would_lift"] = pair.get("would_lift", pd.NA)
+    out["claim"] = claim_class(out["evidence_level"])
+    return out
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame | None) -> pd.DataFrame:
     """Join the pooled levels (`level_batch`) onto a merged ledger by
     (neutral_formula, adduct) -- each merged row is one ion, so the join is
-    one-to-one. Every merged row is a committed reading and carries a claim: a
-    row whose reading no pooled pair holds (a batch-level re-read) gets no
-    level, claim tentative and the evidence `NO_POOLED_PAIR_TEXT`."""
+    one-to-one. Every merged row is a committed reading and carries a claim.
+
+    A row whose reading no pooled pair holds is a batch-level re-read (the
+    hydrocarbon-on-N-cluster re-read, the amine gate): its note names the
+    reading it replaced (`cleanup.reread_source`), the same ion, whose pooled
+    pair carries the ion's level. An ion that pair established (3c / 4a / 4b)
+    makes the re-read row 4b -- the ion established, its split open (claim
+    'ion') -- and a competitor left (5a) leaves it 5a; the evidence names the
+    pair (`_reread_level`). Any other such row -- no note, no pooled pair of the
+    replaced reading, or a pair rejected (5b) or bucketed -- gets no level,
+    claim tentative, the evidence `NO_POOLED_PAIR_TEXT` and the would_lift
+    `NO_POOLED_PAIR_LIFT`."""
     out = merged.copy()
     _blank_columns(out)
     if not len(out):
         return out
     hit = _stamp_pairs(out, pd.Series(True, index=out.index), pairs)
     out.loc[~hit, "evidence"] = NO_POOLED_PAIR_TEXT
+    out.loc[~hit, "would_lift"] = NO_POOLED_PAIR_LIFT
+    if (~hit).any() and pairs is not None and len(pairs) and "tier_reason" in out.columns:
+        from peaky.assignment.cleanup import reread_source
+        by_pair = {(str(n), str(a)): i for i, (n, a) in
+                   enumerate(zip(pairs["neutral_formula"], pairs["adduct"]))}
+        for i in out.index[~hit]:
+            src = reread_source(out.at[i, "tier_reason"])
+            j = by_pair.get(src) if src else None
+            if j is None or str(pairs["evidence_level"].iloc[j]) not in REREAD_CARRIED_LEVELS:
+                continue
+            for c, v in _reread_level(pairs.iloc[j], src).items():
+                out.at[i, c] = v
     out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
     return out

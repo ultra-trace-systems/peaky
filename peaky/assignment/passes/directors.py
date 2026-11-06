@@ -13,6 +13,8 @@ from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
+from peaky.assignment import blocked as BL
+from peaky.assignment import fluorine as _FL
 from peaky.assignment import ledger as L
 from peaky.assignment import satellites as _SAT
 from peaky.assignment import series_gka as G
@@ -21,7 +23,7 @@ from peaky.assignment import series_gka as G
 from .config import PassConfig
 from .core import (ABSTRACTION_ADDUCTS, _f, _mech_to_adduct, arbitrate,
                    commit_winners, confidence_label)
-from .postprocess import _DBR, _peak_near, _si_m1_consistent
+from .postprocess import _DBR, _peak_near, _si_m1_consistent, scored_line_is_own
 
 __all__ = [
     "_silanediol_series",
@@ -81,6 +83,14 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
             "C18H39O7P": "tris(2-butoxyethyl) phosphate (TBEP)",
             "C24H51O4P": "tris(2-ethylhexyl) phosphate (TEHP)",
             "C21H21O4P": "tricresyl phosphate (TMPP / TCrP)",
+            # a phosphonate and a chlorinated phosphate ester, both seen in a
+            # field campaign's uronium blanks on two or three channels: DMMP
+            # ([M+H]+ and the urea adduct, 0.97-0.98 each) and the TCPP flame
+            # retardant ([M+H]+, [M+NH4]+ and the urea adduct, its 37Cl line at
+            # 0.93-0.96x M0 against the 0.96 three chlorines predict); the gate
+            # below is unchanged (>= 2 channels or a 37Cl / 34S / 81Br envelope)
+            "C3H9O3P": "dimethyl methylphosphonate (DMMP)",
+            "C9H18Cl3O4P": "tris(chloroisopropyl) phosphate (TCPP / TCIPP)",
         }
         # ORGANOTHIOPHOSPHATE / -DITHIOATE insecticides: agricultural
         # organophosphorus pesticides (P + 1-3 S), primary AMBIENT analytes over
@@ -341,6 +351,31 @@ _D37CL = 1.9970499
 # source produces in every spectrum. Formulas in peaky's canonical Hill order.
 _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 
+#: the pass-0 families whose rule DEMANDS corroboration beyond the exact mass
+#: (a second ion channel, or the element's own envelope -- the silanediols'
+#: Si M+1 line at >= SI_M1_MIN_FRAC of its prediction, `_si_m1_consistent`);
+#: every other family commits on exact mass alone (the PFCAs, the
+#: nitroaromatics, the C0 acids, reactive iodine ...)
+CORROBORATED_KNOWN_FAMILIES = frozenset({"organophosphate", "organothiophosphate", "indoor_sulfur",
+                                         "cyclosiloxane", "chlorinated_paraffin",
+                                         "contaminant:silanediol"})
+
+
+def known_demands_corroboration(family, formula) -> bool:
+    """Whether the pass-0 rule of this known species asks for more than the
+    exact mass: its family is one of CORROBORATED_KNOWN_FAMILIES, or it is one
+    of the gated atmospheric species (`_ATMOS_CORROBORATE`, compared in
+    canonical Hill order whatever spelling the record carries). The batch's
+    known-species cap (assign_batch.lock_known_species) applies to these
+    species, and to them only."""
+    if str(family or "") in CORROBORATED_KNOWN_FAMILIES:
+        return True
+    try:
+        hill = C.format_formula(C.parse_formula(str(formula or "")))
+    except Exception:  # noqa: BLE001 -- an unparseable formula: not a gated species
+        return False
+    return hill in _ATMOS_CORROBORATE
+
 
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
 
@@ -393,7 +428,11 @@ def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl
     One JSON record per peak; a peak is one ion, so the
     first refused claim on it stands. The row itself is untouched otherwise --
     the grid may still assign it -- and the batch reads the record back
-    (assign_batch.known_evidence) to decide the species once, by evidence."""
+    (assign_batch.known_evidence) to decide the species once, by evidence.
+    Every refused claim is also noted as a blocked reading of the peak
+    (blocked.note; `pass0:<verdict>: <summary>`)."""
+    BL.note(pid, f"pass0:{verdict}: {BL.short(summary or why)}", neutral=formula, adduct=adduct,
+            ion=ion_formula, score=ion_score, ppm=ppm)
     if "known_lead" not in ledger.columns:
         ledger["known_lead"] = pd.NA
     idx = ledger.index[ledger["peak_id"] == pid]
@@ -492,6 +531,8 @@ def run_pass0_known(
         ].unique()
     )
     mzs = ledger["mz"]
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
+    line_gate = _SAT.LineGate(ledger, cfg)
     for _, r in base.iterrows():
         ppm = r["ppm_error"]
         # the known-list privilege still requires the MASS, but judged against the
@@ -499,6 +540,11 @@ def run_pass0_known(
         # -1.9 ppm) doesn't drop on-trend contaminants and hand the peak to an
         # off-trend CHO mass-fit (the silanediol-vs-C5H10O6 collision at -1.9 ppm).
         if ppm is None or pd.isna(ppm) or abs(float(ppm) - cfg.prior_offset) > cfg.pass0_ppm:
+            if BL.active() and ppm is not None and pd.notna(ppm):
+                BL.note(r["sample_peak_id"],
+                        f"pass0:ppm {abs(float(ppm) - cfg.prior_offset):.1f}>{cfg.pass0_ppm:.1f}",
+                        neutral=r["compound_formula"], adduct=_mech_to_adduct(r), ion=r["ion_formula"],
+                        score=r["ion_score"], ppm=ppm)
             continue
         pid = r["sample_peak_id"]
         try:
@@ -670,6 +716,29 @@ def run_pass0_known(
                     # 29Si line alone, and the 30Si line) like every other refusal
                     _lead(**_twin_verdict(ledger, pid, _c0, cfg))
                     continue
+            # the commit contract: a known S / Cl / Br / Si species whose own line
+            # the file would show (predicted at >= COMMIT_LINE_X_FLOOR x the gate)
+            # and does not is not locked here. Its lead votes against the species
+            # at the batch only where the line was predicted at the twin test's
+            # own TWIN_REFUTE_X_FLOOR (a refutation); under it the lead is
+            # 'deferred' -- the per-file list censors such a line.
+            lv = line_gate.row_verdict(ledger, pid, r["compound_formula"], r["ion_formula"])
+            if lv["verdict"] == _SAT.LG_REFUSED:
+                xs = [rec["x"] for rec in lv["lines"] if rec["status"] in ("absent", "low")]
+                hard = bool(xs) and max(xs) >= _SAT.TWIN_REFUTE_X_FLOOR
+                out["line_refused"] = out.get("line_refused", 0) + 1
+                log(f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: its own "
+                    f"line is absent where the file would show it ({lv['why']})")
+                _lead(verdict="refuted" if hard else "deferred",
+                      twin=next((el for el, ev in lv["elements"].items() if ev == _SAT.LG_REFUSED), None),
+                      why=lv["why"],
+                      summary=("own diagnostic line absent where predicted above the floor" if hard else
+                               f"own diagnostic line absent, predicted under {_SAT.TWIN_REFUTE_X_FLOOR:g}x "
+                               "the floor (censored)"))
+                _SAT.record_refusal(ledger, pid, reading=f"{r['compound_formula']} {_mech_to_adduct(r)}",
+                                    route=f"pass 0 known:{fam}", why=lv["why"], ion=r.get("ion_formula"),
+                                    score=r.get("ion_score"), ppm=r.get("ppm_error"))
+                continue
             conf = (
                 f"Good ({tag})"
                 if float(r["ion_score"]) >= 0.7 or n_kids >= 2
@@ -1445,7 +1514,7 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
     return True
 
 
-def _context_filter(formulas, context) -> list[str]:
+def _context_filter(formulas, context, rejected: dict | None = None) -> list[str]:
     """Context plausibility gate for the generic passes. ``context`` is the run's
     ContextProfile (its run-level switches: the NOx-skeleton reading) or a name.
 
@@ -1456,12 +1525,17 @@ def _context_filter(formulas, context) -> list[str]:
     through the curated pass-0 known-species list, which does not pass through here.
     Without that, the SERIES passes extrapolate off pass-0 anchors and invent them:
     the first iodide batch produced 8 covalent-organoiodine neutrals (CHIO2,
-    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster."""
+    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster.
+
+    ``rejected`` (a dict), when given, collects every refused formula with the
+    filter's reason -- what the passes note as blocked readings (blocked.py)."""
     out = []
     for f in formulas:
-        keep, _ = X.filter_by_context(f, context)
+        keep, why = X.filter_by_context(f, context)
         if keep:
             out.append(f)
+        elif rejected is not None:
+            rejected[f] = why
     return out
 
 
@@ -1540,7 +1614,14 @@ def run_pass1(
     # CHO-before-CHON preference, so no need for two separate sub-passes.
     ranges = build_ranges(profile, pre, include_N=True)
     grid = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
-    formulas = set(_context_filter(grid, profile))
+    rejected = {} if BL.active() else None
+    formulas = set(_context_filter(grid, profile, rejected))
+    if rejected is not None:
+        # the exits of the grid: a target it gave no candidate (the box), and the
+        # candidates the context filter refused, on the targets they reach
+        gadducts = [a for a in adducts if a not in ABSTRACTION_ADDUCTS]
+        BL.note_grid(tgt, grid, gadducts, cfg.search_ppm, f"{ranges_to_string(ranges)}, integer DBE")
+        BL.note_context(tgt, rejected, gadducts, cfg.search_ppm)
     log(f"[pass1] {len(formulas)} context-plausible CHO/CHON candidate formulas")
     scored = IO.score_candidates(
         client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
@@ -1666,6 +1747,7 @@ def run_pass2(
         units = units + ("CF2",)
     total = {"committed": 0, "locked": 0, "iso_attached": 0}
     tried: set[str] = set()
+    noted: set[str] = set()      # context-refused proposals already noted (blocked.py)
     # Iterative GKA: each round, confirmed members (incl. last round's) act as
     # anchors, so homologous series are walked outward step by step.
     for it in range(cfg.series_max_iter):
@@ -1681,7 +1763,11 @@ def run_pass2(
                 mz, anchors, adducts, units=units, ppm=cfg.series_ppm, max_steps=1
             ):
                 proposals.add(p.neutral_formula)
-        proposals = set(_context_filter(proposals, profile)) - anchors - tried
+        rejected = {} if BL.active() else None
+        proposals = set(_context_filter(proposals, profile, rejected)) - anchors - tried
+        if rejected:
+            BL.note_context(tgt, {f: w for f, w in rejected.items() if f not in noted}, adducts, cfg.series_ppm)
+            noted |= set(rejected)
         if not proposals:
             log(f"[pass2.{it}] no new proposals; stopping")
             break
@@ -1715,6 +1801,106 @@ def run_pass2(
 _KEY_FROM_ADDUCTS = object()
 
 
+def _gate_floor(cfg) -> float | None:
+    """The file's floor an isotope-gated family judges testability against
+    (the resolved height gate), or None where it is unresolved."""
+    import math
+    try:
+        fl = float(cfg.height_cutoff)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    return fl if math.isfinite(fl) and fl > 0 else None
+
+
+def _iso_gate_targets(ledger: pd.DataFrame, tgt: pd.DataFrame, fam_key: str, element: str, profile,
+                      cfg: PassConfig) -> dict | None:
+    """The peaks an isotope-gated family reads (contexts.family_iso_gate): the
+    target peaks with a picked partner at `element`'s exact offset, within the
+    own-line window (satellites.own_line_window_ppm), at a height the family's
+    counts allow (OWN_LINE_RATIO x 1..n_max atoms) -- and, for a family that
+    commits an untestable reading (contexts.family_iso_gate_untestable), the
+    peaks whose one-atom line is predicted under the testable level
+    (satellites.own_line_testable): no partner could have shown there. None
+    where no window exists (not an Orbitrap-class run: the family is skipped).
+    Returns {'mzs', 'pids', 'label', 'lines' (the file's real peak lines,
+    sorted), 'window_ppm', 'element', 'floor', 'untestable_ok', 'profile' (the
+    context with the element's cap lifted to the family's where it is lower)}."""
+    import dataclasses
+    win = _SAT.own_line_window_ppm(cfg)
+    if win is None:
+        return None
+    fam = X.CONTAMINANT_FAMILIES[fam_key]
+    delta, per, label = _SAT.TWIN_LINES[element][0]
+    n_max = int(fam["add"][element][1])
+    lo, hi = _SAT.OWN_LINE_RATIO
+    floor = _gate_floor(cfg)
+    untestable_ok = X.family_iso_gate_untestable(fam_key)
+    lmz, lh = _SAT._peak_lines(ledger, artifacts=False)
+    mzs, pids = [], []
+    for pid, mz0, h0 in zip(tgt["peak_id"], pd.to_numeric(tgt["mz"], errors="coerce"),
+                            pd.to_numeric(tgt["height"], errors="coerce")):
+        if not (pd.notna(mz0) and pd.notna(h0) and h0 > 0):
+            continue
+        tg = float(mz0) + delta
+        j = _SAT._nearest(lmz, tg, tg * win * 1e-6)
+        if (j is not None and lo * per <= float(lh[j]) / float(h0) <= hi * per * n_max) or (
+                untestable_ok and not _SAT.own_line_testable(h0, {element: 1}, element, floor)):
+            mzs.append(float(mz0))
+            pids.append(pid)
+    cap = int(getattr(profile, f"max_{element}", 0))
+    lifted = dataclasses.replace(profile, **{f"max_{element}": n_max}) if cap < n_max else profile
+    return {"mzs": mzs, "pids": set(pids), "label": label, "lines": (lmz, lh), "window_ppm": win,
+            "element": element, "floor": floor, "untestable_ok": untestable_ok, "profile": lifted}
+
+
+def _iso_gate_winners(ledger: pd.DataFrame, arb: dict, gate: dict, *, log=print, fam_key: str = "") -> dict:
+    """`arb` with only the winners of an isotope-gated family whose ION shows
+    its own line of the gate element (satellites.own_line, on the winner's
+    peak in this file) -- or, where the family commits an untestable reading
+    (`gate['untestable_ok']`), whose line is predicted under the testable level
+    (satellites.own_line_testable; the tier engine holds such a row at
+    Candidate) -- and only those winners' isotope children. A winner whose line
+    was testable and is not seen is refused."""
+    from peaky.assignment.tiers import _ion_counts
+    win = arb.get("winners", pd.DataFrame())
+    if not len(win):
+        return arb
+    by_pid = ledger.drop_duplicates("peak_id").set_index("peak_id")
+    el = gate["element"]
+    keep, refused, held = [], 0, 0
+    for _, w in win.iterrows():
+        pid = w["peak_id"]
+        ion = _ion_counts(w["neutral"], w["adduct"])
+        ok = False
+        why = f"no {gate['label']} partner at the gate offset"
+        if pid in gate["pids"] and ion and pid in by_pid.index:
+            h0 = by_pid.at[pid, "height"]
+            v = _SAT.own_line(gate["lines"][0], gate["lines"][1], by_pid.at[pid, "mz"], h0,
+                              ion, el, window_ppm=gate["window_ppm"])
+            ok = bool(v["confirmed"])
+            why = v["why"]
+            if not ok and gate.get("untestable_ok") and int(ion.get(el, 0) or 0) > 0 \
+                    and not _SAT.own_line_testable(h0, ion, el, gate.get("floor")):
+                ok = True
+                held += 1
+        keep.append(ok)
+        refused += int(not ok)
+        if not ok:
+            # the peak's blocked reading (blocked.py; a no-op outside a run)
+            BL.note_winner(w, BL.short(f"iso_gate:{fam_key}: {why}"))
+    win = win[pd.Series(keep, index=win.index, dtype=bool)]
+    kids = arb.get("iso_children", pd.DataFrame())
+    if len(kids):
+        kids = kids[kids["parent_peak_id"].isin(set(win["peak_id"]))]
+    if refused:
+        log(f"[pass3:{fam_key}] {refused} winner(s) refused: no own {gate['label']} line at the ion's count"
+            + (" where one was testable" if gate.get("untestable_ok") else ""))
+    if held:
+        log(f"[pass3:{fam_key}] {held} winner(s) committed with their {gate['label']} line untestable "
+            "(the tier holds them at Candidate)")
+    return {**arb, "winners": win, "iso_children": kids}
+
+
 def run_pass3(
     client,
     sample_id: str,
@@ -1741,7 +1927,10 @@ def run_pass3(
     ``curated`` runs the HX/I2 cluster resolution and the profile's own families,
     detects the GKA series structure, and hands it back in ``_carry`` WITHOUT
     opening anything. ``series`` runs later (after passes 4/5/7) and opens only
-    the evidence-backed families, on whatever residual is left.
+    the evidence-backed families, on whatever residual is left -- and then the
+    profile's ISOTOPE-GATED families (contexts.family_iso_gate: the positive
+    sources' organosulfur_34s and organochlorine), last of all, with or without
+    series evidence. ``all`` runs those last too.
 
     Why: pass 3 sits before the residual/completion/certified passes and claims
     from the same unexplained pool, so an evidence-opened family took peaks those
@@ -1750,6 +1939,10 @@ def run_pass3(
     the peaks freed by holding the family back reached it 48 % of the time. The
     detection is unchanged and still measured on the FULL residual (that is why
     the evidence is carried rather than re-detected); only the claim order moves.
+    The isotope-gated families are a new route for an element on a source that
+    otherwise never proposes it, and their box holds near-exact aliases of
+    better-evidenced readings (a cyclic siloxane [M+H]+ and an S2 reading of
+    it are 0.17 ppm apart), so they take only what everything else left.
 
     ``all`` is the original single-shot behaviour and stays the default.
     """
@@ -1796,7 +1989,10 @@ def run_pass3(
     # halide-CIMS: also try covalent organohalogens. The arbitration keeps the
     # complexity prior on the reagent element (its ion isotope can't prove
     # neutral ownership), so these only win with a real score margin.
-    families = [] if phase == "series" else list(profile.pass3_families)
+    # The profile's ISOTOPE-GATED families (contexts.family_iso_gate) claim last:
+    # in the series phase when the pass is split, else after every other family.
+    gated = [f for f in profile.pass3_families if X.family_iso_gate(f)]
+    families = [] if phase == "series" else [f for f in profile.pass3_families if f not in gated]
     if phase != "series":
         if reagent == "Br" and "bromo_organic" not in families:
             families.append("bromo_organic")
@@ -1816,9 +2012,11 @@ def run_pass3(
         # the reorder. Only the CLAIM is deferred, not the measurement.
         evidence = (carried or {}).get("evidence")
         fam_members = dict((carried or {}).get("fam_members") or {})
-        if evidence is None or evidence.empty:
+        if (evidence is None or evidence.empty) and not gated:
             log("[pass3:series] no carried series evidence; skipping")
             return {"committed": 0, "locked": 0, "iso_attached": 0}
+        if evidence is None:
+            evidence = pd.DataFrame(columns=["unit", "mass", "n_links", "significant", "action"])
     else:
         evidence = SD.detect_series(
             ledger, ppm=cfg.search_ppm, min_height=cfg.height_cutoff
@@ -1848,6 +2046,8 @@ def run_pass3(
         if opened:
             log(f"[pass3] GKA evidence held for the late series phase: "
                 f"{', '.join(opened)}")
+        if gated:
+            log(f"[pass3] isotope-gated families held for the late series phase: {', '.join(gated)}")
     else:
         for fam in SD.families_from_evidence(evidence):
             if fam not in families:
@@ -1857,6 +2057,8 @@ def run_pass3(
                     f"opened family: {fam} "
                     f"({len(fam_members.get(fam, []))} chain-member targets)"
                 )
+        # last of all: what every pass and family before left unexplained
+        families.extend(f for f in gated if f not in families)
     anchors_now = set(
         ledger.loc[ledger["role"] == L.ROLE_M0, "neutral_formula"].dropna()
     )
@@ -1864,6 +2066,21 @@ def run_pass3(
         fam = X.CONTAMINANT_FAMILIES.get(fam_key)
         if not fam:
             continue
+        # an isotope-gated family (contexts.family_iso_gate) reads only the
+        # peaks that show a partner at its element's offset, and commits only
+        # where the ion's own line is seen (`_iso_gate_targets` / `_iso_gate_winners`)
+        gate = None
+        if X.family_iso_gate(fam_key):
+            gate = _iso_gate_targets(ledger, tgt, fam_key, X.family_iso_gate(fam_key), profile, cfg)
+            if gate is None:
+                log(f"[pass3:{fam_key}] skipped: its {X.family_iso_gate(fam_key)} gate reads the ion's own "
+                    "exact-offset line, an Orbitrap-class test")
+                continue
+            if not gate["mzs"]:
+                log(f"[pass3:{fam_key}] no unexplained peak shows a {gate['label']} partner"
+                    + (" or sits where it would be untestable" if gate["untestable_ok"] else "")
+                    + "; skipping")
+                continue
         try:
             ranges = build_ranges(
                 profile, pre, include_N=True, extra_elements=fam["add"]
@@ -1927,7 +2144,8 @@ def run_pass3(
                                 else:
                                     break
             else:
-                formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, fam_adducts)
+                formulas = _enumerate(client, gate["mzs"] if gate else mzs, mech_ids, ranges, cfg,
+                                      fam_adducts)
             # Structural-only filtering is EARNED BY EVIDENCE: GKA-opened
             # families bypass the context caps (ambient max_F=0 would veto the
             # very candidates the detected CF2 chains justify), with the chain
@@ -1935,10 +2153,16 @@ def run_pass3(
             # families keep the full context filter -- without chain evidence,
             # dropping the ratio priors lets mass-fit junk flood in (v9/v10
             # lesson: 142 'amines').
+            # An isotope-gated family keeps the full context filter with only
+            # its own element's cap lifted to the family's (the gate is its
+            # evidence for that element, and for nothing else).
             if fam_key in fam_members:
                 formulas = {f for f in formulas if _family_ok(f, ranges)}
             else:
-                formulas = set(_context_filter(formulas, profile))
+                rejected = {} if BL.active() else None
+                formulas = set(_context_filter(formulas, gate["profile"] if gate else profile, rejected))
+                # noted on the run's own (scored) channels only
+                BL.note_context(tgt, rejected, [a for a in fam_adducts if a in adducts], cfg.search_ppm)
             if fam_key in ("bromo_organic", "chloro_organic"):
                 # drop covalent-X aliases of anchor.HX clusters: if stripping
                 # one HX from X yields an existing anchor, the cluster reading
@@ -1955,7 +2179,12 @@ def run_pass3(
             scored = IO.score_candidates(
                 client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
             )
-            arb = arbitrate(scored, cfg, profile)
+            # the fluorinated family's sub-mDa aliases (C8 vs H1F5) also answer
+            # to the peak's 13C line (fluorine.c13_alias_penalties)
+            arb = arbitrate(scored, cfg, profile,
+                            c13_alias=(_FL.c13_lines(ledger, cfg) if fam_key == "fluorinated" else None))
+            if gate:
+                arb = _iso_gate_winners(ledger, arb, gate, log=log, fam_key=fam_key)
             s = commit_winners(
                 ledger,
                 arb,
@@ -1966,10 +2195,17 @@ def run_pass3(
                 context=profile.label,
                 cfg=cfg,
                 lock=False,
-                min_raw_score=cfg.tau_suspect,
+                # pass 1's score bar: a family widens the element box, not the
+                # score bar (at tau_suspect, siloxane Si3 readings whose 29Si line
+                # no file showed took bright S lines under the pass-1 bar)
+                min_raw_score=cfg.tau_low,
                 confidence_suffix=fam_key,
                 claim_unexplained_only=True,
                 only_peaks=fam_members.get(fam_key),
+                # its own S / Cl / Br / Si line where the file would show it
+                # (satellites.own_line_verdict); a family declaring
+                # line_gate='strict' commits an untestable one Low at most
+                line_gate=fam.get("line_gate", "refuse"),
             )
         except Exception as e:
             log(f"[pass3:{fam_key}] FAILED: {type(e).__name__}: {e}")
@@ -2155,6 +2391,9 @@ def run_pass_certified(
     ee_ctx = (_SAT.evidence_context(ledger, klass="orbitrap", cal_sigma=getattr(cfg, "cal_sigma", None),
                                     resolution=resolving_power)
               if klass == "orbitrap" else None)
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
+    line_gate = _SAT.LineGate(ledger, cfg, resolution=resolving_power)
+    own_cache: dict = {}       # the members' envelopes, for the own-line test of their scored lines
 
     # enumerate expanded-box candidates per certificate (off-grid P/S/Cl only:
     # plain CHON near the core is pass-1's territory and already lost there)
@@ -2261,6 +2500,23 @@ def run_pass_certified(
                 f"{'/'.join(sorted(h.adduct for h in cert.hits))} pair differs by the reagent acid "
                 f"(the ordinary cluster pattern) and {why}")
             continue
+        # the commit contract over the member ions: an element any member shows
+        # stands; one no member shows while a member's file would show it (its
+        # line predicted at >= COMMIT_LINE_X_FLOOR x the resolved gate, absent)
+        # refuses the certificate -- nothing committed, nothing displaced, the
+        # reason on the unexplained members' rows. An F reading the certificate
+        # box cannot offer is then left to the late families.
+        if own:
+            lv = _SAT.pool_line_verdicts(line_gate.row_verdict(ledger, h.peak_id, winner, member_ion.get(h.peak_id))
+                                         for h in cert.hits)
+            if lv["verdict"] == _SAT.LG_REFUSED:
+                out["line_refused"] = out.get("line_refused", 0) + 1
+                log(f"[pass7] {winner} @core {cert.core_mass:.4f} not committed: its own line is absent "
+                    f"where the file would show it ({lv['why']})")
+                for h in cert.hits:
+                    _SAT.record_refusal(ledger, h.peak_id, reading=f"{winner} {h.adduct}",
+                                        route="pass 7 certified", why=lv["why"])
+                continue
         # optional TS corroboration (guarded: fully optional)
         ts_note = ""
         if ts_peaks is not None and len(ts_peaks):
@@ -2373,6 +2629,14 @@ def run_pass_certified(
                 for _, k in kids[(kids["compound_formula"] == winner)
                                  & (kids["ion_formula"] == h_ion)
                                  & (kids["sample_peak_id"] != h.peak_id)].iterrows():
+                    # a heteroatom line is the member's own only by the envelope
+                    # sweep's test (calibrated Orbitrap-class run): the scorer's
+                    # window took a line 2.5-3.2 ppm off a P/S certificate's 34S
+                    # position as its 34S line
+                    if not scored_line_is_own(ledger, h.peak_id, k["sample_peak_id"], h_ion,
+                                              k["iso_label"], cfg, cache=own_cache):
+                        out["iso_not_own"] = out.get("iso_not_own", 0) + 1
+                        continue
                     try:
                         L.attach_isotopologue(ledger, k["sample_peak_id"], h.peak_id,
                                               iso_label=k["iso_label"],

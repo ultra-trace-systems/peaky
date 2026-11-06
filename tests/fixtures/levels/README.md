@@ -63,7 +63,69 @@ instead -- competitor counts, files). Gzipped because the privacy scanner reads
 a 16-letter neutral formula as an id. **`expected_vectors_v1.json`** holds the
 golden vectors, pairs per level in the order 3c/4a/4b/5a/5b/reagent/NA:
 `v1_nitrate` 1,850 = 10/186/289/472/892/1/0, `v1_uronium` 1,161 =
-17/75/913/125/31/0/0. Both are pinned until the user signs off the vectors; a
+17/75/913/125/31/0/0 when cut; now 9/186/299/879/476/1/0 and
+17/75/913/140/16/0/0 (the release fixes' lowconf ceiling, the fluorine 5a
+ceiling, then the level space opening a family only on real evidence and
+without cross-family mixtures, `tests/test_levels_fixtures.py` names each
+step). The level-space step (D4)
+changes 288 `v1_nitrate` rows and no `v1_uronium` row (its run opens no family
+without evidence and has no mixture to drop, so it has no shadow space). All
+288 are CHO(N) readings: a committed reading carrying a heteroatom no own
+in-band line confirms (the F, Br, Cl, S and Si readings here) keeps the
+shadow's readings counted and does not move. On every one of the 288 the ions
+only the shadow space proposes (fluorine with chlorine or bromine: no halogen
+family is open on this ambient-air run) leave the counted set and are listed
+after `not counted (element family not open on evidence)`:
+- `evidence_level` / `claim` / `inpass_level` on 9 rows: CHO pairs left only an
+  F+Cl formula read 4b instead of 5a (a Br and a Cl reading in the same case
+  stay 5a: no own 81Br / 37Cl line confirms their halogen, so their uncounted
+  readings count);
+- `competitors_left`, `n_competitors` and `evidence` on all 288 (the counted
+  list and count drop; the ion text adds `<u> not counted`);
+- `n_excl_iso` on 136 (an uncounted reading the isotope tests exclude is no
+  longer counted among the excluded competitors);
+- `would_lift` / `inpass_why` on 157 (the competitors they name);
+- `tags` on 7: three pairs now 4b lose a tag only 5a prints (`tie` on
+  C12H20O5 [M+NO3]-, `suspect match` on C14H26O9 and C9H14O9 [M-H]-), and four
+  pairs whose level does not move count one series exclusion fewer
+  (`series exclusion x1` drops on C14H26O7 [M-H]-, C6H8O5 and C9H14O5
+  [M+NO3]-; x4 -> x3 on C9H12O4 [M+^NO3]-): the competitor it excluded is
+  now uncounted; `n_series_excl` moves on the same four;
+- one pair's counted list names a competitor ion by its level-space reading:
+  C12H16O5 [M+Br]- lists C10H18F2O2S [M+Br]-, the same ion as the mixture
+  C10H19BrF2O2S [M-H]- that stood for it before.
+
+Two later steps move text columns only (no level, claim or vector):
+- the fluorinated family's F ceiling of 25: F18-F25 readings enter the level
+  space wherever fluorine is open, on 107 `v1_nitrate` rows (`competitors_left`,
+  `n_competitors`, `evidence`; `would_lift` / `inpass_why` on 21, `n_excl_iso`
+  on 11; two rows only re-name an ion's representative reading). Where such a
+  reading mixes fluorine with chlorine or bromine, the D4 rule above lists it as
+  not counted, so on 24 rows that carry both changes the count is the D4
+  count plus the new readings the level space admits;
+- the positive organophosphate known list: TCPP (C9H18Cl3O4P), a pass-0
+  registry formula, enters the `v1_uronium` level space, and the 5b pair
+  C11H14O15 [M+H]+ lists its urea adduct as a competitor, whose 37Cl line in
+  band also refutes the committed reading's count (`evidence`, `would_lift`,
+  `inpass_why`, `competitors_left`, `n_competitors`, `n_excl_iso`).
+
+Against the table before these three steps 372 rows differ (371 `v1_nitrate`,
+1 `v1_uronium`); every moved column is one of the classes above.
+
+The fluorine 5a ceiling (unconfirmed fluorine alone is "not established, not
+refuted", docs/EVIDENCE_LEVELS.md §4) moves 388 `v1_nitrate` pairs 5b -> 5a
+(`evidence_level`, `inpass_level`, `inpass_why`, `would_lift`, `evidence`,
+the `fluorine 5a ceiling` tag). Two other steps move texts only: on 100
+`v1_uronium` rows the valence check before the adduct default and the
+absent-parent refutation on a side channel (`split_how`, `nh4_gate`,
+`would_lift`, `evidence`, `tags`), and on 2 `v1_nitrate` rows the per-file 13C
+count at S/N >= 10 (`would_lift`, `inpass_why`, `evidence`). On 37 of the fluorine pairs both that
+ceiling and the F25 level space above apply: the pair reads 5a at the ceiling
+with the F25 space's competitor count and list. A reading whose CF2 ladder a
+line refutes would stay 5b (a second setter, `refuted fluorine ladder`); the
+fixture ledgers predate the ladder's refusal note, so no pair here carries it.
+
+Both are pinned until the user signs off the vectors; a
 change that moves them is a change of the scale and must say so. Regenerate
 from the fixtures in the repo with `build_fixtures.py --expected-only` (no run
 directory read); `--check` compares a fresh table with the repo's.

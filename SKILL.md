@@ -272,7 +272,14 @@ confirmed **diagnostic** heavy-isotope envelope (³⁴S / ³⁷Cl / ⁸¹Br, **n
 can't refute an off-grid P) standing in for the 2nd channel.
 `cleanup.demote_unconfirmed_fluorine` (run **after**
 `apply_tiers`) demotes F≥4 M0 that are not a PFCA and lack a Cl/Br/S anchor —
-¹⁹F mass-coincidence "monsters" → Candidate + `below_assignability`.
+¹⁹F mass-coincidence "monsters" → Candidate + `below_assignability` — unless the
+reading sits on a CF₂ ladder (`assignment/fluorine.py`: ≥ 2 lines ± k·CF₂ in the
+file, one of them a ±1 neighbour, not refuted by its ¹⁵N alias's ¹⁴N twin or its own
+¹³C line): then it is Candidate without the flag, and keeps its tier once 3 ladder
+members are committed -- on a ¹⁵N-nitrate run only once its C₂F₃ ↔ H₂^NO₄ alias is
+tested (an ^N-free reading bright enough for the alias's ¹⁴N twin to show, and it
+does not) or cannot exist (a DBE-0 reading: the swap lowers the DBE by one); else
+it stays Candidate.
 
 - **Mass offset ("be aware of the −X ppm"):** the reported `ppm_error` stays RAW,
   but every quality gate is offset-aware. `io_mascope.estimate_offset` seeds a
@@ -371,14 +378,18 @@ file otherwise falls back to `[M-H]-` = wrong polarity). For positive urea-CIMS,
 the exact-mass degeneracy `[M+NH4]+` of X ≡ `[M+H]+` of the amine X+NH3 by TIME: a real
 ammonium adduct must TRACK X's own `[M+H]+`/urea parent (2 h-binned log-corr), and only a
 WEAK X (≤1 O or ≤4 C, `nh4_weak_neutral`) is ever re-read: a multifunctional X (≥2 O on ≥5 C)
-keeps its adduct reading by default, and a weak X that tracks is kept capped Candidate (its
-source-made amide tracks too). For a weak X, THREE-WAY
-per neutral — **keep** the adduct when it tracks a shaped parent (r≥`r_min`);
-**re-read** to the amine when it fails to track a shaped parent (r≤0.2) OR the parent
-channels are absent from the TS (their absence refutes the ammonium reading); **cap at
-Candidate** (keep the adduct but demote) when the pairing is weak (0.2<r<`r_min`) or the
-present parent is FLAT (no shape to correlate — the NBBS blind spot). Overrides that keep
-the adduct at tier: Si-bearing X (siloxane adducts are real), a `protected` neutral
+keeps its adduct reading by default (on the uronium side channel its absent parent channels
+still re-read it), and a weak X that tracks is kept, tier and all, with a note that the split is
+open when it has ≤6 C or no O (`nh4_weak_tracked`: its source-made amide tracks too). For a weak X it **keeps** the adduct
+when it tracks a shaped parent (r≥`r_min`) and otherwise **re-reads** it as the `[M+H]+`
+amine: it fails to track a shaped parent (r≤0.2), the parent channels are absent from the
+TS (their absence refutes the ammonium reading), the pairing is weak (0.2<r<`r_min`) or the
+present parent is FLAT (no shape to correlate — the NBBS blind spot; there the amine is a
+default, not a finding). A re-read is the same ion: it keeps the tier the merge vote gave
+the ion (the tier answers "is the ion right?"), and the open split is the evidence level's
+(a re-read row takes the level of the pooled pair it replaced: 4b, `ion`, where that pair
+established the ion). Overrides that keep the adduct: Si-bearing X (siloxane adducts are
+real), a `protected` neutral
 (reflist-rescue / known-species / certified provenance, established independent of the NH4
 channel — this holds NBBS, whose weak isobar-contaminated NH4 trace fails the tracking
 test), and a valence-impossible amine (forced). Without a TS it degrades to the binary
@@ -582,7 +593,7 @@ directly instead of `--run-dir`.
 | **`certified_neutral.py`** | PURE certified-neutral core: `channel_offsets` (adduct + cluster-ladder offsets, alias de-dup), `find_certificates` (>=2-channel convergence -> `Certificate`, parsimony selection), `enumerate_certified` (expanded P/S/Cl box for a certified mass ONLY), `ts_covariation` (optional batch-TS corroboration), `corroboration_count`. Pipeline entry `run_pass_certified` (passes/directors, pass 7); standalone `scripts/certify_neutrals.py` (offline certificate table / full oracle mode) |
 | `analyte_viz.py`      | **consistent** Van Krevelen + raw time-series from a ledger + batch TS (one row per neutral, RAW intensity, changing-cv threshold). **`render_van_krevelen_full`** = EVERY assigned peak by CHO/CHON/CHOS backbone (Si/F/halogen folded in). `attach_dynamics(bin_minutes=)` for short batches. CLIs: `scripts/analyte_plots.py`, `scripts/analyte_widgets.py` (interactive HTML)                                        |
 | `degeneracy.py`       | honest mass-degeneracy measurement over the run's own channels and committable element space (`degeneracy_density`/note); analytic per-peak enumeration, no grid |
-| `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read to the `[M+H]+` amine when it fails to track / the parent is absent, cap Candidate when weak-or-flat; Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
+| `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read a weak X to the `[M+H]+` amine otherwise (fails to track, parent absent, weak or flat: the same ion, so the tier stands and the split stays the level's); a multifunctional X keeps its adduct by default, a tracking weak X is noted (tier kept); Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
 | **`reflists.py`**     | curated, self-describing **reference-peaklist** catalog (`peaky/data/peaklists/`: metadata + version + references + provenance) — `load_catalog`/`active_lists` (context-gated; contaminants always on), `match_assigned` (selection-prior corroboration), `rescue_unexplained_by_reflist` (mass-match → server re-score → commit-if-confirmed, else tentative Candidate). Soft + provenance-tagged; never overrides an isotope-scored Assigned |
 | **`io/publish.py`**   | `peaky publish` -- translate a ledger into Mascope's run-import contract and upload it (chunked assembly, row-offset idempotency, resume via `--import-id`). Sends peaky's own verdict as `engine_tier` and **no** `tier` (the server derives that), resolves adducts to ionization-mechanism ids, excludes synthetic sub-peaks. See `docs/PUBLISH.md` |
 | **`admission.py`**    | the admission gate — which peaks are ELIGIBLE for formula search at the eight gated sites (pass-1 grid, pass-2 series growth, pass-3 families + its two cluster resolvers — the five callers of `directors._target_peaks` — plus ladder gap-fill, residual stage B, siloxane ladder): `bin_occurrence` (the per-PEAK occurrence table from the batch time series at `sampling.BATCH_TOL_PPM`, built on `batch/traces.PeakIndex`), `otsu_threshold`/`auto_threshold`/`resolve_threshold` (the batch-derived, trace-weighted persistence threshold, clamped 0.25–0.75), `lookup_occurrence` (the table's own rule), `derive_height_cutoff_x_edge` (the batch-derived brightness floor), `admissible` (height ≥ gate OR occurrence ≥ threshold), `stamp_admission` (per-peak `occurrence` + `admitted_by`), `why_off` (which of the four reasons the persistence path is off) |

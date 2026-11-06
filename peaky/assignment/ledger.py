@@ -24,9 +24,10 @@ import json
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import blocked as BL
 from peaky.chem import chemistry as C
 
-__version__ = "0.3.0"   # iso_child rows carry their parent's identity
+__version__ = "0.3.1"   # a clear records the reading it cleared (blocked.py); 0.3.0 iso_child rows carry their parent's identity
 
 ROLE_UNEXPLAINED = "unexplained"
 ROLE_M0 = "M0"
@@ -148,7 +149,8 @@ LEAD_BY = "lead_by"
 #: the codes `lead_by` names a lead's setter with: the reference-list dim rescue,
 #: the element-budget demote, the three speculative-residual reasons (N >= 3 with
 #: no isotope, a series gap-fill with no anchors, a sole minor channel), the
-#: uncorroborated radical anion and the reagent-N re-read
+#: uncorroborated radical anion and the reagent-N re-read (a lead until cleanup
+#: 0.7, which keeps its tier and writes no lead; the code stays for older ledgers)
 LEAD_SETTERS = ("reflist_dim", "off_budget", "spec_n3", "spec_gapfill", "spec_minor", "radical_anion",
                 "reagent_n")
 
@@ -373,6 +375,7 @@ def commit_assignment(
     ledger.at[i, "alternatives"] = json.dumps(alternatives or [])
     ledger.at[i, "isotopologues"] = json.dumps(isotopologues or [])
     reset_flags(ledger, i)   # a flag judged the previous formula, not this one
+    BL.forget(ledger, i)     # no longer unexplained: no blocked reading
     return ledger
 
 
@@ -403,6 +406,7 @@ def attach_isotopologue(
     _stamp_parent_identity(ledger, ci, pi)
     ledger.at[ci, "iso_label"] = iso_label
     ledger.at[ci, "iso_match_score"] = (np.nan if iso_match_score is None else float(iso_match_score))
+    BL.forget(ledger, ci)
     return ledger
 
 
@@ -417,6 +421,20 @@ _ASSIGNMENT_FIELDS = {
     "anchor_peak_id": pd.NA, "series_unit": pd.NA,
     "alternatives": pd.NA, "isotopologues": pd.NA,
 }
+#: ... and the tier stage's columns that are not part of the canonical set,
+#: reset only where the ledger carries them (never created here): where the
+#: row's tier calibration came from (tiers.TIER_CALIBRATION)
+_TIER_STAGE_FIELDS = {"tier_calibration": pd.NA}
+
+
+def _reset_assignment(ledger: pd.DataFrame, i) -> None:
+    """Reset row `i`'s assignment fields and flags (clear / displace)."""
+    for col, na in _ASSIGNMENT_FIELDS.items():
+        ledger.at[i, col] = na
+    for col, na in _TIER_STAGE_FIELDS.items():
+        if col in ledger.columns:
+            ledger.at[i, col] = na
+    reset_flags(ledger, i)
 
 
 def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFrame:
@@ -424,12 +442,15 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
 
     Its isotopologue children are orphaned by I2, so they are cleared back to
     unexplained too. Locked peaks are refused. `reason` is recorded in the
-    commentary so the demotion is auditable."""
+    commentary so the demotion is auditable, and the cleared reading with it
+    as the row's blocked reading (blocked.note_cleared: the run's recorder, or
+    the row itself on a ledger that carries the blocked columns)."""
     i = _row_index(ledger, peak_id)
     if bool(ledger.at[i, "locked"]):
         raise LedgerError(f"peak {peak_id!r} is locked; refusing to clear")
     if str(ledger.at[i, "role"]) != ROLE_M0:
         raise LedgerError(f"peak {peak_id!r} does not own an M0 assignment")
+    BL.note_cleared(ledger, i, reason, children=ledger.index[ledger["parent_peak_id"] == peak_id])
     for ci in ledger.index[ledger["parent_peak_id"] == peak_id]:
         ledger.at[ci, "role"] = ROLE_UNEXPLAINED
         ledger.at[ci, "parent_peak_id"] = pd.NA
@@ -437,9 +458,7 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
         ledger.at[ci, "iso_label"] = pd.NA
         ledger.at[ci, "iso_match_score"] = np.nan
     old = ledger.at[i, "commentary"]
-    for col, na in _ASSIGNMENT_FIELDS.items():
-        ledger.at[i, col] = na
-    reset_flags(ledger, i)
+    _reset_assignment(ledger, i)
     ledger.at[i, "role"] = ROLE_UNEXPLAINED
     ledger.at[i, "commentary"] = (f"CLEARED ({reason}). Was: {old}"
                                   if old is not pd.NA and pd.notna(old) else
@@ -472,9 +491,7 @@ def displace_to_isotopologue(
         glab = str(ledger.at[gi, "iso_label"])
         ledger.at[gi, "iso_label"] = "+".join(sorted(set(
             glab.split("+") + iso_label.split("+"))))
-    for col, na in _ASSIGNMENT_FIELDS.items():
-        ledger.at[ci, col] = na
-    reset_flags(ledger, ci)
+    _reset_assignment(ledger, ci)
     attach_isotopologue(ledger, child_peak_id, parent_peak_id,
                         iso_label=iso_label, iso_match_score=iso_match_score,
                         overwrite=True)
@@ -494,6 +511,7 @@ def mark_reagent(ledger: pd.DataFrame, peak_id, label: str, *,
     ledger.at[i, "commentary"] = label
     if ion_formula is not None:   # a reagent cluster has a KNOWN formula -> record it
         ledger.at[i, "ion_formula"] = ion_formula
+    BL.forget(ledger, i)
     return ledger
 
 
@@ -507,6 +525,7 @@ def mark_artifact(ledger: pd.DataFrame, peak_id, label: str) -> pd.DataFrame:
                           f"{ledger.at[i, 'role']!r}); refusing to mark artifact")
     ledger.at[i, "role"] = ROLE_ARTIFACT
     ledger.at[i, "commentary"] = label
+    BL.forget(ledger, i)
     return ledger
 
 
