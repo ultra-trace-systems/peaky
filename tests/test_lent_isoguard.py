@@ -10,6 +10,7 @@ lent source, and the batch keeps it on every file the json was lent to.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from peaky.assignment import calpool as CP
 from peaky.assignment import isoguard as IG
@@ -88,3 +89,29 @@ def test_the_merged_modules_versions_are_above_both_parents():
         return tuple(int(x) for x in s.split("."))
     assert v(CP.__version__) > v("0.2.1") and v(CP.__version__) > v("0.1.1")
     assert v(AB.__version__) > v("0.14.2") and v(AB.__version__) > v("0.12.2")
+
+
+def test_the_batch_and_pool_parsers_take_both_merge_side_flags(monkeypatch):
+    """`peaky batch` and `peaky pool` take the calibration file's flags and the isotope guard's mode side by side,
+    and `peaky batch` hands both to the pipeline (no server: the credentials check and the pipeline are stubbed)."""
+    from peaky import cli
+    from peaky import pipeline as PL
+    p = cli.build_parser()
+    flags = ["--tier-calibration", "c.json", "--tier-calibration-lent", "--isotope-guard", "demote"]
+    for cmd in (["batch", "--batch", "b"], ["pool", "--batches", "b.*"]):
+        a = p.parse_args(cmd + flags)
+        assert a.tier_calibration == "c.json" and a.tier_calibration_lent is True and a.isotope_guard == "demote"
+    got = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_run_batch(**kw):
+        got.update(kw)
+        raise _Stop
+    monkeypatch.setattr(cli, "_require_creds", lambda: None)
+    monkeypatch.setattr(PL, "run_batch", fake_run_batch)
+    with pytest.raises(_Stop):
+        cli.cmd_batch(p.parse_args(["batch", "--batch", "B", "--tier-calibration-lent", "--isotope-guard", "demote",
+                                    "--no-progress"]))
+    assert got["tier_calibration_lent"] is True and got["cfg"].isotope_guard == "demote"

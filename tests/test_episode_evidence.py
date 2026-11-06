@@ -951,3 +951,16 @@ def test_the_parent_cv_is_the_population_one():                                 
                 and p.std(ddof=1) / p.mean() >= 0.3)
     pt, case = _find_pt(ok, n=6)
     assert abs(pt["cv_parent"] - case[1].std() / case[1].mean()) < 1e-12 and not pt["specific"]
+
+
+def test_the_merged_isotope_guard_reads_the_votes_tiers_before_the_episode_evidence(tmp_path, monkeypatch):
+    """Step 6e (the merged isotope guard) runs before step 6g (the episode evidence): the guard tests the merged
+    rows Assigned by the vote, so a reading the episode evidence then promotes is not among its tested rows (the
+    guard after the promotion would test it too)."""
+    summ, m = _run(tmp_path, monkeypatch, build=dict(envelope=True),
+                   engine=dict(tiers={"E1": "Candidate"}, alternatives={"E1": RIV}), k_episode_max=8)
+    ee, g = summ["merge_gates"]["episode_evidence"], summ["merge_gates"]["isotope_guard"]
+    assert ee["promoted"] == 1 and _get(m, *E1)["tier"] == "Assigned"
+    n_assigned = int((m["tier"] == "Assigned").sum())
+    assert g["tested"] == n_assigned - ee["promoted"] + ee["demoted"], (g["tested"], n_assigned, ee)
+    assert summ["isotope_guard_mode"] == "note" and summ["episode_evidence_mode"] == EE.MODE
