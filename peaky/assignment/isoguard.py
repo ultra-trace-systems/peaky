@@ -55,7 +55,8 @@ import re
 
 import pandas as pd
 
-__version__ = "0.3.0"  # NOTE-ONLY by default (MODES, `PassConfig.isotope_guard`) + the demote mode's per-row
+__version__ = "0.3.1"  # + binding_facts / merged_condition / noted_in_every_file: the gated verdict for the
+#                        episode evidence's hold; 0.3.0 NOTE-ONLY by default (MODES, `PassConfig.isotope_guard`) + the demote mode's per-row
 #                        conditions (blend / untested) + one record shape; 0.2.0 the reliability gate
 
 #: a stats record keeps at most this many of the demoted rows (the counts are complete)
@@ -469,6 +470,31 @@ def _merged_condition(merged: pd.DataFrame, ledgers: dict | None):
         return max(("blend", "untested"), key=held.count)
 
     return cond
+
+
+def merged_condition(merged: pd.DataFrame, ledgers: dict | None):
+    """The merged guard's per-row condition (`_merged_condition`), for a reader outside this module."""
+    return _merged_condition(merged, ledgers)
+
+
+def binding_facts(facts, cond=None, hit: dict | None = None) -> list[str]:
+    """The guard facts of one reading that BIND -- the gated verdict -- given that the gate is open: a 13C fact
+    the per-row condition ``cond(hit)`` calls a blend / untested is dropped (the reading's 34S / 37Cl facts still
+    bind), exactly as `_guard` reads them. ``hit``: {index, neutral_formula, adduct, mz} of the row."""
+    facts = list(facts or [])
+    if not facts or cond is None or hit is None or not any(_is_c13(f) for f in facts):
+        return facts
+    return facts if cond(hit) is None else [f for f in facts if not _is_c13(f)]
+
+
+_IN_RE = re.compile(re.escape(NOTE_MARK) + r" in (\d+) of (\d+) file")
+
+
+def noted_in_every_file(tier_reason) -> bool:
+    """True when ``merged_notes``' note on a merged row says the per-file guard bound in EVERY file carrying the
+    row (k of n with k == n): only then would the demote mode leave no Assigned file of the reading for the vote."""
+    m = _IN_RE.search(_txt(tier_reason))
+    return bool(m) and int(m.group(1)) >= int(m.group(2)) > 0
 
 
 def guard_merged(merged: pd.DataFrame, levels: pd.DataFrame | None, *, ledgers: dict | None = None, mode=None,

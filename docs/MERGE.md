@@ -967,7 +967,8 @@ selected sample_ids (SAMPLING.md)
    nor the isotope-contradiction guard or its pooled facts (the guard's note
    `isotope contradiction`, which it writes in either `--isotope-guard` mode -- in
    `note` on a row it leaves Assigned -- and the pooled pair facts as the levels
-   state them, without the guard's reliability gate or per-row conditions); (e) an adduct partner
+   state them; for a PROMOTION every such hold counts, for a `measured` demotion
+   only the gated verdict below); (e) an adduct partner
    of the same neutral in the same spectra (>= 3x the edge) or a second episode
    file reading the ion. Co-occurrence with other episode lines is never
    evidence; partners in another reagent's batch in the same minutes are not
@@ -991,7 +992,17 @@ selected sample_ids (SAMPLING.md)
    window, +-0.45 ppm at the sigma floor, is too tight to overrule it), nor does
    "(b) untestable", a promotion closed by the elements or the radical / ion-only
    rule, or an untestable rival: a line too dim to test is no evidence either
-   way. **strict** -- Candidate on any failed clause. A curated neutral keeps the vote's tier in every mode;
+   way. `measured` reads every one of these through the isotope guard's GATED
+   verdict (step 6e, ASSIGNMENT_DETAIL §5.9; `assign_batch._guard_gate` hands it
+   to the judge), so it demotes nothing the guard itself would not bind: (b) and
+   (c) read only the facts of episode files whose own guard gate is open (a file
+   with `facts_unreliable` -- or no guard record -- contributes none), with a 13C
+   line the file's per-row condition calls a blend / untested made untestable;
+   (d) reads the low-file hold's clauses, the merged guard's own binding note,
+   the per-file note only when it bound in every file of the row (`k of k`), and
+   the pooled facts only when the batch's pooled gate is open and the merged
+   per-row condition leaves them standing (`isoguard.binding_facts`). Promotion
+   reads every hold as before. **strict** -- Candidate on any failed clause. A curated neutral keeps the vote's tier in every mode;
    curated is ONE set, `episode_evidence.curated_exempt` (the pass-0 registry for
    the batch's polarity and context, union the priors of the active reference
    lists), which a replay rebuilds from `batch_summary.json`

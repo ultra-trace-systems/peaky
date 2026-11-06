@@ -115,7 +115,8 @@ from peaky.batch import sideband as SB
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.3.0"   # default promote-only; measured without (a)
+__version__ = "0.3.1"   # measured reads the isotope guard's GATED verdict ((b), (c), (d)); 0.3.0 default
+#                         promote-only; measured without (a)
 #                        0.2.0 the three modes; measured = demote only on a contradicting measurement; the
 #                        specific plume-solvent track; one curated-exemption source (curated_exempt)
 #                        0.1.0 Parts B and C
@@ -628,7 +629,7 @@ def _note(merged, i, msg):
 def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windows: dict | None = None,
           edges: dict | None = None, adducts=(), labelled: bool = False, levels: pd.DataFrame | None = None,
           tol_ppm: float = 6.0, exempt=frozenset(), mode: str | None = None, orbitrap: bool = True,
-          max_files: int = MAX_FILES, log=print) -> tuple[pd.DataFrame, dict]:
+          max_files: int = MAX_FILES, guard_gate: dict | None = None, log=print) -> tuple[pd.DataFrame, dict]:
     """Part B (module note) on every episodic merged reading with n_files <= `max_files`.
 
     merged: the merged ledger (mz, neutral_formula, adduct, tier, srcs, n_files,
@@ -638,7 +639,14 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
     (mu, sigma) ppm}, the files' calibrated windows. edges: {sample id: noise edge
     cps}. adducts: the reagent profile's ion forms. labelled: the reagent carries
     the 15N label. levels: the pooled pairs (competitors_left). exempt: curated
-    neutrals a failure never demotes. mode: MODES (None: MODE). Returns (table, summary)."""
+    neutrals a failure never demotes. mode: MODES (None: MODE). guard_gate: the isotope guard's reliability
+    verdicts, {"files": {sample id: True when the file's gate is open}, "merged": True when the batch's pooled
+    gate is open} (assign_batch._guard_gate; a file missing from "files" is not trusted). `measured` demotes only
+    on what the guard itself would bind: (b) / (c) read only the trusted files' facts, a 13C fact the file's
+    per-row condition calls a blend / untested dropped; (d) reads the merged guard's binding note, the per-file
+    note when it bound in every file of the row, and the pooled facts only through the batch gate and the
+    merged per-row condition. None: no verdict supplied, every file and the batch read as trusted (a direct
+    caller; the batch always supplies it). Promotion still reads every hold. Returns (table, summary)."""
     mode = MODE if mode is None else str(mode)
     if mode not in MODES:
         raise ValueError(f"episode evidence mode {mode!r}: one of {MODES}")
@@ -664,6 +672,23 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
         lvl = {(str(n), str(a)): r for n, a, r in zip(levels["neutral_formula"], levels["adduct"],
                                                       levels.to_dict("records"))}
     pooled_facts = IG.pair_facts(levels) if levels is not None and len(levels) else {}
+    # the guard's gated verdict, read by `measured` (docstring: guard_gate)
+    gate_files = None if guard_gate is None else {str(k): bool(v) for k, v in (guard_gate.get("files") or {}).items()}
+    gate_merged = True if guard_gate is None else bool(guard_gate.get("merged", False))
+    mcond = IG.merged_condition(merged, ledgers)
+    views: dict = {}
+
+    def trusted(sid) -> bool:
+        return gate_files is None or gate_files.get(str(sid), False)
+
+    def held13(sid, row, nf_, ad_) -> bool:
+        """The file's per-row condition calls this row's 13C line a blend / untested (isoguard.LineView)."""
+        led = (ledgers or {}).get(sid)
+        if led is None or not len(led) or row is None or row.name not in led.index:
+            return False
+        if sid not in views:
+            views[sid] = IG.LineView(led)
+        return views[sid].condition(row.name, nf_, ad_) is not None
     sigma = {k: (_num(w[1]) if w else float("nan")) for k, w in windows.items()}
     full, frames = {}, {}
     ts_sorted = None
@@ -739,6 +764,11 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                 facts_rows.append((sid, sp, _file_facts(sp, r, counts, sign)))
         facts = [f for _sid, _sp, f in facts_rows]
         b_state, b_det = _isotopes(facts, counts) if facts else ("untestable", "no series rows")
+        # what `measured` may read: the trusted files' facts, a held 13C line made untestable
+        erow = dict(efiles)
+        meas_facts = [({**f, "c13": (False, f["c13"][1])} if f["c13"][0] and held13(sid, erow.get(sid), nf, ad) else f)
+                      for sid, _sp, f in facts_rows if trusted(sid)]
+        mb_state = _isotopes(meas_facts, counts)[0] if meas_facts else "untestable"
         # (c) the rivals the isotope facts must exclude
         try:
             mz_ion = C.ion_mz(nf, ad)
@@ -746,7 +776,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             mz_ion = m
         rivals = _alias_rivals(counts, sign, adducts, labelled) + _named_rivals(
             [r for _sid, r in efiles], lvl.get((nf, ad)), mz_ion)
-        left, gone, favoured = [], [], []
+        left, gone, favoured, m_favoured = [], [], [], []
         for name, rc in rivals:
             if rc == counts:
                 continue
@@ -756,6 +786,9 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                 fav = _favours(facts, counts, rc)
                 if fav:
                     favoured.append(f"{name} ({fav})")
+                mfav = _favours(meas_facts, counts, rc) if meas_facts else None
+                if mfav:
+                    m_favoured.append(f"{name} ({mfav})")
         c_ok = not left
         # (d) no hold: the row's own notes, the pooled isotope-contradiction facts, and the low-file
         # hold's two clauses read on the episode rows themselves (a Candidate reading the hold never tested)
@@ -769,6 +802,18 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
         if sb:
             holds.append(sb)
         d_ok = not holds
+        # the gated holds `measured` reads: the low-file hold's clauses as above; the merged guard's own (binding)
+        # note; the per-file note only when it bound in every file of the row; the pooled facts only through the
+        # batch gate and the merged per-row condition (isoguard.binding_facts)
+        m_holds = [mk for mk in (SB.HOLD_MARK, SB.SATELLITE_HOLD_MARK) if mk + ":" in tr or f"{mk} in " in tr]
+        if IG.NOTE_MARK + ":" in tr or IG.noted_in_every_file(tr):
+            m_holds.append(IG.NOTE_MARK)
+        elif pf and gate_merged:
+            bf = IG.binding_facts(pf, mcond, dict(index=i, neutral_formula=nf, adduct=ad, mz=m))
+            if bf:
+                m_holds.append(f"{IG.NOTE_MARK} ({bf[0]})")
+        if sb:
+            m_holds.append(sb)
         # (e) an adduct partner in the same spectra, or a second episode file of the ion
         pair = _partner(facts_rows, nf, ad, adducts, sign)
         e_ok = bool(pair) or len(efiles) >= 2
@@ -806,9 +851,10 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             # isotope line read against the reading; (c) a rival a measured isotope fact favours; (d) a
             # hold. Never (a) -- the per-file tier already judged the mass, a single file's window is too
             # tight to overrule it -- nor (e): no adduct pair or second file is no measurement
-            meas = ([f"(b) {b_det}"] if b_state == "failed" else []) \
-                + ([f"(c) favoured rival: {'; '.join(favoured[:3])}"] if favoured else []) \
-                + ([f"(d) held: {', '.join(holds)}"] if not d_ok else [])
+            # -- each read through the isotope guard's gated verdict (docstring: guard_gate)
+            meas = ([f"(b) {b_det}"] if b_state == "failed" and mb_state == "failed" else []) \
+                + ([f"(c) favoured rival: {'; '.join(m_favoured[:3])}"] if m_favoured else []) \
+                + ([f"(d) held: {', '.join(m_holds)}"] if m_holds else [])
             measured = bool(meas)
             demote = {"strict": True, "measured": measured, "promote-only": False}[mode]
             tier_out = ("Candidate" if (demote and not curated) or tier_in != "Assigned" else tier_in)

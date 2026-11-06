@@ -81,7 +81,8 @@ from peaky.batch import unidentified as _UN
 from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.14.3"  # the merged isotope guard in the run's mode (note by default); batch_summary records
+__version__ = "0.14.4"  # the episode evidence is handed the isotope guard's gate verdicts (_guard_gate)
+                        # 0.14.3: the merged isotope guard in the run's mode (note by default); batch_summary records
                         #   isotope_guard_mode beside episode_evidence_mode
                         # 0.14.2: the episode evidence's default is promote-only; measured drops (a)
                         # 0.14.1: the episode evidence demotes only on a contradicting measurement; one curated set
@@ -1280,6 +1281,18 @@ def _merged_isotope_guard(merged, levels, ledgers: dict, cfg, *, log=print) -> d
     g["held_rows"] = g["held_rows"][:_IG.ROWS_KEPT]
     g["per_file_noted"] = int(noted)
     return g
+
+
+def _guard_gate(per_stats: list, merged_record: dict | None) -> dict:
+    """The isotope guard's reliability verdicts for the episode evidence's `measured` mode
+    (episode_evidence.judge `guard_gate`): {"files": {sample id: True when the file's own gate is open},
+    "merged": True when the batch's pooled gate is open}. A file with no guard record is not trusted."""
+    files = {}
+    for st_ in per_stats or []:
+        g = st_.get("isotope_guard")
+        files[str(st_.get("sample_id"))] = isinstance(g, dict) and g.get("facts_unreliable") is False
+    m = merged_record or {}
+    return {"files": files, "merged": m.get("facts_unreliable") is False}
 
 
 def _tier_cal_source(per_stats: list) -> str | None:
@@ -3849,7 +3862,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             merged, full_ledgers, ts_annot if ts_annot is not None else ts_peaks, windows=_win, edges=_edg,
             adducts=list(prof.adducts or []), labelled=any("^N" in str(a) for a in (prof.adducts or [])),
             levels=levels, tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), exempt=frozenset(curated or ()),
-            orbitrap=(cfg.instrument_class == "orbitrap"), mode=episode_evidence, log=log)
+            orbitrap=(cfg.instrument_class == "orbitrap"), mode=episode_evidence,
+            guard_gate=_guard_gate(per_stats, merge_gates.get("isotope_guard")), log=log)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",

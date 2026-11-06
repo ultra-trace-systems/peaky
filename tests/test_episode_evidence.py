@@ -22,6 +22,7 @@ sys.path.insert(0, HERE)
 
 import harness as H  # noqa: E402
 import make_episodes as MK  # noqa: E402
+from peaky.assignment import isoguard as IG  # noqa: E402
 from peaky.assignment import solvent_clusters as SC  # noqa: E402
 from peaky.batch import assign_batch as AB  # noqa: E402
 from peaky.batch import episode_evidence as EE  # noqa: E402
@@ -964,3 +965,79 @@ def test_the_merged_isotope_guard_reads_the_votes_tiers_before_the_episode_evide
     n_assigned = int((m["tier"] == "Assigned").sum())
     assert g["tested"] == n_assigned - ee["promoted"] + ee["demoted"], (g["tested"], n_assigned, ee)
     assert summ["isotope_guard_mode"] == "note" and summ["episode_evidence_mode"] == EE.MODE
+
+
+# --------------------------------------------------------------------------- measured reads the guard's gated verdict
+GATE_OPEN = {"files": {"s1": True, "s2": True}, "merged": True}
+
+
+def test_measured_does_not_demote_on_a_file_the_isotope_guard_does_not_trust():               # (b) through the gate
+    # s2's 13C line reads 4 C for 8 (Part B's own reading fails in every guard verdict). NEGATIVE CONTROL: with
+    # s2's gate open measured demotes on it; with s2's gate closed -- or no guard record for s2 -- it is no
+    # measurement and the vote's Assigned stands; strict still demotes on the failed clause
+    for files, demoted in (({"s1": True, "s2": True}, True), ({"s1": True, "s2": False}, False), ({"s1": True}, False)):
+        m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+        tab, s = _j2(m, leds, ts, mode="measured", guard_gate={"files": files, "merged": True})
+        row = tab.iloc[0]
+        assert row["b_isotopes"] == "failed", files
+        assert (m.at[0, "tier"] == "Candidate") is demoted and bool(row["measured_failure"]) is demoted, files
+        assert s["demoted"] == int(demoted)
+    m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+    _j2(m, leds, ts, mode="strict", guard_gate={"files": {"s1": True, "s2": False}, "merged": True})
+    assert m.at[0, "tier"] == "Candidate"
+
+
+def test_measured_drops_a_13c_line_the_files_guard_calls_a_blend():                           # (b) blend condition
+    # s2 reads 4 C for 8, and a pick 6 ppm above its 13C position carries the predicted 13C area: the guard's
+    # per-row condition calls that file's 13C a blend, so it is no measurement (control: no such pick -> demoted)
+    def blend(sid, mz, h):
+        return [dict(peak_id=f"{sid}b", mz=(mz + ISO.D_13C) * (1 + 6e-6), height=h * 0.010816 * 8, role="unexplained",
+                     tier=None, episode=True)] if sid == "s2" else []
+    for extra, demoted in ((None, True), (blend, False)):
+        m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0), extra=extra)
+        for led in leds.values():
+            led["area"] = led["height"]
+        tab, _s = _j2(m, leds, ts, mode="measured", guard_gate=GATE_OPEN)
+        assert tab.iloc[0]["b_isotopes"] == "failed"
+        assert (m.at[0, "tier"] == "Candidate") is demoted, m.at[0, "tier_reason"]
+
+
+def test_measured_reads_the_pooled_facts_only_through_the_batch_gate():                       # (d) pooled facts
+    lv = pd.DataFrame([dict(neutral_formula=E1[0], adduct=E1[1], competitors_left="",
+                            committed_reasons="13C reads 3.0 C for 8 (tol 2.0, rule C, 4 spectra)")])
+    for merged_ok, demoted in ((True, True), (False, False)):
+        m, leds, ts = _unit2(tier="Assigned")
+        tab, _s = _j2(m, leds, ts, mode="measured", levels=lv,
+                      guard_gate={"files": {"s1": True, "s2": True}, "merged": merged_ok})
+        row = tab.iloc[0]
+        assert "isotope contradiction (13C reads 3.0 C for 8" in row["d_hold"]       # promotion reads every hold
+        assert (m.at[0, "tier"] == "Candidate") is demoted and bool(row["measured_failure"]) is demoted
+
+
+def test_measured_reads_the_per_file_note_only_when_it_bound_in_every_file():                 # (d) the guard's notes
+    for reason, demoted in (
+            ("isotope contradiction in 1 of 2 file(s): 13C reads 4.0 C for 8 (tol 2.0, per-file 13C, 1 files)", False),
+            ("isotope contradiction in 2 of 2 file(s): 13C reads 4.0 C for 8 (tol 2.0, per-file 13C, 1 files)", True),
+            ("isotope contradiction: 13C reads 3.0 C for 8 (tol 2.0, rule C, 4 spectra)", True)):
+        m, leds, ts = _unit2(tier="Assigned", reason=reason)
+        tab, _s = _j2(m, leds, ts, mode="measured", guard_gate=GATE_OPEN)
+        assert "(d) held: isotope contradiction" in m.at[0, "tier_reason"]
+        assert (m.at[0, "tier"] == "Candidate") is demoted, reason
+    assert IG.noted_in_every_file("x | isotope contradiction in 3 of 3 file(s): f") and \
+        not IG.noted_in_every_file("isotope contradiction in 2 of 3 file(s): f") and not IG.noted_in_every_file("")
+
+
+def test_the_batch_hands_the_guards_gate_verdicts_to_the_episode_evidence(tmp_path, monkeypatch):
+    seen = {}
+    real = EE.judge
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+    monkeypatch.setattr(EE, "judge", spy)
+    summ, _m = _run(tmp_path, monkeypatch, build=dict(envelope=True), k_episode_max=8)
+    g = seen["guard_gate"]
+    want = {str(p["sample_id"]): (p.get("isotope_guard") or {}).get("facts_unreliable") is False for p in summ["per_file"]}
+    assert g["files"] == want and g["merged"] == (summ["merge_gates"]["isotope_guard"]["facts_unreliable"] is False)
+    assert AB._guard_gate([{"sample_id": "a"}, {"sample_id": "b", "isotope_guard": {"facts_unreliable": False}}],
+                          {"facts_unreliable": True}) == {"files": {"a": False, "b": True}, "merged": False}

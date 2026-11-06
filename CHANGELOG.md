@@ -99,7 +99,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
   A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned keeps
   its tier with the note (`--episode-evidence promote-only`, the default, recorded in the run manifest: the step
-  promotes, it never demotes). `--episode-evidence measured` makes it Candidate only on a contradicting MEASUREMENT
+  promotes, it never demotes). `--episode-evidence measured` makes it Candidate only on a contradicting MEASUREMENT read through the isotope guard's gated verdict (a file whose 13C counts fail the guard's reliability gate, or a 13C line the guard holds as a blend / untested, is no measurement)
   -- (b) an isotope line read and contradicting, (c) a rival that a measured isotope fact favours, (d) a hold; (a)
   the mass window, (e), an untestable line or rival and a closed promotion never demote --, `strict` on any failed
   clause; a curated neutral -- the pass-0 registry plus the active reference lists'
