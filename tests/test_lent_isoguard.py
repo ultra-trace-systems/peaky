@@ -75,3 +75,16 @@ def test_calpool_version_is_newer_than_both_cards():
     lent source, both): its module version, which the run manifest records, is above both."""
     v = tuple(int(x) for x in CP.__version__.split("."))
     assert v > (0, 2, 0) and v > (0, 1, 1)
+
+
+def test_the_merged_modules_versions_are_above_both_parents():
+    """The isotope guard's mode reaches calpool's pooled / lent re-level and assign_batch's merged guard on a tree
+    that also carries the calibration file input and the episode evidence: each module's version, which the run
+    manifest records, is above the version either side carried alone (calpool 0.1.1 / 0.2.1, assign_batch
+    0.12.2 / 0.14.2)."""
+    from peaky.batch import assign_batch as AB
+
+    def v(s):
+        return tuple(int(x) for x in s.split("."))
+    assert v(CP.__version__) > v("0.2.1") and v(CP.__version__) > v("0.1.1")
+    assert v(AB.__version__) > v("0.14.2") and v(AB.__version__) > v("0.12.2")
