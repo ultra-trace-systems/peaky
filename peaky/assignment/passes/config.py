@@ -303,6 +303,12 @@ class PassConfig:
     # the file from pass 0 against it when it is material; "area" reads by area without a response; "off"
     # reads by height against the natural abundance (the behaviour before). Other classes: always "off".
     iso_response: str = "auto"
+    # The isotope-contradiction guard's mode (assignment/isoguard.py, CLI --isotope-guard): "note" (default)
+    # records the facts its own isotope lines contradict -- the per-file / merged `isotope_guard` records and
+    # the tier_reason note -- and never moves a tier; "demote" also makes those rows Candidate. Both modes run
+    # the reliability gate and the per-row blend / untested conditions. Carried to every per-file run (workers
+    # included) and the merge; the run manifest records it.
+    isotope_guard: str = "note"
     # the response the run fitted (iso_response.fit's dict) -- runtime, read by the 13C carbon clamps
     iso_response_fit: dict | None = None
     # the run reads its isotope lines by area (iso_response "auto" / "area" in force, or inherited) --

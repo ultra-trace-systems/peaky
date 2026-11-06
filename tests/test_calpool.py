@@ -246,11 +246,11 @@ def test_retier_moves_only_rows_still_holding_the_tier_stages_verdict():
 
 
 # --------------------------------------------------------------------------- one file, re-applied
-def _inputs_for(at, sid, *, levels=True):
+def _inputs_for(at, sid, *, levels=True, guard=None):
     ri = (EV.file_run_inputs(sample_id=sid, reagent="NO3", context="ambient-air", resolution=ORBI,
                              height_gate_cps=100.0, degeneracy_cal=None) if levels else None)
     return CP.PoolInputs(at_tiers=at, cfg=None, profile=None, adducts=[AD], families=(),
-                         curated=frozenset(), level_inputs=ri)
+                         curated=frozenset(), level_inputs=ri, isotope_guard=guard)
 
 
 def test_apply_pool_re_tiers_the_file_on_its_tier_time_ledger():
@@ -825,7 +825,7 @@ def test_the_pooled_re_level_runs_the_per_file_isotope_guard():
         led = _guard_ledger(c13_count=c13, snr13=40.0)
         at = led.copy(deep=True)
         at["tier"] = pd.NA
-        out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+        out = CP.apply_pool(led, pool, _inputs_for(at, "s1", guard="demote"), audit=[], log=lambda *a: None)
         row = led[led["role"] == "M0"].iloc[0]
         assert row["tier"] == tier, (c13, row["tier"], row["tier_reason"])
         g = out["isotope_guard"]
@@ -890,7 +890,7 @@ def test_the_pooled_guard_has_the_last_tier_word_after_the_re_tier():
     base = T.compute_tiers(at, cal=None).set_index("peak_id")
     assert base.at["A", "tier"] == "Candidate"
     led.loc[led["peak_id"] == "A", ["tier", "tier_reason"]] = [base.at["A", "tier"], base.at["A", "tier_reason"]]
-    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1", guard="demote"), audit=[], log=lambda *a: None)
     row = led[led["role"] == "M0"].iloc[0]
     assert out["tiers"]["promoted"] == 1 and out["isotope_guard"]["demoted"] == 1
     assert row["tier"] == "Candidate" and "isotope contradiction: 13C reads " in str(row["tier_reason"])
@@ -904,7 +904,7 @@ def test_the_pooled_guard_reads_the_finished_ledgers_facts():
     led = _guard_ledger(c13_count=6.0, snr13=40.0)
     at = _guard_ledger(c13_count=10.0, snr13=40.0)
     at["tier"] = pd.NA
-    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
+    out = CP.apply_pool(led, pool, _inputs_for(at, "s1", guard="demote"), audit=[], log=lambda *a: None)
     assert out["isotope_guard"]["demoted"] == 1 and led[led["role"] == "M0"].iloc[0]["tier"] == "Candidate"
 
 

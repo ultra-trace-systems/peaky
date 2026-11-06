@@ -785,19 +785,39 @@ selected sample_ids (SAMPLING.md)
    rows into iso_child / unexplained rows. A diagnostic: nothing reads it but the
    unidentified table below.
 
-6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`;
-   right after the pooled evidence levels are stamped). An Assigned merged row
-   whose POOLED pair the levels' own isotope facts contradict -- the 13C carbon
-   count (test c), an absent own 34S / 37Cl line (test a), a 34S / 37Cl line it
-   cannot explain while it carries no S / Cl (test b);
-   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 -- is Candidate with the note
-   `isotope contradiction: <fact>`. The per-file guard (stage `isotope_guard`)
-   already held the files' tiers before the vote; this one reads every file's facts
-   together. Demote-only, and only when the batch's pooled 13C counts pass the
-   reliability gate (ASSIGNMENT_DETAIL.md 5.9: >= 0.9 of >= 10 Assigned merged rows'
-   tested counts agree; else `facts_unreliable` with the agreement, nothing demoted);
-   `batch_summary.json["merge_gates"]["isotope_guard"]` records `tested`, `demoted`, `by_fact` (`13C` / `absent` / `unexplained`) and
-   the first 50 `rows`.
+6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`
+   via `assign_batch._merged_isotope_guard`; right after the pooled evidence levels
+   are stamped). It finds the Assigned merged rows whose POOLED pair the levels' own
+   isotope facts contradict:
+   - the 13C carbon count (test c);
+   - an absent own 34S / 37Cl line (test a);
+   - a 34S / 37Cl line the row cannot explain while it carries no S / Cl (test b).
+
+   See [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 for the facts.
+
+   **By default (mode `note`, `--isotope-guard`) it moves no tier:** each such row gets
+   the note `isotope contradiction: <fact>` and is listed in the record. In the
+   `demote` mode it is Candidate too. The per-file guard (stage `isotope_guard`) ran
+   in the same mode on every file before the vote; this one reads every file's facts
+   together, after `merged_notes` has said the per-file notes on the merged rows.
+
+   Two filters apply in both modes. A fact binds only:
+   - **when the batch's pooled 13C counts pass the reliability gate.** At least 0.9
+     of the tested counts of at least 10 Assigned merged rows must agree. The gate
+     reads the pooled counts alone, independent of the per-file gates. Otherwise the
+     record carries `facts_unreliable` and nothing binds. Per file the same gate
+     closes on 27 of the 60 guard-relevant files of a 12-batch field arm: the
+     15N-nitrate 128-600 files, n_ref 4-9. On those batches the per-file guard is in
+     effect off.
+   - **when the per-row conditions, read in the source files, leave it standing.** A
+     13C fact does not bind when at least half of the files that carry the row call
+     it a blend or untested.
+
+   `batch_summary.json["merge_gates"]["isotope_guard"]` is the guard's record
+   (docs/OUTPUTS.md): `mode`, `tested`, `demoted`, `would_demote`, `by_fact`
+   (`13C` / `absent` / `unexplained`), `held` (`gate` / `blend` / `untested`), the
+   first 50 `rows` / `held_rows`, `facts_unreliable`, `agreement`, `n_ref`, `n_agree`
+   and `per_file_noted`.
 
 6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before
    the merged ledger is written). Every per-file row bright in its file (>= 5x the

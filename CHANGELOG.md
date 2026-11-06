@@ -21,23 +21,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   neighbours the list also names). A `both`-polarity list no longer flags MODE CONTRADICTS. The activation record
   gains `explicit` (the ids asked for by name).
 
-- **Bright lines no output explains are listed, with the reason; an isotope contradiction keeps a reading off
-  Assigned.** A batch writes `tables/unidentified.csv`: one row per m/z bin of the per-file rows bright in their
+- **Bright lines no output explains are listed, with the reason; an isotope contradiction is recorded (and, on
+  request, keeps a reading off Assigned).** A batch writes `tables/unidentified.csv`: one row per m/z bin of the per-file rows bright in their
   file (>= 5x its noise edge) that end unexplained, are an isotope child / artifact of a parent the merged ledger
   does not hold Assigned, or are an M0 row the merge dropped -- with the files, heights, the own 13C carbon count,
   the 34S / 37Cl line states, the readings tried, a partner line, `why` and first / last spectrum
   (`batch/unidentified.py`; `batch_summary.json["unidentified_bright"]`, a PDF page "Unidentified bright lines",
   and the sheet of that name in the single-sample workbook). The merge records every per-file M0 row left with no
   merged row at its m/z and the gate that removed it (`tables/vote_drops.csv`). The new stage `isotope_guard` (and
-  the same rule on the merged ledger, on the pooled facts) makes an Assigned reading Candidate, noted
-  `isotope contradiction: <fact>`, where the evidence levels' own isotope facts contradict it: its 13C carbon
+  the same rule on the merged ledger, on the pooled facts) notes `isotope contradiction: <fact>` on an Assigned
+  reading where the evidence levels' own isotope facts contradict it, and lists it in its record -- by default
+  (`--isotope-guard note`) moving no tier; `--isotope-guard demote` makes it Candidate: its 13C carbon
   count outside the levels' band, an absent own 34S / 37Cl line predicted at S/N >= 10, or a 34S / 37Cl line it
   cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file the
   batch's pooled calibration re-levels is guarded on that level's facts (`calpool.apply_pool`). A line a merged row
   of another ion absorbed is a row of its own (`why = absorbed_by_merge`) where some file holds it as a separate pick
   at least 1 HWHM (the batch's width model) from the merged row's own pick. The guard binds only in a file (a
   batch) whose own 13C counts agree with their formulas on >= 90 % of >= 10 reference rows (High / Good Assigned
-  rows with a tested count); elsewhere it records `facts_unreliable` and demotes nothing (`isoguard.reliability`).
+  rows with a tested count); elsewhere it records `facts_unreliable` and nothing binds (`isoguard.reliability`). A
+  13C count does not bind where a pick 3-10 ppm off the 13C position carries >= 0.5x the predicted line (a blend),
+  nor where no line is within 3 ppm at a predicted 13C S/N under 30 (untested). The record has one shape at every
+  call site (docs/OUTPUTS.md: `mode`, `would_demote`, `held`, ...).
 
 - **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
   `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**

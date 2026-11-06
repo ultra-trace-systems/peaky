@@ -282,7 +282,7 @@ def _batch_table(spec, height=500.0):
 
 
 def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None, seen=None, lines=None,
-               ledger_of=None):
+               ledger_of=None, cfg=None, stats_extra=None):
     from peaky.batch import assign_batch as AB
     from peaky.io import io_mascope as IO
 
@@ -299,7 +299,8 @@ def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None,
             seen.append(kw)
         n_calls[0] += 1
         return {"ledger": ledger_of(n_calls[0]) if ledger_of else _ledger(), "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
-                                               "degeneracy_cal": {"mu": CAL[0], "sigma": CAL[1]}},
+                                               "degeneracy_cal": {"mu": CAL[0], "sigma": CAL[1]},
+                                               **(stats_extra or {})},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
@@ -309,7 +310,8 @@ def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None,
     monkeypatch.setattr(A, "run", fake_assign)
     return AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(tmp_path),
                   k_min=2, k_max=3, min_gain=0.0, n_jobs=1, corroborate=corroborate,
-                  resolving_power=resolving_power, log=(lines.append if lines is not None else (lambda *a: None)))
+                  resolving_power=resolving_power, log=(lines.append if lines is not None else (lambda *a: None)),
+                  **({"cfg": cfg} if cfg is not None else {}))
 
 
 def test_the_pooled_stage_stamps_merged_and_writes_the_table_and_the_summaries(tmp_path, monkeypatch):

@@ -249,6 +249,8 @@ def cmd_assign(args) -> None:
         cfg.sidelobe_guard = False
     if getattr(args, "iso_response", None):
         cfg.iso_response = args.iso_response
+    if getattr(args, "isotope_guard", None):
+        cfg.isotope_guard = args.isotope_guard
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -404,13 +406,16 @@ def _write_assign_outputs(args, out, base) -> None:
 
 
 def _sidelobe_cfg(args) -> dict:
-    """{'cfg': a PassConfig with the side-lobe guard off (--no-sidelobe-guard) and / or the isotope-line
-    scoring chosen (--iso-response)} when either was given, else {} (the run builds its default PassConfig)."""
+    """{'cfg': a PassConfig with the side-lobe guard off (--no-sidelobe-guard), the isotope-line scoring chosen
+    (--iso-response) and / or the isotope guard's mode (--isotope-guard)} when any was given, else {} (the run
+    builds its default PassConfig)."""
     kw = {}
     if getattr(args, "no_sidelobe_guard", False):
         kw["sidelobe_guard"] = False
     if getattr(args, "iso_response", None):
         kw["iso_response"] = args.iso_response
+    if getattr(args, "isotope_guard", None):
+        kw["isotope_guard"] = args.isotope_guard
     if not kw:
         return {}
     from peaky.assignment import passes
@@ -2124,6 +2129,15 @@ def _add_iso_response_flag(p) -> None:
                         "record 'iso_response'. No effect off an Orbitrap")
 
 
+def _add_isotope_guard_flag(p) -> None:
+    p.add_argument("--isotope-guard", dest="isotope_guard", choices=("note", "demote"), default=None,
+                   help="the isotope-contradiction guard's mode (PassConfig.isotope_guard): 'note' (default) "
+                        "records the Assigned readings whose own 13C / 34S / 37Cl lines contradict them -- the "
+                        "per-file and merged 'isotope_guard' records and the tier_reason note -- and moves no "
+                        "tier; 'demote' also makes them Candidate. Both modes skip a file whose own 13C counts "
+                        "fail its reference rows and a 13C line that is a blend or too faint to test")
+
+
 def _add_isotopologue_flag(p) -> None:
     p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
                    help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
@@ -2287,6 +2301,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pa)
     _add_sidelobe_flag(pa)
     _add_iso_response_flag(pa)
+    _add_isotope_guard_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -2322,6 +2337,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mass_axis_flag(pb)
     _add_sidelobe_flag(pb)
     _add_iso_response_flag(pb)
+    _add_isotope_guard_flag(pb)
     _add_isotopologue_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
@@ -2369,6 +2385,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mass_axis_flag(pp)
     _add_sidelobe_flag(pp)
     _add_iso_response_flag(pp)
+    _add_isotope_guard_flag(pp)
     _add_isotopologue_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "

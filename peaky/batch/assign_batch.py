@@ -1240,6 +1240,19 @@ def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
             "pool_inputs": res.get("pool_inputs")}
 
 
+def _merged_isotope_guard(merged, levels, ledgers: dict, cfg, *, log=print) -> dict:
+    """The merge-side isotope guard (isoguard.py), in the run's mode (PassConfig.isotope_guard; 'note' by
+    default): the per-file guard's notes said on the merged rows (merged_notes), then guard_merged on the
+    POOLED facts -- the batch's own gate on its pooled counts, independent of the per-file gates, and the per-row
+    conditions read in the source files' ledgers. Returns merge_gates["isotope_guard"]."""
+    noted = _IG.merged_notes(merged, ledgers, log=log)
+    g = _IG.guard_merged(merged, levels, ledgers=ledgers, mode=_IG.mode_of(cfg), log=log)
+    g["rows"] = g["rows"][:_IG.ROWS_KEPT]
+    g["held_rows"] = g["held_rows"][:_IG.ROWS_KEPT]
+    g["per_file_noted"] = int(noted)
+    return g
+
+
 def _tier_cal_source(per_stats: list) -> str | None:
     """The batch's tier calibration in one word (batch_summary
     `tier_calibration.source`): the weakest of its files' `tier_calibration` --
@@ -3651,10 +3664,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) is Candidate with
     # the note. The per-file guard (stage isotope_guard) already held the files' tiers
     # before the vote; this reads the facts of every file together
-    _ig_noted = _IG.merged_notes(merged, full_ledgers, log=log)
-    merge_gates["isotope_guard"] = _IG.guard_merged(merged, levels, log=log)
-    merge_gates["isotope_guard"]["rows"] = merge_gates["isotope_guard"]["rows"][:50]
-    merge_gates["isotope_guard"]["per_file_noted"] = int(_ig_noted)
+    merge_gates["isotope_guard"] = _merged_isotope_guard(merged, levels, full_ledgers, cfg, log=log)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",
