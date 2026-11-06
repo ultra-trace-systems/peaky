@@ -54,14 +54,16 @@ inside one batch run and are not read.
 All five hold -> the reading is Assigned from that episode (tier Assigned, the
 note says which facts; a Candidate is promoted). Otherwise it is not Assigned
 FROM ITS EPISODE: a Candidate stays Candidate, and a reading the vote made
-Assigned (MODE, `--episode-evidence`) -- "measured", the default -- goes to
-Candidate only on a contradicting MEASUREMENT, never on a missing one: its mass
-outside an existing calibrated window ((a); no window is untestable), an
-isotope line read against it ((b)), a rival a measured isotope fact favours
-((c); a rival left with untestable isotopes is untestable), a hold ((d)); (e)
-never demotes (a missing adduct pair or second file is no measurement). The
-row's `measurement` column names what contradicted it. "promote-only" keeps
-every such row; "strict" demotes on any failed clause. A curated neutral
+Assigned becomes what the mode says (MODE, `--episode-evidence`): "promote-only",
+the default, keeps it Assigned with the note (the step promotes, never demotes);
+"measured" makes it Candidate only on a contradicting MEASUREMENT, never on a
+missing one: an isotope line read against it ((b)), a rival a measured isotope
+fact favours ((c); a rival left with untestable isotopes is untestable), a hold
+((d)) -- (a) never demotes (the per-file tier already judged the mass, and a
+single file's 3-sigma window is too tight to overrule it) and neither does (e)
+(a missing adduct pair or second file is no measurement); the row's
+`measurement` column names what contradicted it. "strict" demotes on any failed
+clause. A curated neutral
 (`curated_exempt`: the pass-0 registry + the active reference lists' formulas)
 keeps the vote's tier in every mode. When
 no isotope
@@ -113,7 +115,8 @@ from peaky.batch import sideband as SB
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
-__version__ = "0.2.0"   # the three modes; measured = demote only on a contradicting measurement; the
+__version__ = "0.3.0"   # default promote-only; measured without (a)
+#                        0.2.0 the three modes; measured = demote only on a contradicting measurement; the
 #                        specific plume-solvent track; one curated-exemption source (curated_exempt)
 #                        0.1.0 Parts B and C
 
@@ -156,15 +159,16 @@ ALIAS_SWAPS = (
 #: the ion forms a 15N-label alias rival may take beside the reagent profile's own: the
 #: carbonate radical anion's cluster and the radical anion itself (the [M+CO3]- / [M+^NO3]- pair)
 ALIAS_EXTRA_ADDUCTS = ("[M+CO3]-", "[M]-.")
-#: what a failing reading the vote made Assigned becomes (`--episode-evidence`): "measured" (the
-#: default) -- Candidate only on a contradicting MEASUREMENT, never on a missing one: (a) its mass
-#: outside an EXISTING calibrated window; (b) an isotope line read against it; (c) a rival that a
-#: measured isotope fact favours (`_favours`); (d) a hold; (e) never ((e) is a promotion criterion only);
-#: "promote-only" -- always kept with the note; "strict" -- Candidate whenever a clause fails (Assigned
+#: what a failing reading the vote made Assigned becomes (`--episode-evidence`): "promote-only" (the
+#: default) -- always kept with the note: the step promotes, it never demotes (on a 12-ledger field arm
+#: every demotion rule tried caught no wrong reading and cost true ones); "measured" -- Candidate only on
+#: a contradicting MEASUREMENT: (b) an isotope line read against it; (c) a rival that a measured
+#: isotope fact favours (`_favours`); (d) a hold; never on (a) (the per-file tier already judged the
+#: mass) nor (e) (promotion criteria only); "strict" -- Candidate whenever a clause fails (Assigned
 #: from one episode only when all hold). A curated neutral (`curated_exempt`) keeps the vote's tier in
 #: every mode; a Candidate is promoted in every mode.
 MODES = ("measured", "promote-only", "strict")
-MODE = "measured"
+MODE = "promote-only"
 NOTE_MARK = "episode evidence"
 UNTESTABLE_CLAIM = "single episode, isotopes untestable"
 ASSIGNED_CLAIM = "single episode, isotope facts hold"
@@ -718,7 +722,7 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
         out["judged"] += 1
         tier_in = _s(merged.at[i, "tier"])
         # (a) the mass in every episode file's calibrated window
-        a_bad, a_out = [], []          # a_out: the MEASURED failures (a window exists, the mass outside it)
+        a_bad = []
         for sid, r in efiles:
             w = windows.get(sid)
             e = _num(r.get("ppm_error"))
@@ -726,7 +730,6 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
                 a_bad.append(f"{sid}: no calibrated window")
             elif abs(e - _num(w[0])) > K_SIGMA * _num(w[1]):
                 a_bad.append(f"{sid}: {e:+.2f} ppm outside {_num(w[0]):+.2f} +- {K_SIGMA * _num(w[1]):.2f}")
-                a_out.append(a_bad[-1])
         a_ok = not a_bad
         # the episode spectra's line facts
         facts_rows = []
@@ -799,12 +802,11 @@ def judge(merged: pd.DataFrame, ledgers: dict, ts: pd.DataFrame | None, *, windo
             verdict = "untestable" if b_state == "untestable" else "candidate"
             claim = UNTESTABLE_CLAIM if b_state == "untestable" else "single episode, " + failed[0].split(":")[0]
             curated = nf in exempt
-            # `measured` demotes only on a contradicting MEASUREMENT, never on a missing one: (a) a mass
-            # outside an existing window; (b) an isotope line read against the reading; (c) a rival a
-            # measured isotope fact favours; (d) a hold (each a measurement); (e) never -- the absence of an
-            # adduct pair or a second file is no measurement against the reading
-            meas = ([f"(a) {'; '.join(a_out)}"] if a_out else []) \
-                + ([f"(b) {b_det}"] if b_state == "failed" else []) \
+            # `measured` demotes only on a contradicting MEASUREMENT, never on a missing one: (b) an
+            # isotope line read against the reading; (c) a rival a measured isotope fact favours; (d) a
+            # hold. Never (a) -- the per-file tier already judged the mass, a single file's window is too
+            # tight to overrule it -- nor (e): no adduct pair or second file is no measurement
+            meas = ([f"(b) {b_det}"] if b_state == "failed" else []) \
                 + ([f"(c) favoured rival: {'; '.join(favoured[:3])}"] if favoured else []) \
                 + ([f"(d) held: {', '.join(holds)}"] if not d_ok else [])
             measured = bool(meas)

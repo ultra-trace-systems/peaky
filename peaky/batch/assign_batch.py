@@ -81,7 +81,8 @@ from peaky.batch import unidentified as _UN
 from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.14.1"  # the episode evidence demotes only on a contradicting measurement; one curated set
+__version__ = "0.14.2"  # the episode evidence's default is promote-only; measured drops (a)
+                        # 0.14.1: the episode evidence demotes only on a contradicting measurement; one curated set
                         #   (episode_evidence.curated_exempt); batch_summary records episode_evidence_mode
                         # 0.14.0: + the episode evidence in the merge (batch/episode_evidence.py: the `episode` flag on
                         #   the merged row, the single-episode judgment, the plume-solvent clusters; tables/
@@ -2453,7 +2454,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     every episodic bin peaking at >= `episode_min_x_edge` (5) x its sample's
     noise edge gets its peak spectrum, and its episode its peak file and up to
     two neighbours -- no budget (a coverage guarantee, not a cost bound);
-    `episode_evidence` (episode_evidence.MODES; default 'measured') is what an episodic
+    `episode_evidence` (episode_evidence.MODES; default 'promote-only') is what an episodic
     reading in <= 3 files the vote made Assigned becomes when its episode's own evidence
     fails (docs/MERGE.md step 6g): under 'measured' it is Candidate only when a measurement
     contradicts it; batch_summary['episode_evidence_mode'] records the mode.

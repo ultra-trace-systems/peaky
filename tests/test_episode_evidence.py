@@ -132,24 +132,24 @@ def test_co_occurrence_alone_is_no_evidence(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mode,dim_tier,single_tier", [
-    (None, "Assigned", "Assigned"),             # the default, "measured": an untestable line kept, (e) never demotes
-    ("measured", "Assigned", "Assigned"),
+    (None, "Assigned", "Assigned"),             # the default, "promote-only": never demotes
+    ("measured", "Assigned", "Assigned"),       # an untestable line kept, (e) never demotes
     ("promote-only", "Assigned", "Assigned"),   # every failing vote-Assigned row kept with the note
     ("strict", "Candidate", "Candidate"),       # any failed clause demotes
 ])
 def test_the_three_episode_evidence_modes(tmp_path, monkeypatch, mode, dim_tier, single_tier):     # MODE
-    assert EE.MODE == "measured" and EE.MODES == ("measured", "promote-only", "strict")
+    assert EE.MODE == "promote-only" and EE.MODES == ("measured", "promote-only", "strict")
     kw = {} if mode is None else {"episode_evidence": mode}
     # the dim plume ion, Assigned by the files: its ONLY failure is "(b) untestable" (3 episode files: (e) holds)
     summ, m = _run(tmp_path / "a", monkeypatch, build=dict(envelope=True, dim=True), k_episode_max=8, **kw)
     r = _get(m, *DIM)
     assert r["tier"] == dim_tier and r["episode_claim"] == EE.UNTESTABLE_CLAIM and EE.NOTE_MARK in r["tier_reason"]
-    assert summ["merge_gates"]["episode_evidence"]["mode"] == (mode or "measured")
+    assert summ["merge_gates"]["episode_evidence"]["mode"] == (mode or "promote-only")
     # the mode the run used, on record at the top level (the run manifest's switch reads it)
-    assert json.load(open(tmp_path / "a" / "batch_summary.json"))["episode_evidence_mode"] == (mode or "measured")
+    assert json.load(open(tmp_path / "a" / "batch_summary.json"))["episode_evidence_mode"] == (mode or "promote-only")
     t = _table(tmp_path / "a", "episode_evidence.csv")
     row = t[t["neutral_formula"] == DIM[0]].iloc[0]
-    assert not bool(row["measured_failure"]) and row["mode"] == (mode or "measured")
+    assert not bool(row["measured_failure"]) and row["mode"] == (mode or "promote-only")
     # the plume ion in ONE episode file, Assigned by it: (e) fails -- no measurement against it
     _s, m2 = _run(tmp_path / "b", monkeypatch, build=dict(envelope=True), k_episode_max=0, **kw)
     r2 = _get(m2, *E1)
@@ -169,7 +169,7 @@ def test_the_cli_and_the_pipeline_carry_the_mode(monkeypatch):
     from peaky import cli
     from peaky import pipeline as PL
     p = cli.build_parser()
-    assert p.parse_args(["batch", "--batch", "B"]).episode_evidence == "measured"
+    assert p.parse_args(["batch", "--batch", "B"]).episode_evidence == "promote-only"
     got = {}
 
     class _Stop(Exception):
@@ -279,23 +279,30 @@ def test_without_a_calibrated_window_the_mass_cannot_hold():                    
 
 
 def test_a_curated_neutral_keeps_the_votes_tier():
-    # the unit's file reads the mass 2 ppm outside its window: a measured (a) failure
-    for mode in ("strict", "measured"):
-        m, led, ts, w = _unit()
-        led["s1"].loc[0, "ppm_error"] = 2.0
-        _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), mode=mode)
-        assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
-        m, led, ts, w = _unit()
-        led["s1"].loc[0, "ppm_error"] = 2.0
-        _t, s = _judge(m, led, ts, w, mode=mode)
-        assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
+    # strict: the unit's file reads the mass 2 ppm outside its window
+    m, led, ts, w = _unit()
+    led["s1"].loc[0, "ppm_error"] = 2.0
+    _t, s = _judge(m, led, ts, w, exempt=frozenset({E1[0]}), mode="strict")
+    assert m.at[0, "tier"] == "Assigned" and s["kept_assigned"] == 1 and s["demoted"] == 0
+    m, led, ts, w = _unit()
+    led["s1"].loc[0, "ppm_error"] = 2.0
+    _t, s = _judge(m, led, ts, w, mode="strict")
+    assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
+    # measured: a 13C line read against the formula (a measurement)
+    m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+    _t, s = _j2(m, leds, ts, exempt=frozenset({E1[0]}), mode="measured")
+    assert m.at[0, "tier"] == "Assigned" and s["demoted"] == 0
+    m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+    _t, s = _j2(m, leds, ts, mode="measured")
+    assert m.at[0, "tier"] == "Candidate" and s["demoted"] == 1
 
 
 def test_the_batch_wires_the_curated_exemption(tmp_path, monkeypatch):                          # one source
     # the solvent ion C5H9NO (a curated reference-list formula) and the plume ion both read 2 ppm outside
-    # their windows -- a measured (a) failure: the plume ion goes to Candidate, the curated neutral keeps Assigned
+    # their windows -- an (a) failure, which strict demotes: the plume ion goes to Candidate, the curated
+    # neutral keeps Assigned
     _s, m = _run(tmp_path, monkeypatch, build=dict(envelope=True), engine=dict(ppm={"S1": 2.0, "E1": 2.0}),
-                 k_episode_max=8)
+                 k_episode_max=8, episode_evidence="strict")
     assert _get(m, "C5H9NO", "[M+(CH4N2O)H]+")["tier"] == "Assigned"
     assert _get(m, *E1)["tier"] == "Candidate"
     from peaky.assignment import reflists as RL
@@ -303,7 +310,7 @@ def test_the_batch_wires_the_curated_exemption(tmp_path, monkeypatch):          
     cat = RL.load_catalog()
     summ = json.load(open(tmp_path / "batch_summary.json"))
     assert "C5H9NO" in EE.curated_exempt_from_summary(summ, cat)
-    assert summ["episode_evidence_mode"] == "measured"
+    assert summ["episode_evidence_mode"] == "strict"
     # the replay's set is the batch's: the active lists' priors arrive by their recorded id + version
     L = cat["contaminants_keller2008"]
     fake = {"context": summ.get("context"), "reflists_context": {"active": [[L.id, L.data_version, "always active"]]}}
@@ -837,7 +844,7 @@ def _si_lines(fac):
 
 
 @pytest.mark.parametrize("kw,demoted,clause", [
-    (dict(ppm=(0.1, 2.0)), True, "(a) s2: +2.00 ppm outside"),                        # (a) outside an existing window
+    (dict(ppm=(0.1, 2.0)), False, None),                       # (a) outside an existing window: never demotes
     (dict(c13=(8.0, 4.0)), True, "(b) 13C reads"),                                    # (b) a contradicting 13C line
     (dict(alts=RIVAL_ALT, extra=_si_lines(1.0)), True, "(c) favoured rival: C10H13FNSi [M+H]+ (its 30Si line"),
     (dict(reason="isotopologue risk: Assigned in 2 file(s) only"), True, "(d) held: isotopologue risk"),
@@ -881,10 +888,28 @@ def test_strict_demotes_the_untestable_and_scope_failures_too():
         assert m.at[0, "tier"] == "Candidate"
 
 
-def test_judge_defaults_to_measured():                                                           # judge(mode=None)
+def test_judge_defaults_to_promote_only():                                                       # judge(mode=None)
+    # NEGATIVE CONTROL of the default: a 13C contradiction that measured demotes stays Assigned by default
     m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
     tab, s = _j2(m, leds, ts)
-    assert s["mode"] == "measured" and m.at[0, "tier"] == "Candidate" and tab.iloc[0]["mode"] == "measured"
+    assert s["mode"] == "promote-only" and m.at[0, "tier"] == "Assigned" and tab.iloc[0]["mode"] == "promote-only"
+    assert bool(tab.iloc[0]["measured_failure"]) and "(b) 13C reads" in tab.iloc[0]["measurement"]
+    m, leds, ts = _unit2(tier="Assigned", c13=(8.0, 4.0))
+    _j2(m, leds, ts, mode="measured")
+    assert m.at[0, "tier"] == "Candidate"
+
+
+def test_measured_never_demotes_on_a_window_miss():                                             # (a) never demotes
+    # NEGATIVE CONTROL: both files read the mass far outside their windows, every other clause holds:
+    # measured keeps the vote's Assigned (no measurement), strict demotes it
+    m, leds, ts = _unit2(tier="Assigned", ppm=(2.0, 2.0))
+    tab, s = _j2(m, leds, ts, mode="measured")
+    row = tab.iloc[0]
+    assert m.at[0, "tier"] == "Assigned" and s["demoted"] == 0 and "outside" in row["a_mass"]
+    assert not bool(row["measured_failure"]) and row["measurement"] == ""
+    m, leds, ts = _unit2(tier="Assigned", ppm=(2.0, 2.0))
+    _j2(m, leds, ts, mode="strict")
+    assert m.at[0, "tier"] == "Candidate"
 
 
 def test_a_favoured_rival_needs_its_fact_in_every_testable_file():                            # _favours, every file

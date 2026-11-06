@@ -149,7 +149,7 @@ try:
               _got["ab"]["episodes"] is _SS.EPISODE_DEFAULT
               and _got["ab"]["k_episode_max"] is None
               and _got["ab"]["episode_min_x_edge"] == _SS.EPISODE_MIN_X_EDGE
-              and _got["ab"]["episode_evidence"] == "measured",
+              and _got["ab"]["episode_evidence"] == "promote-only",
               {k: _got["ab"].get(k) for k in ("episodes", "k_episode_max", "episode_evidence")})
     with tempfile.TemporaryDirectory() as d:
         _got.clear()

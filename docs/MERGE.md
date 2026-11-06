@@ -948,19 +948,23 @@ selected sample_ids (SAMPLING.md)
    C H N O S Cl Br (never a radical or ion-only reading); a Candidate that passes
    is promoted. Otherwise the reading is not Assigned from its episode: a
    Candidate stays one, and what a reading the vote made Assigned becomes is the
-   mode (`--episode-evidence`, `episode_evidence.MODE`): **measured** (the
-   default) -- Candidate only on a contradicting MEASUREMENT: (a) an error outside
-   a calibrated window that exists (no window is untestable, not a failure); (b)
+   mode (`--episode-evidence`, `episode_evidence.MODE`): **promote-only** (the
+   default) -- kept Assigned with the note: the step promotes and never demotes
+   (on a 12-ledger field arm every demotion rule tried demoted true lines and
+   caught no wrong one: the one wrong reading among them, a siloxane, has no
+   measurement against it). **measured** -- Candidate only on a contradicting
+   MEASUREMENT: (b)
    a 13C or S / Cl / Br line read and contradicting the formula; (c) a rival left
    that a measured isotope fact FAVOURS (its 13C count nearer the rival's in every
    testable file and inside the rival's band, or the line of an element only the
    rival carries -- 34S / 37Cl / 81Br / 30Si -- read at the rival's count, or the
    label's 14N twin at the rival's share; a rival left with untestable isotopes is
-   untestable); (d) a hold. (e) is a promotion criterion only and never demotes,
-   nor does "(b) untestable", a promotion closed by the elements or the radical /
-   ion-only rule, or an untestable rival: a line too dim to test is no evidence
-   either way. **promote-only** -- kept with the note; **strict** -- Candidate on
-   any failed clause. A curated neutral keeps the vote's tier in every mode;
+   untestable); (d) a hold. (a) and (e) are promotion criteria only and never
+   demote (the per-file tier already judged the mass; a single file's 3-sigma
+   window, +-0.45 ppm at the sigma floor, is too tight to overrule it), nor does
+   "(b) untestable", a promotion closed by the elements or the radical / ion-only
+   rule, or an untestable rival: a line too dim to test is no evidence either
+   way. **strict** -- Candidate on any failed clause. A curated neutral keeps the vote's tier in every mode;
    curated is ONE set, `episode_evidence.curated_exempt` (the pass-0 registry for
    the batch's polarity and context, union the priors of the active reference
    lists), which a replay rebuilds from `batch_summary.json`

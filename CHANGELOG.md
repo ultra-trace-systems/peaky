@@ -91,12 +91,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   15N-label classes, and the exotic rivals within 0.5 mDa the files and the levels left open), (d) no low-file
   hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
   spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
-  A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned goes to
-  Candidate only on a contradicting MEASUREMENT -- (a) an error outside a calibrated window that exists, (b) an
-  isotope line read and contradicting, (c) a rival that a measured isotope fact favours, (d) a hold; (e), an
-  untestable line or rival and a closed promotion never demote -- and otherwise keeps its tier with the note
-  (`--episode-evidence measured`, the default, recorded in the run manifest; `promote-only` keeps every such row,
-  `strict` demotes on any failed clause; a curated neutral -- the pass-0 registry plus the active reference lists'
+  A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned keeps
+  its tier with the note (`--episode-evidence promote-only`, the default, recorded in the run manifest: the step
+  promotes, it never demotes). `--episode-evidence measured` makes it Candidate only on a contradicting MEASUREMENT
+  -- (b) an isotope line read and contradicting, (c) a rival that a measured isotope fact favours, (d) a hold; (a)
+  the mass window, (e), an untestable line or rival and a closed promotion never demote --, `strict` on any failed
+  clause; a curated neutral -- the pass-0 registry plus the active reference lists'
   priors, one set shared by the batch and a replay -- keeps its tier; the `measurement` column names what
   contradicted it); with no testable isotope
   line the new

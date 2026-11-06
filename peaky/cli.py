@@ -2096,11 +2096,11 @@ def _add_episode_args(sp) -> None:
     from peaky.batch import episode_evidence as _EE
     sp.add_argument("--episode-evidence", choices=_EE.MODES, default=_EE.MODE,
                     help="what an episodic reading in <= 3 files the files' vote made Assigned becomes when its "
-                         "episode's own evidence fails (docs/MERGE.md step 6g): 'measured' (default) -- Candidate "
-                         "only when a measurement contradicts it (mass outside a calibrated window, an isotope "
-                         "line read against it, a rival an isotope fact favours, a hold); 'promote-only' -- "
-                         "kept; 'strict' -- Candidate on any failed clause. A Candidate that passes is promoted "
-                         "in every mode")
+                         "episode's own evidence fails (docs/MERGE.md step 6g): 'promote-only' (default) -- kept "
+                         "Assigned with the note; 'measured' -- Candidate only when a measurement contradicts it "
+                         "(an isotope line read against it, a rival an isotope fact favours, a hold; never the "
+                         "mass window); 'strict' -- Candidate on any failed clause. A Candidate that passes is "
+                         "promoted in every mode")
 
 
 def _auto_or_float(v: str):
