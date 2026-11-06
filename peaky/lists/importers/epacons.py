@@ -9,7 +9,7 @@ EPA CompTox dashboard: name, CASRN, InChIKey, SMILES, formula, masses, DTXSID.
 Why this list first: it names the consumer-product chemistry a urea/ammonium
 CIMS sees in a city (glycol ethers, Texanol, DEET, siloxanes, plasticizers) AND
 the organophosphate pesticides (malathion) the CHON grid cannot reach -- the
-2026-11 Texas case -- from a source that is not peaky's own campaign.
+2026-11 field case -- from a source that is not peaky's own campaign.
 """
 from __future__ import annotations
 

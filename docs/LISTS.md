@@ -45,7 +45,7 @@ peaky lists show norman_sle_s22_epacons
 peaky lists lock --dir peaky/data/peaklists   # after adding or editing a bundled list
 peaky lists import norman_sle_s22_epacons          # -> the user directory
 peaky lists import norman_sle_s22_epacons --bundle # -> the bundled catalog (redistributable licence only)
-peaky batch --batch "TX Ur 122-600 ..." --dataset "Texas Campaign 2026" --reagent Ur --lists norman_sle_s22_epacons
+peaky batch --batch "Site A Ur 122-600 ..." --dataset "Site A campaign" --reagent Ur --lists norman_sle_s22_epacons
 ```
 
 `--lists ID[,ID]` (or `$PEAKY_LISTS`) activates lists by id beside the ones

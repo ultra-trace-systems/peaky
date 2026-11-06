@@ -1073,7 +1073,7 @@ try:
     class _IdBatches:
         def list(self, dataset=None):   # noqa: A001
             return pd.DataFrame({"sample_batch_id": ["BID"],
-                                 "sample_batch_name": ["Texas Ur 122-600"]})
+                                 "sample_batch_name": ["Site A Ur 122-600"]})
 
     class _IdSamples:
         seen: list = []
@@ -1094,7 +1094,7 @@ try:
         check("run: a batch addressed by id fetches its roster by that id",
               _IdSamples.seen == ["BID"], _IdSamples.seen)
         check("run: ... and batch_summary records the batch's DISPLAY name, not the id",
-              summ5["batch_name"] == "Texas Ur 122-600", summ5.get("batch_name"))
+              summ5["batch_name"] == "Site A Ur 122-600", summ5.get("batch_name"))
     finally:
         IO.connect = lambda *a, **k: "CLIENT"
 
