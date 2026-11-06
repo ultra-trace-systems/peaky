@@ -145,6 +145,8 @@ def test_the_three_episode_evidence_modes(tmp_path, monkeypatch, mode, dim_tier,
     r = _get(m, *DIM)
     assert r["tier"] == dim_tier and r["episode_claim"] == EE.UNTESTABLE_CLAIM and EE.NOTE_MARK in r["tier_reason"]
     assert summ["merge_gates"]["episode_evidence"]["mode"] == (mode or "measured")
+    # the mode the run used, on record at the top level (the run manifest's switch reads it)
+    assert json.load(open(tmp_path / "a" / "batch_summary.json"))["episode_evidence_mode"] == (mode or "measured")
     t = _table(tmp_path / "a", "episode_evidence.csv")
     row = t[t["neutral_formula"] == DIM[0]].iloc[0]
     assert not bool(row["measured_failure"]) and row["mode"] == (mode or "measured")
@@ -847,6 +849,20 @@ def test_measured_demotes_only_on_a_contradicting_measurement(kw, demoted, claus
     assert row["prior_reason"] == kw.get("reason", "")
 
 
+def test_measured_keeps_a_reading_with_no_calibrated_window():                                 # (a) untestable
+    # s2 has no calibration: (a) cannot be read there -- no measurement, so measured keeps the vote's tier
+    m, leds, ts = _unit2(tier="Assigned")
+    tab, _s = EE.judge(m, leds, ts, windows={"s1": (0.0, 0.2)}, edges={"s1": 100.0, "s2": 100.0},
+                       adducts=["[M+H]+"], mode="measured", log=lambda *a, **k: None)
+    row = tab.iloc[0]
+    assert "s2: no calibrated window" in row["a_mass"] and m.at[0, "tier"] == "Assigned"
+    assert not bool(row["measured_failure"]) and row["measurement"] == ""
+    m, leds, ts = _unit2(tier="Assigned")
+    EE.judge(m, leds, ts, windows={"s1": (0.0, 0.2)}, edges={"s1": 100.0, "s2": 100.0}, adducts=["[M+H]+"],
+             mode="strict", log=lambda *a, **k: None)
+    assert m.at[0, "tier"] == "Candidate"
+
+
 def test_strict_demotes_the_untestable_and_scope_failures_too():
     for kw in (dict(alts=RIVAL_ALT, extra=_si_lines(1.0), h=1500.0), dict(nf="C8H9FN4O2")):
         m, leds, ts = _unit2(tier="Assigned", **kw)
@@ -866,6 +882,10 @@ def test_a_favoured_rival_needs_its_fact_in_every_testable_file():              
     assert EE._favours(near, me, rival) is not None
     assert EE._favours(near + _facts(8.2), me, rival) is None
     assert EE._favours(_facts(8.9), me, rival) is None      # nearer the reading
+    # nearer a C30 rival than the C8 reading, but outside the rival's own band (7.5): no measured fact for it
+    far = {"C": 30, "H": 40, "N": 1, "O": 2}
+    assert EE._favours(_facts(20.0), me, far) is None
+    assert EE._favours(_facts(27.0), me, far) is not None
 
 
 def _find_pt(pred, n=10):
