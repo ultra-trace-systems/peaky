@@ -107,7 +107,8 @@ from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 from peaky.chem import chemistry as C
 
-__version__ = "0.2.1"  # + the per-file isotope-contradiction guard on the pooled / lent re-level (isoguard)
+__version__ = "0.2.2"  # the pooled / lent re-level's isotope guard in the run's mode (PoolInputs.isotope_guard)
+#                        0.2.1 + the per-file isotope-contradiction guard on the pooled / lent re-level (isoguard)
 #                        0.2.0 the campaign core's inorganic ions, the core-row pool on its own, the lent source
 #                        0.1.0 the batch-pooled tier calibration (REPORT #1 / B7)
 
@@ -382,6 +383,8 @@ class PoolInputs:
     families: tuple = ()
     curated: frozenset = frozenset()
     level_inputs: object = None
+    # the isotope guard's mode for step 5 (isoguard.MODES); None: the cfg's (PassConfig.isotope_guard)
+    isotope_guard: str | None = None
 
 
 def lent_calibration(pool: Pool, assigned_ppm=(), *, min_rows: int = CENTRE_MIN_ROWS):
@@ -508,8 +511,10 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
         # 5. the per-file isotope-contradiction guard on those facts (the stage the file's own run
         # ran without facts: it was not levelled there), before the batch folds the file into its vote
         from peaky.assignment import isoguard as IG
-        g = IG.guard_ledger(ledger, pairs[-1] if pairs else None, log=log)
+        mode = inputs.isotope_guard if inputs.isotope_guard is not None else IG.mode_of(cfg)
+        g = IG.guard_ledger(ledger, pairs[-1] if pairs else None, mode=mode, log=log)
         g["rows"] = g["rows"][:IG.ROWS_KEPT]
+        g["held_rows"] = g["held_rows"][:IG.ROWS_KEPT]
         # the record names the calibration the file was given: the pool's own source (pooled, or the
         # source of a calibration lent through this function)
         out["isotope_guard"] = {**g, "source": getattr(pool, "source", None) or T.CAL_SOURCE_POOLED}

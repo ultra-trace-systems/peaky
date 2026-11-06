@@ -83,6 +83,32 @@ shared by the writers and the report reader so the filenames can't drift.
 
 ---
 
+### The isotope guard's record (`isotope_guard`)
+
+The isotope-contradiction guard ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9, `assignment/isoguard.py`) writes
+one record of one shape at each of its three call sites:
+- `batch_summary.json["per_file"][i]["isotope_guard"]`: the file's stage `isotope_guard`, or the record of its pooled
+  re-level with `source`;
+- `batch_summary.json["merge_gates"]["isotope_guard"]`: the merged guard, plus `per_file_noted`;
+- a single-sample run's `stats["isotope_guard"]`.
+
+| key | meaning |
+|---|---|
+| `mode` | `note` (the default: nothing moves a tier) or `demote` (`PassConfig.isotope_guard`, `--isotope-guard`) |
+| `tested` | Assigned M0 rows the guard looked at |
+| `would_demote` | rows whose facts bind after the gate and the per-row conditions: noted, and Candidate in `demote` |
+| `demoted` | rows made Candidate: `would_demote` in `demote`, 0 in `note` |
+| `by_fact` | `would_demote` by its first binding fact: `13C` / `absent` (own 34S / 37Cl line) / `unexplained` (a 34S / 37Cl line the reading cannot explain) |
+| `held` | contradicted rows that did not bind: `gate` (the file's / batch's 13C counts failed the gate: nothing binds there, 34S / 37Cl included), `blend`, `untested` (the per-row conditions on a 13C fact) |
+| `rows` / `held_rows` | the first 50 of each: `neutral_formula`, `adduct`, `mz`, `fact` (+ `condition` on a held row) |
+| `facts_unreliable` | true when the gate is closed: fewer than `GATE_MIN_REF` (10) reference rows with a tested 13C count, a file without levels included, or their agreement under `GATE_MIN_AGREE` (0.9) |
+| `agreement`, `n_ref`, `n_agree` | the gate's measurement on the reference rows (per file: M0 Assigned, High / Good, carbon, tested count; merged: every Assigned row). `agreement` is null when `n_ref` is 0 |
+| `source` | per file, pooled re-level only: the calibration's source, the file's `tier_calibration` (`pooled` for the batch pool; `campaign` / `lent` for a calibration file's window) |
+| `per_file_noted` | merged only: merged rows that carry the per-file guard's note (`isotope contradiction in k of n file(s): ...`) |
+
+A noted row's `tier_reason` carries `isotope contradiction: <fact>` in both modes. `tables/unidentified.csv` adds the
+note of a vote-dropped reading to its `blocked_by`.
+
 ## The time-series parquet — schema
 
 Two files carry the batch time series. Both are **one row per (sample × peak)** —

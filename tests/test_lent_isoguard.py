@@ -20,9 +20,10 @@ from tests.test_tier_calibration_input import _json, _run
 
 
 def test_apply_pool_guards_a_file_lent_a_window(monkeypatch):
-    """A reading whose 13C count contradicts it (6 C read for 10) is Candidate after a lent re-level, with
-    the guard's note, and the record says `lent`; the level facts come from the lent window's re-level,
-    whose run inputs name the window's own source (the level stage is told `lent`, not `pooled`)."""
+    """A reading whose 13C count contradicts it (6 C read for 10) carries the guard's note after a lent
+    re-level, and the record says `lent`; in the default `note` mode it stays Assigned (listed in
+    `would_demote`), in the `demote` mode it is Candidate. The level facts come from the lent window's
+    re-level, whose run inputs name the window's own source (the level stage is told `lent`, not `pooled`)."""
     from peaky.assignment import evidence as EV
     seen = []
     real = EV.apply_levels
@@ -32,18 +33,21 @@ def test_apply_pool_guards_a_file_lent_a_window(monkeypatch):
         return real(ledger, *a, run_inputs=run_inputs, **kw)
 
     monkeypatch.setattr(EV, "apply_levels", spy)
-    pool = CP.pool_calibration(_batch())
-    pool.source = T.CAL_SOURCE_LENT
-    led = _guard_ledger(c13_count=6.0, snr13=40.0)
-    at = led.copy(deep=True)
-    at["tier"] = pd.NA
-    out = CP.apply_pool(led, pool, _inputs_for(at, "s1"), audit=[], log=lambda *a: None)
-    row = led[led["role"] == "M0"].iloc[0]
-    assert row["tier"] == T.TIER_CANDIDATE and f"{IG.NOTE_MARK}: 13C reads " in str(row["tier_reason"])
-    assert out["isotope_guard"]["source"] == T.CAL_SOURCE_LENT and out["isotope_guard"]["demoted"] == 1
-    # the re-tier stamps the lent source, and the re-level's inputs carry it too
-    assert row[T.TIER_CALIBRATION] == T.CAL_SOURCE_LENT
-    assert seen == [T.CAL_SOURCE_LENT]
+    for guard, tier, demoted in ((None, T.TIER_ASSIGNED, 0), ("demote", T.TIER_CANDIDATE, 1)):
+        pool = CP.pool_calibration(_batch())
+        pool.source = T.CAL_SOURCE_LENT
+        led = _guard_ledger(c13_count=6.0, snr13=40.0)
+        at = led.copy(deep=True)
+        at["tier"] = pd.NA
+        out = CP.apply_pool(led, pool, _inputs_for(at, "s1", guard=guard), audit=[], log=lambda *a: None)
+        row = led[led["role"] == "M0"].iloc[0]
+        g = out["isotope_guard"]
+        assert row["tier"] == tier and f"{IG.NOTE_MARK}: 13C reads " in str(row["tier_reason"]), guard
+        assert g["source"] == T.CAL_SOURCE_LENT and g["demoted"] == demoted and g["would_demote"] == 1, guard
+        assert g["mode"] == (guard or IG.DEFAULT_MODE)
+        # the re-tier stamps the lent source, and the re-level's inputs carry it too
+        assert row[T.TIER_CALIBRATION] == T.CAL_SOURCE_LENT
+    assert seen == [T.CAL_SOURCE_LENT, T.CAL_SOURCE_LENT]
 
 
 def test_a_batch_lent_a_calibration_json_records_the_guard_on_every_lent_file(tmp_path, monkeypatch):

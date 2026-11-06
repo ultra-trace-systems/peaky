@@ -512,10 +512,12 @@ def _stage_evidence(st):
 def _stage_isotope_guard(st):
     """The per-file isotope-contradiction guard (isoguard.guard_ledger) on the
     facts the `evidence` stage computed for this file (`st.level_pairs`); a file
-    the stage could not level has no facts and nothing is demoted."""
+    the stage could not level has no facts and nothing is demoted. The mode is the run's
+    (PassConfig.isotope_guard: 'note' by default, nothing moves a tier)."""
     pairs = (getattr(st, "level_pairs", None) or [None])[-1]
-    s = isoguard.guard_ledger(st.led, pairs, log=st.log)
+    s = isoguard.guard_ledger(st.led, pairs, mode=isoguard.mode_of(getattr(st, "cfg", None)), log=st.log)
     s["rows"] = s["rows"][:isoguard.ROWS_KEPT]
+    s["held_rows"] = s["held_rows"][:isoguard.ROWS_KEPT]
     return s
 
 

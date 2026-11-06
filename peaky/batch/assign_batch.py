@@ -81,7 +81,9 @@ from peaky.batch import unidentified as _UN
 from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.14.2"  # the episode evidence's default is promote-only; measured drops (a)
+__version__ = "0.14.3"  # the merged isotope guard in the run's mode (note by default); batch_summary records
+                        #   isotope_guard_mode beside episode_evidence_mode
+                        # 0.14.2: the episode evidence's default is promote-only; measured drops (a)
                         # 0.14.1: the episode evidence demotes only on a contradicting measurement; one curated set
                         #   (episode_evidence.curated_exempt); batch_summary records episode_evidence_mode
                         # 0.14.0: + the episode evidence in the merge (batch/episode_evidence.py: the `episode` flag on
@@ -1265,6 +1267,19 @@ def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
             # an uncalibrated file's inputs to the batch-pooled tier calibration
             # (calpool.apply_pool); None on a calibrated file
             "pool_inputs": res.get("pool_inputs")}
+
+
+def _merged_isotope_guard(merged, levels, ledgers: dict, cfg, *, log=print) -> dict:
+    """The merge-side isotope guard (isoguard.py), in the run's mode (PassConfig.isotope_guard; 'note' by
+    default): the per-file guard's notes said on the merged rows (merged_notes), then guard_merged on the
+    POOLED facts -- the batch's own gate on its pooled counts, independent of the per-file gates, and the per-row
+    conditions read in the source files' ledgers. Returns merge_gates["isotope_guard"]."""
+    noted = _IG.merged_notes(merged, ledgers, log=log)
+    g = _IG.guard_merged(merged, levels, ledgers=ledgers, mode=_IG.mode_of(cfg), log=log)
+    g["rows"] = g["rows"][:_IG.ROWS_KEPT]
+    g["held_rows"] = g["held_rows"][:_IG.ROWS_KEPT]
+    g["per_file_noted"] = int(noted)
+    return g
 
 
 def _tier_cal_source(per_stats: list) -> str | None:
@@ -3816,13 +3831,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     EV.for_output(levels).to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     # the isotope-contradiction guard on the merged ledger (isoguard.guard_merged): an
     # Assigned row whose POOLED pair the levels' own isotope facts contradict (13C count,
-    # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) is Candidate with
-    # the note. The per-file guard (stage isotope_guard) already held the files' tiers
-    # before the vote; this reads the facts of every file together
-    _ig_noted = _IG.merged_notes(merged, full_ledgers, log=log)
-    merge_gates["isotope_guard"] = _IG.guard_merged(merged, levels, log=log)
-    merge_gates["isotope_guard"]["rows"] = merge_gates["isotope_guard"]["rows"][:50]
-    merge_gates["isotope_guard"]["per_file_noted"] = int(_ig_noted)
+    # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) gets the note, and in
+    # the 'demote' mode is Candidate ('note', the default, keeps the tier). The per-file guard
+    # (stage isotope_guard) already noted / held the files' rows before the vote; this reads the
+    # facts of every file together
+    merge_gates["isotope_guard"] = _merged_isotope_guard(merged, levels, full_ledgers, cfg, log=log)
     # the episode evidence (episode_evidence.judge; only in a batch with episode files): an episodic
     # reading in <= 3 files is judged on its episode's own spectra -- Assigned from that episode only
     # when its mass, its isotope lines, its alias rivals, no hold and a second fact all say so
@@ -4120,6 +4133,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # the episode evidence's mode (episode_evidence.MODES; --episode-evidence), recorded whether or
         # not the batch had an episode file (the run manifest reads it: pipeline._switch_record)
         "episode_evidence_mode": episode_evidence,
+        # the isotope-contradiction guard's mode (isoguard.MODES; --isotope-guard, PassConfig.isotope_guard: the
+        # run manifest's fingerprinted `config` holds it too), beside the other merge-side mode
+        "isotope_guard_mode": _IG.mode_of(cfg),
         # the bright unidentified lines (tables/unidentified.csv): `unidentified_bright` the row
         # count (a later drop to 0 shows), `unidentified` by why + the vote-drop counts
         "unidentified_bright": int(unident_summary["rows"]),

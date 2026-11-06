@@ -910,17 +910,41 @@ selected sample_ids (SAMPLING.md)
    rows into iso_child / unexplained rows. A diagnostic: nothing reads it but the
    unidentified table below.
 
-6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`;
-   right after the pooled evidence levels are stamped). An Assigned merged row
-   whose POOLED pair the levels' own isotope facts contradict -- the 13C carbon
-   count (test c), an absent own 34S / 37Cl line (test a), a 34S / 37Cl line it
-   cannot explain while it carries no S / Cl (test b);
-   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 -- is Candidate with the note
-   `isotope contradiction: <fact>`. The per-file guard (stage `isotope_guard`)
-   already held the files' tiers before the vote; this one reads every file's facts
-   together. Demote-only; `batch_summary.json["merge_gates"]["isotope_guard"]`
-   records `tested`, `demoted`, `by_fact` (`13C` / `absent` / `unexplained`) and
-   the first 50 `rows`.
+6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`
+   via `assign_batch._merged_isotope_guard`; right after the pooled evidence levels
+   are stamped). It finds the Assigned merged rows whose POOLED pair the levels' own
+   isotope facts contradict:
+   - the 13C carbon count (test c);
+   - an absent own 34S / 37Cl line (test a);
+   - a 34S / 37Cl line the row cannot explain while it carries no S / Cl (test b).
+
+   See [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 for the facts.
+
+   **By default (mode `note`, `--isotope-guard`) it moves no tier:** each such row gets
+   the note `isotope contradiction: <fact>` and is listed in the record. In the
+   `demote` mode it is Candidate too. The per-file guard (stage `isotope_guard`) ran
+   in the same mode on every file before the vote; this one reads every file's facts
+   together, after `merged_notes` has said the per-file notes on the merged rows.
+
+   Two filters apply in both modes. A fact binds only:
+   - **when the batch's pooled 13C counts pass the reliability gate.** At least 0.9
+     of the tested counts of at least 10 Assigned merged rows must agree. The gate
+     reads the pooled counts alone, independent of the per-file gates. Otherwise the
+     record carries `facts_unreliable` and nothing binds. Per file the same gate
+     closes on 27 of the 60 guard-relevant files of a 12-batch field arm: the
+     15N-nitrate 128-600 files, n_ref 4-9. On those batches the per-file guard is in
+     effect off.
+   - **when the per-row conditions, read in the source files, leave it standing.** A
+     13C fact does not bind when at least half of the files that carry the row call
+     it a blend or untested.
+
+   `batch_summary.json["merge_gates"]["isotope_guard"]` is the guard's record
+   (docs/OUTPUTS.md): `mode`, `tested`, `demoted`, `would_demote`, `by_fact`
+   (`13C` / `absent` / `unexplained`), `held` (`gate` / `blend` / `untested`), the
+   first 50 `rows` / `held_rows`, `facts_unreliable`, `agreement`, `n_ref`, `n_agree`
+   and `per_file_noted`. The mode also sits in `batch_summary.json["isotope_guard_mode"]`,
+   beside `episode_evidence_mode` (step 6g), and in `run_manifest.json`'s fingerprinted
+   `config` (`isotope_guard`, a PassConfig field).
 
 6g. **The episode evidence** (`batch/episode_evidence.judge`; right after step 6e;
    only in a batch with episode files). A merged M0 reading of an episodic bin in
@@ -940,7 +964,10 @@ selected sample_ids (SAMPLING.md)
    pooled levels (`competitors_left`) left open; a rival falls by its 13C count,
    an S / Cl / Br / Si line or the label's 14N twin; (d) no hold: neither step 4d's
    two holds (also read on the episode rows of a reading the hold never tested)
-   nor the isotope-contradiction guard or its pooled facts; (e) an adduct partner
+   nor the isotope-contradiction guard or its pooled facts (the guard's note
+   `isotope contradiction`, which it writes in either `--isotope-guard` mode -- in
+   `note` on a row it leaves Assigned -- and the pooled pair facts as the levels
+   state them, without the guard's reliability gate or per-row conditions); (e) an adduct partner
    of the same neutral in the same spectra (>= 3x the edge) or a second episode
    file reading the ion. Co-occurrence with other episode lines is never
    evidence; partners in another reagent's batch in the same minutes are not
