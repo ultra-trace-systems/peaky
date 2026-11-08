@@ -684,12 +684,26 @@ def density_text(density: int, capped: bool) -> str:
 
 #: where a file's tier calibration came from (the `tier_calibration` column on
 #: its M0 rows and its batch_summary `per_file` entry): its own core
-#: (`_calibrate`), the batch's pooled core (assignment/calpool.py), or none
+#: (`_calibrate`), the batch's pooled core (assignment/calpool.py), a calibration
+#: file (`--tier-calibration`, assignment/calfile.py) pooled over runs of the same
+#: reagent, polarity and scan range (`campaign`) or lent from another scan range,
+#: or explicitly from another reagent (`lent`), or none
 CAL_SOURCE_PER_FILE, CAL_SOURCE_POOLED, CAL_SOURCE_NONE = "per_file", "pooled", "none"
+CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT = "campaign", "lent"
+#: the sources whose window a file borrows (not its own core)
+BORROWED_SOURCES = (CAL_SOURCE_POOLED, CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT)
+#: ... of them, the windows a calibration file lends (the mass-error test floors their sigma, `_cal_z`)
+FILE_SOURCES = (CAL_SOURCE_CAMPAIGN, CAL_SOURCE_LENT)
 #: the window word a reason uses for a calibration of each source
-_WINDOW_WORD = {CAL_SOURCE_PER_FILE: "calibrated window", CAL_SOURCE_POOLED: "batch-pooled calibrated window"}
+_WINDOW_WORD = {CAL_SOURCE_PER_FILE: "calibrated window", CAL_SOURCE_POOLED: "batch-pooled calibrated window",
+                CAL_SOURCE_CAMPAIGN: "campaign-pooled calibrated window",
+                CAL_SOURCE_LENT: "lent calibrated window"}
+#: ... and the accuracy word of the z-tail reason
+_ACCURACY_WORD = {CAL_SOURCE_POOLED: "batch-pooled", CAL_SOURCE_CAMPAIGN: "campaign-pooled",
+                  CAL_SOURCE_LENT: "lent"}
 #: the M0 rows' column naming where their file's tier calibration came from
-#: (CAL_SOURCE_PER_FILE / CAL_SOURCE_POOLED / CAL_SOURCE_NONE); NA on every other row
+#: (CAL_SOURCE_PER_FILE / CAL_SOURCE_POOLED / CAL_SOURCE_CAMPAIGN / CAL_SOURCE_LENT /
+#: CAL_SOURCE_NONE); NA on every other row
 TIER_CALIBRATION = "tier_calibration"
 
 
@@ -804,16 +818,36 @@ def _cal_z(cal, ppm, mz=None) -> float:
     centre and sigma (masscal.centre / sigma_at, clamped to the backbone range)
     when the fit exists and an m/z is given, else the constant ones. A line
     outside the batch axis model's scope within its reach (the calibration's
-    `carry`) is judged at that centre plus the model's edge value."""
+    `carry`) is judged at that centre plus the model's edge value. A constant
+    window lent from a calibration file (CAL_SOURCE_CAMPAIGN / CAL_SOURCE_LENT,
+    assignment/calfile.py) takes the same absolute floor (masscal.sigma_at,
+    `abs_floor_mda`) a fitted trend's sigma takes: a file that ran no mass-error
+    test of its own is not judged tighter than 0.03 mDa at low m/z."""
     mu, sigma = cal[0], cal[1]
     b = getattr(cal, "b", None)
     if b is not None and mz is not None and not pd.isna(mz):
         mu = MC.centre(cal.a, b, mz, cal.mz_lo, cal.mz_hi)
         sigma = MC.sigma_at(cal.sigma_t or sigma, mz, cal.abs_floor_mda)
+    elif _cal_source(cal) in FILE_SOURCES and mz is not None and not pd.isna(mz):
+        sigma = MC.sigma_at(sigma, float(mz), getattr(cal, "abs_floor_mda", MC.ABS_FLOOR_MDA))
     carry = getattr(cal, "carry", None)
     if carry and mz is not None and not pd.isna(mz):
         mu = MC.carried_centre(carry, mu, float(mz))
     return (float(ppm) - mu) / sigma
+
+
+def _window_text(cal, mz) -> str:
+    """The window a z-tail reason quotes: `mu±sigma ppm` as the calibration
+    states it; for a calibration-file window (FILE_SOURCES) the sigma the test
+    used at the line's m/z, with the absolute floor named when it bound
+    (`_cal_z`)."""
+    mu, sigma = cal[0], cal[1]
+    if _cal_source(cal) in FILE_SOURCES and getattr(cal, "b", None) is None and mz is not None and not pd.isna(mz):
+        used = MC.sigma_at(sigma, float(mz), getattr(cal, "abs_floor_mda", MC.ABS_FLOOR_MDA))
+        if used > sigma:
+            return (f"{mu:+.2f}±{used:.2f} ppm, the {getattr(cal, 'abs_floor_mda', MC.ABS_FLOOR_MDA):g} mDa floor "
+                    f"at m/z {float(mz):.1f} over the window's ±{sigma:.2f}")
+    return f"{mu:+.2f}±{sigma:.2f} ppm"
 
 
 def _abs_floor(cfg) -> float:
@@ -922,7 +956,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
         cal = _with_carry(cal, _carry(cfg))
     # the window the reasons name: the file's own calibration, or the batch's pooled one
     window = _WINDOW_WORD.get(_cal_source(cal), "calibrated window")
-    pooled = _cal_source(cal) == CAL_SOURCE_POOLED
+    accuracy = _ACCURACY_WORD.get(_cal_source(cal), "calibrated")
     # primary detected channels = adducts carrying the High pass-1 backbone
     # (the unambiguous real reagent ions). A background channel that shows up
     # here (a genuine CO3-CIMS run) is treated as primary, not demoted.
@@ -1306,8 +1340,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
             z = _cal_z(cal, r["ppm_error"], r.get("mz"))
             tier = TIER_CANDIDATE
             reason = (f"mass error {float(r['ppm_error']):+.2f} ppm is {z:+.1f}"
-                      f"σ off the {'batch-pooled' if pooled else 'calibrated'} instrument accuracy "
-                      f"({cal[0]:+.2f}±{cal[1]:.2f} ppm) with no isotope / "
+                      f"σ off the {accuracy} instrument accuracy "
+                      f"({_window_text(cal, r.get('mz'))}) with no isotope / "
                       "cross-channel / series corroboration "
                       "(mass-error-distribution test)")
         elif mass_degenerate and not corroborated:

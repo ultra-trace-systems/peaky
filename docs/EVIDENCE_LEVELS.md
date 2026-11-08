@@ -423,7 +423,16 @@ pooled core (`tier_calibration: pooled` in its stats, assignment/calpool.py;
 MERGE.md §3 step 1a) has its lent window -- its own centre; the run sigma when
 any file calibrated alone, else the pooled sigma -- as its `degeneracy_cal` and
 takes it as its window; the run window is read off the files that calibrated
-alone, and off the pooled windows only when none did. An uncalibrated file in a
+alone, and off the pooled windows only when none did. A file lent a calibration
+file's window (`--tier-calibration`, assignment/calfile.py; MERGE.md §3 step 1b:
+`tier_calibration: campaign` -- a json pooled over runs of the same reagent,
+polarity and scan range -- or `lent` -- another scan range, or another reagent on
+the same polarity over the same days when `--tier-calibration-lent` allows it) is
+read the same way: its lent window is its window, and the run window comes off
+the files that calibrated alone first. The windows' sources are, in order of
+preference: `per_file` (the file's own core), `pooled` (the batch's pooled core),
+`campaign`, `lent`, `none`; `batch_summary['levels_calibration']` names the
+batch's weakest, and `peaky relevel` re-levels a finished run with a json. An uncalibrated file in a
 batch takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run
 sigma being the median of the per-file sigmas. The run window is the median of
 the per-file windows. A source none of whose files is calibrated, alone or

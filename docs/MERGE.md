@@ -86,9 +86,15 @@ selected sample_ids (SAMPLING.md)
 
 ## 3. The transformation, stage by stage
 
-1. **Assign each selected file** (`run`). Loop the selected `sample_ids`,
+1. **Assign each selected file** (`run`). Loop the selected `sample_ids` (the
+   cover's picks, then the episode stage's, [`SAMPLING.md`](SAMPLING.md) §3c),
    `A.run(sid, …)` each, write `per_file/<sid>_ledger.csv`, keep the M0 rows, and
-   record the file's `estimate_offset`. The reagent's analyte channels are forced
+   record the file's `estimate_offset`. When the batch has an episode file, every
+   per-file ledger is written with an `episode` column (True on an episode file's
+   rows on an episodic bin, `sampling.episode_row_flags`). The vote carries it to
+   the merged row (`episode`, any of the bin's files' rows flagged -> flagged;
+   `_M0_COLS`) and step 6g reads it; a batch without an episode file has neither
+   column. The reagent's analyte channels are forced
    at batch level (`assign_kw.setdefault("adducts", prof.adducts)`) so a per-sample
    match gap can't flip polarity.
 
@@ -143,6 +149,63 @@ selected sample_ids (SAMPLING.md)
    tier. The trace-first sample is not pooled (one averaged file); a pool is
    decided once, from the ledgers of the first stage that returns an
    uncalibrated file (and the stages before it).
+
+   **1b. The calibration file** (`--tier-calibration CAL.JSON`,
+   `assignment/calfile.py`). Only when the batch's pool lends nothing (it fell
+   short, or the batch is TOF-class), a file still uncalibrated is lent the
+   window of a calibration json -- a core pooled over finished runs by `peaky
+   calibration pool` -- exactly as step 1a lends the pool's (`calpool.apply_pool`
+   about the file's own centre; the json's width is the run sigma of its runs'
+   files that calibrated alone, else its pooled sigma). A file that calibrates
+   alone, and every file of a batch whose pool calibrates, is untouched: its
+   tables are byte-identical to a run without the flag. The batch reads the json
+   once (`calfile.choose`) against its own reagent profile, polarity, instrument
+   class, scan range and days (read off the batch series: the median lowest peak
+   m/z, the highest peak m/z, the UTC dates): `campaign` when reagent, polarity
+   and scan range match; `lent` when the reagent and polarity match and the scan
+   range does not, or -- only with `--tier-calibration-lent` -- when the reagent
+   differs on the same polarity and instrument class over overlapping days (within
+   one day). A lent window then passes a mass-accuracy transfer check
+   (`calfile.transfer`): the batch's own unfloored core scatter (the campaign-rule
+   core rows of its uncalibrated files about each file's own centre, >= 40 rows of
+   >= 8 distinct ions in >= 2 files, `calfile.receiving_scatter`) must be at most
+   1.5x the lending files' median unfloored scatter (`width.per_file_raw_sigma`,
+   stored in the json; the floored per-file sigmas sit on the 0.15-ppm floor and
+   cannot tell modes apart). A more precise receiver passes. The receiving side
+   excludes what the lender side excludes (reagent identity and library lines, the
+   alias-series hold, a 13C-shadow line of the run's label-twin table -- offline
+   only: a batch decides its lending before its label-twin table exists). The check
+   asks whether the lender's mass accuracy transfers to this batch; it is no
+   control of over-grading, which does not move with the window's width. A
+   campaign json -- one method's, the batch's own mode -- is not checked; a json
+   pooled over mixed scan ranges (`scan_mixed`, `--allow-mixed`) is never read as
+   `campaign`, only as `lent`, and is checked. A campaign or lent window's
+   mass-error (z-tail) test floors its sigma at 0.03 mDa (`masscal.sigma_at`), as a
+   fitted trend's is: the file ran no mass-error test of its own; the z-tail reason
+   quotes the floored sigma where the floor bound. A polarity, class, reagent or transfer check that refuses leaves the
+   files `none`; the log says why as a WARNING and `levels_calibration.file.reason`
+   records it, and when the batch levelled nothing `levels_not_assessed_reason`
+   adds it too. `peaky calibration pool` refuses runs whose scan ranges differ
+   unless `--allow-mixed` (the json then records their union, `scan_mixed`). The files' stats read
+   `tier_calibration: campaign | lent` and their lent window as `degeneracy_cal`;
+   `batch_summary['levels_calibration']` records the batch's weakest file source
+   in one word (`per_file` / `pooled` / `campaign` / `lent` / `none`), the files
+   per source and the json (sha256, path, its source runs and width, how it was
+   read and why not, the files lent to); `run_manifest.json` records the json's
+   sha256 under `input.tier_calibration` and its descriptor in the fingerprinted
+   `config`. `peaky relevel <run dir> --tier-calibration CAL.JSON --out DIR` makes
+   the same choice offline on a finished run and re-levels it (levels only: a
+   finished run keeps no tier-time ledger, so nothing is re-tiered -- no z-tail,
+   no degeneracy cap and no isotope-contradiction guard, which a batch runs on a
+   lent file in `calpool.apply_pool`; the tiers of a re-levelled dir are the source
+   run's, never a batch's with that json). The new dir's
+   `run_manifest.json` is the run's own with the json's sha256 under
+   `input.tier_calibration`, the counts read off the merged ledger (`merged_M0`,
+   `merged_tiers`, `merged_claims`) re-counted, `output.merged_ledger_sha1` refreshed (the merged
+   ledger's level columns are re-stamped, every other byte is the run's) and a
+   `relevel` record (the source dir, the sha1 of its manifest and merged ledger,
+   whether the ledger changed, the json's sha256, `tier_stage: "not re-run"`, the
+   re-levelling code).
 
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the
@@ -291,6 +354,44 @@ selected sample_ids (SAMPLING.md)
    their winner (every one a lower-class many-file reading yielding to a
    higher-class one; the four cases above come back), 56 of the ¹⁵N-nitrate
    Orbitrap's 268 and 5 of the uronium Orbitrap's 10.
+
+4. bis **A persistent ion's cluster with a plume solvent**
+   (`batch/episode_evidence.read_solvent_clusters`; right after the vote, before
+   the reagent-cluster strip; only in a batch with episode files). During an
+   industrial-solvent episode (the plume solvents of
+   `solvent_clusters.episode_solvents`: NMP C5H9NO, DMSO C2H6OS) every persistent
+   ion can gain a cluster line at its m/z + the solvent's neutral mass. A merged
+   row within 3 ppm of a persistent Assigned ion (its line in >= 50 % of the
+   batch's spectra) + the solvent, whose presence (the spectra holding the line)
+   lies >= 90 % inside the solvent's episode -- the
+   spectra where one of the solvent's own ion forms (its reagent-profile forms and
+   its proton-bound dimer) stands at >= 5x the edge and, for a form present in most
+   spectra, >= 5x its median there (`SOLVENT_LIFT`; which keeps each form's episode
+   to at most half the batch's spectra -- the union over the forms may exceed half;
+   a solvent background in every spectrum is fine, its episodes are what count) -- and that is in <= 50 % of the batch's spectra,
+   and that shares at least 4 of the episode's spectra with the parent and the
+   solvent ion (fewer: nothing is read), is read as that ion's cluster: the
+   parent's neutral, the adduct naming the solvent (`[M+(C5H9NO)H]+`,
+   `[M+(C5H9NO)(CH4N2O)H]+`; `chemistry.cluster_shift` resolves such a label in any
+   process), `solvent_cluster_of` = `<parent> + <solvent>`, the covalent reading
+   first in `alternatives`, the note `solvent cluster: ...` -- the same ion
+   composition, read as a cluster, not as a new neutral. The solvent's ion forms are
+   read one by one and only the forms in an episode count (a form at its background
+   in every spectrum still has its episodes). The reading rests on the composition
+   and on co-occurrence with the solvent episode, so its tier is capped at
+   Candidate with the note `solvent cluster of <parent>: co-occurs with the
+   solvent` unless the track is SPECIFIC (`pair_test`): r(line, parent x solvent)
+   >= 0.7 (`TRACK_R`), >= r(line, solvent alone) + 0.2 (`SPECIFIC_GAIN`), the
+   parent varying over the episode (CV >= 0.3, `PARENT_CV_MIN`), on >= 6 episode
+   spectra (`SPECIFIC_MIN_N`) -- then the parent's tier. A plain r >= 0.7 is not
+   enough: with a flat persistent parent, parent x solvent is the solvent's own
+   profile, and on two uronium batches of a field campaign 94-97 % of RANDOM
+   persistent parents passed it beside an episode-confined line. A merged reading
+   of ANOTHER ion composition at that mass is re-read as the cluster only on the
+   specific test. The reagent-cluster strip below spares such a
+   row (a 12-ppm match to a urea cluster is no reason to drop a line read as the
+   parent's cluster). `tables/solvent_clusters.csv`,
+   `merge_gates["solvent_clusters"]`.
 
 4a. **The reagent-water ladder** (`batch/reagent_water.py`; right after the vote
    and the reagent-cluster guard, once per batch). The profile's `water_cores`
@@ -544,7 +645,7 @@ selected sample_ids (SAMPLING.md)
    counts; a stripped row whose parent step 6a later removes stays listed,
    annotated `parent removed`.
 
-4d. **The isotopologue hold and the satellite note** (`batch/sideband.py`; inside
+4d. **The isotopologue hold, the satellite note and the satellite-artefact hold** (`batch/sideband.py`; inside
    the merge, right after step 4c and after the positive re-reads of step 5,
    before the stamp). The tier reads the ion, so a reading one or two files
    Assigned on its own pattern and mass can reach the merged ledger Assigned from
@@ -564,14 +665,38 @@ selected sample_ids (SAMPLING.md)
    than 3 such spectra the files' own ratios must agree within 2×, and a single
    file with no series is judged on the geometry alone), or an isotopologue
    parent as in (b). The +3.9 mDa partners of uronium batches keep a constant
-   offset over m/z that equals a formula spacing, so whether they are side bands
-   is open; the clause says so and decides nothing.
+   offset over m/z that equals a formula spacing, so tracking alone decides
+   nothing. The note becomes a **hold** (`satellite artefact: ...`, action
+   `satellite_held`) only when the per-spectrum satellite test
+   (`assignment/satellites.satellite_verdict`) calls the row an artefact of its
+   brightest partner: over the batch series' spectra holding both lines the
+   row's height is the partner's times one number -- slope k = sum(ps)/sum(p^2)
+   through the origin, decided on R^2 = 1 - sum((s - k p)^2) / sum((s - mean s)^2)
+   >= 0.9 (`SAT_FIT_R2`; the origin fit's residual over the centred variance: it
+   demands proportionality and explained variation) on >= 5 spectra
+   (`SAT_FIT_MIN_N`) --
+   and it has no 13C line of its own there (the median, over the spectra where
+   its carbon count predicts the line at >= 3x the spectrum's edge, of the line's
+   height over that prediction outside 0.5-2x; untestable counts as none). The
+   test reads any partner within ±4.0 mDa at >= 2x the row (`SAT_HOLD_MIN_X`) in
+   every file, not only the 10x satellites of the note: the side band's amplitude
+   is no fixed fraction of its parent. What the test proves: an explained line
+   follows its parent PROPORTIONALLY; a line that fails does not follow its parent
+   proportionally -- nothing more. A sub-linear artefact (height ~ parent^0.4, the
+   measured exponent of the uronium partners) or one driven by the trap's ion load
+   fails the same way, and the bar has little power even on true proportional
+   companions (27 % of a field campaign's 13C children pass it); the log-log
+   exponent and its R^2 are reported beside the fit. M0's decision kept the
+   satellite clause a note until such a per-spectrum test existed: it is now live,
+   and the clause holds only on its artefact verdict. `sideband_holds.csv` carries
+   the fit (`fit_n`, `fit_slope`, `fit_r2`, `fit_r2_uncentred`, `fit_loglog_slope`,
+   `fit_loglog_r2`, `own_13c_series`, `satellite_test`).
    A row with its own 13C line in every such file (a line at +1.00336 Da at
    0.5-2× the share its own carbon count predicts) is an M0 of its own: neither
    held nor noted. `tables/sideband_holds.csv` lists one row per held or noted
    file (`action`) with the partner's peak id, m/z, height and reading.
    `batch_summary.json["merge_gates"]["sideband"]` counts `tested`, `held`,
-   `satellite_noted`, `own_13c_kept`. A single-sample `peaky assign` has neither.
+   `satellite_held`, `satellite_noted`, `own_13c_kept`. A single-sample `peaky assign` has neither.
 
 5. **Positive urea re-reads, once per batch.** When `prof.polarity == "+"` two
    gates run on the merged ledger, and each writes its note to the merged row's
@@ -765,6 +890,163 @@ selected sample_ids (SAMPLING.md)
    in-scope table), `lines`, `demoted` and `demoted_rows` (`skipped` without a
    table).
 
+6d. **The vote-drop recorder** (`batch/unidentified.DropLog` / `vote_drops`; inside
+   the merge and right after the element-signature removal, before the per-file
+   rewrite). `align` itself never drops a cluster, but the gates after it remove
+   merged rows: the reagent-cluster strip, the reagent-water rungs (4a), the
+   isotopologue strip (4c) and the element-signature removal (6a). Each removal is
+   noted (the merged row's m/z and reading, the gate) in the merge call's own log
+   (returned with the call's record; the last call is the run's). A per-file M0 row
+   is a drop when **the merged row of its own cluster** was removed: its cluster is
+   read off the vote's long form (`align`'s jitter, the cluster of every per-file row;
+   a merged row's m/z is its cluster's mean), so the end of a single-linkage chain
+   whose mean sits farther than the window from it is not a drop. Each drop is listed
+   once in `tables/vote_drops.csv`: `file`, `peak_id`, `mz`, `neutral_formula`,
+   `adduct`, `tier_in` (the file's tier), `reason` (the gate and the removed reading,
+   e.g. `isotopologue strip (C9H10O7 [M-H]-)`; `trace-first scope (not on a residual
+   bin)` for a residual file's row the scope kept out of the vote). Only for a row the
+   long form does not hold, the window rule decides: no merged row within the merge
+   window of its m/z, reason the nearest removal there or `no merged row at its m/z`. Read before the per-file rewrite turns the stripped readings'
+   rows into iso_child / unexplained rows. A diagnostic: nothing reads it but the
+   unidentified table below.
+
+6e. **The merged isotope-contradiction guard** (`assignment/isoguard.guard_merged`
+   via `assign_batch._merged_isotope_guard`; right after the pooled evidence levels
+   are stamped). It finds the Assigned merged rows whose POOLED pair the levels' own
+   isotope facts contradict:
+   - the 13C carbon count (test c);
+   - an absent own 34S / 37Cl line (test a);
+   - a 34S / 37Cl line the row cannot explain while it carries no S / Cl (test b).
+
+   See [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §5.9 for the facts.
+
+   **By default (mode `note`, `--isotope-guard`) it moves no tier:** each such row gets
+   the note `isotope contradiction: <fact>` and is listed in the record. In the
+   `demote` mode it is Candidate too. The per-file guard (stage `isotope_guard`) ran
+   in the same mode on every file before the vote; this one reads every file's facts
+   together, after `merged_notes` has said the per-file notes on the merged rows.
+
+   Two filters apply in both modes. A fact binds only:
+   - **when the batch's pooled 13C counts pass the reliability gate.** At least 0.9
+     of the tested counts of at least 10 Assigned merged rows must agree. The gate
+     reads the pooled counts alone, independent of the per-file gates. Otherwise the
+     record carries `facts_unreliable` and nothing binds. Per file the same gate
+     closes on 27 of the 60 guard-relevant files of a 12-batch field arm: the
+     15N-nitrate 128-600 files, n_ref 4-9. On those batches the per-file guard is in
+     effect off.
+   - **when the per-row conditions, read in the source files, leave it standing.** A
+     13C fact does not bind when at least half of the files that carry the row call
+     it a blend or untested.
+
+   `batch_summary.json["merge_gates"]["isotope_guard"]` is the guard's record
+   (docs/OUTPUTS.md): `mode`, `tested`, `demoted`, `would_demote`, `by_fact`
+   (`13C` / `absent` / `unexplained`), `held` (`gate` / `blend` / `untested`), the
+   first 50 `rows` / `held_rows`, `facts_unreliable`, `agreement`, `n_ref`, `n_agree`
+   and `per_file_noted`. The mode also sits in `batch_summary.json["isotope_guard_mode"]`,
+   beside `episode_evidence_mode` (step 6g), and in `run_manifest.json`'s fingerprinted
+   `config` (`isotope_guard`, a PassConfig field).
+
+6g. **The episode evidence** (`batch/episode_evidence.judge`; right after step 6e;
+   only in a batch with episode files). A merged M0 reading of an episodic bin in
+   <= 3 files (`MAX_FILES`) is judged on its episode's own spectra -- the rows of
+   the episode files (those whose row of the reading's ion is flagged) in the
+   batch series, never the batch average. It is **Assigned from that episode**
+   only when all of: (a) its error is inside each episode file's calibrated
+   window (|ppm_error - mu| <= 3 sigma, the file's degeneracy calibration; no
+   calibration, no window); (b) its own 13C line reads its carbon count within
+   the levels' band max(1.5, 0.25 nC) in every episode file where its predicted
+   S/N reaches 10 (at least one), and each S / Cl / Br it carries shows its own
+   34S / 37Cl / 81Br line at 0.5-2x its prediction where testable (an untested
+   heteroatom is no evidence); (c) no exact-alias rival is left that those facts
+   cannot exclude -- the four 15N-label classes (Cl = C2H-4 ^N, C2F3 = H2 ^N O4,
+   C8S = H ^N O7, C O H = N ^N: [M+CO3]- / [M+^NO3]-) on a labelled reagent, and
+   the exotic rivals within 0.5 mDa the files' engine (`alternatives`) and the
+   pooled levels (`competitors_left`) left open; a rival falls by its 13C count,
+   an S / Cl / Br / Si line or the label's 14N twin; (d) no hold: neither step 4d's
+   two holds (also read on the episode rows of a reading the hold never tested)
+   nor the isotope-contradiction guard or its pooled facts (the guard's note
+   `isotope contradiction`, which it writes in either `--isotope-guard` mode -- in
+   `note` on a row it leaves Assigned -- and the pooled pair facts as the levels
+   state them; for a PROMOTION every such hold counts, for a `measured` demotion
+   only the gated verdict below); (e) an adduct partner
+   of the same neutral in the same spectra (>= 3x the edge) or a second episode
+   file reading the ion. Co-occurrence with other episode lines is never
+   evidence; partners in another reagent's batch in the same minutes are not
+   available inside one batch and are not read. Promotion is open only to ions of
+   C H N O S Cl Br (never a radical or ion-only reading); a Candidate that passes
+   is promoted. Otherwise the reading is not Assigned from its episode: a
+   Candidate stays one, and what a reading the vote made Assigned becomes is the
+   mode (`--episode-evidence`, `episode_evidence.MODE`): **promote-only** (the
+   default) -- kept Assigned with the note: the step promotes and never demotes
+   (on a 12-ledger field arm every demotion rule tried demoted true lines and
+   caught no wrong one: the one wrong reading among them, a siloxane, has no
+   measurement against it). **measured** -- Candidate only on a contradicting
+   MEASUREMENT: (b)
+   a 13C or S / Cl / Br line read and contradicting the formula; (c) a rival left
+   that a measured isotope fact FAVOURS (its 13C count nearer the rival's in every
+   testable file and inside the rival's band, or the line of an element only the
+   rival carries -- 34S / 37Cl / 81Br / 30Si -- read at the rival's count, or the
+   label's 14N twin at the rival's share; a rival left with untestable isotopes is
+   untestable); (d) a hold. (a) and (e) are promotion criteria only and never
+   demote (the per-file tier already judged the mass; a single file's 3-sigma
+   window, +-0.45 ppm at the sigma floor, is too tight to overrule it), nor does
+   "(b) untestable", a promotion closed by the elements or the radical / ion-only
+   rule, or an untestable rival: a line too dim to test is no evidence either
+   way. `measured` reads every one of these through the isotope guard's GATED
+   verdict (step 6e, ASSIGNMENT_DETAIL §5.9; `assign_batch._guard_gate` hands it
+   to the judge), so it demotes nothing the guard itself would not bind: (b) and
+   (c) read only the facts of episode files whose own guard gate is open (a file
+   with `facts_unreliable` -- or no guard record -- contributes none), with a 13C
+   line the file's per-row condition calls a blend / untested made untestable;
+   (d) reads the low-file hold's clauses, the merged guard's own binding note,
+   the per-file note only when it bound in every file of the row (`k of k`), and
+   the pooled facts only when the batch's pooled gate is open and the merged
+   per-row condition leaves them standing (`isoguard.binding_facts`). Promotion
+   reads every hold as before. **strict** -- Candidate on any failed clause. A curated neutral keeps the vote's tier in every mode;
+   curated is ONE set, `episode_evidence.curated_exempt` (the pass-0 registry for
+   the batch's polarity and context, union the priors of the active reference
+   lists), which a replay rebuilds from `batch_summary.json`
+   (`curated_exempt_from_summary`, the lists by their recorded id and version).
+   The mode is recorded in `batch_summary.json["episode_evidence_mode"]` and in
+   `run_manifest.json`'s switches (`episode_evidence`).
+   The note names the failed clauses, and where no isotope line was testable the
+   claim column `episode_claim` reads `single episode, isotopes untestable` (the
+   evidence level is untouched). The step runs after the stamp and the levels: a
+   reading it promotes or demotes keeps its earlier tier in
+   `per_file/_batch_ts.parquet`'s stamp and in the level tables.
+   `tables/episode_evidence.csv` (one row per judged reading: the five clauses,
+   `measured_failure`, `mode`, `prior_reason` = the row's `tier_reason` before the
+   step, `measurement` = the contradicting measurement(s) that made it a measured
+   failure, empty otherwise), `merge_gates["episode_evidence"]` (judged, assigned, promoted, demoted,
+   kept_assigned, untestable, candidate, mode).
+
+6f. **The unidentified bright lines** (`batch/unidentified.build`; last, just before
+   the merged ledger is written). Every per-file row bright in its file (>= 5x the
+   file's noise edge, `per_file[].noise_edge_cps`; or flagged `episode`) that no
+   output explains -- `unexplained` at the end of the run, an `iso_child` /
+   `artifact` whose parent the merged ledger does not hold Assigned (a reagent
+   parent explains it), or an M0 row step 6d lists -- is binned by m/z (single
+   linkage at the merge window, offset-corrected); a bin no merged row (any tier)
+   holds becomes one row of `tables/unidentified.csv` with its `why`
+   (`vote_dropped` > `absorbed_by_merge` > `orphan_iso_child` > `orphan_artifact` >
+   `all_blocked` > `no_formula`) and the readings tried ([OUTPUTS.md](OUTPUTS.md)).
+   A merged row within the window holds a bin unless a file holds the line as a
+   separate pick from that row's: row j sits within the window of merged row x and
+   the same file holds another pick q (not an artifact row) nearer x, at least
+   `ABSORB_MIN_HWHM` (1) HWHM apart from j by the batch's width model (closer maxima
+   of one line are a split centroid or a shoulder). Then the line -- an unidentified
+   row or a vote loser of another ion than its merged row (the vote's single linkage
+   chains such a line into a neighbour's cluster) -- gets its own row, `why =
+   absorbed_by_merge`, the merged row as partner, built from the bin's members on the
+   resolved side only (beyond the midpoint of the pair j-q, on j's side), so its `mz`
+   is the resolved line's, not the merged line's. The vote losers bin apart from the
+   other rows (they never lengthen a chain); a released bin of losers and a released
+   regular bin beside the same merged row, within the window of each other, are one row. Without a width model nothing is read as
+   absorbed. A line no file separates stays the merged ion, as the merge window reads
+   it.
+   `batch_summary.json["unidentified_bright"]` is the row count,
+   `["unidentified"]` the counts by why and the vote-drop counts by reason.
+
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
@@ -850,12 +1132,17 @@ All in `peaky/batch/assign_batch.py`.
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), the pooled evidence level on the evidence scale — `evidence_level`, `evidence`, `would_lift`, `competitors_left`, `tags`, `context`, `context_source`, `claim` (stamped after the vote, never read by it; [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `vote_class` (0 / 1 / 2: the vote class of that file's reading, the key the vote ranked ions by; not an evidence level) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge), with the isotopologue gate's decisions recorded (step 4c: a stripped reading's M0 row is the parent's `iso_child`, else `unexplained`) |
-| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
+| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `episode` / `residual`, `bins_new`, `coverage`; `episode` = the episode an episode pick was taken for, when the stage picked one) |
+| `tables/episodes.csv` | the episode stage's episodes ([`SAMPLING.md`](SAMPLING.md) §3c): window, peak sample, bins, the files wanted / selected / picked (and, only under the optional `--k-episode-max` cap, the wanted files it left out); written whenever the stage runs |
 | `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung (n = 0 for a passing reagent-only core) — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
 | `tables/isotopologue_rows.csv` | the isotopologue gate (step 4c): one row per merged row judged on a parent's isotope line — the row, its `verdict` (`isotopologue` / `mixed` / `exempt`) and `action` (`stripped` / `note`), the line `label` and `expected` share, the main parent and every parent read, the median area / height ratios over `n_both` spectra, `n_tail`, the per-file role votes; header only when nothing was found or the gate did not run ([OUTPUTS.md](OUTPUTS.md)) |
 | `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b); `label_shadow` (step 6c)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` (`cover`, `episode` when the episode stage added a file, `residual`) / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b); `label_shadow` (step 6c)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
+| `tables/vote_drops.csv` | the vote-drop recorder (step 6d): one row per per-file M0 row with no merged row at its m/z — `file`, `peak_id`, `mz`, `neutral_formula`, `adduct`, `tier_in`, `reason` |
+| `tables/unidentified.csv` | the bright lines no output explains (step 6f, [OUTPUTS.md](OUTPUTS.md)) |
+| `tables/episode_evidence.csv` | the episode evidence (step 6g; a batch with episode files): one row per judged reading |
+| `tables/solvent_clusters.csv` | the plume-solvent clusters (step 4 bis; a batch with episode files) |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

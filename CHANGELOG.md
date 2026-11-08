@@ -21,6 +21,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   neighbours the list also names). A `both`-polarity list no longer flags MODE CONTRADICTS. The activation record
   gains `explicit` (the ids asked for by name).
 
+- **Bright lines no output explains are listed, with the reason; an isotope contradiction is recorded (and, on
+  request, keeps a reading off Assigned).** A batch writes `tables/unidentified.csv`: one row per m/z bin of the per-file rows bright in their
+  file (>= 5x its noise edge) that end unexplained, are an isotope child / artifact of a parent the merged ledger
+  does not hold Assigned, or are an M0 row the merge dropped -- with the files, heights, the own 13C carbon count,
+  the 34S / 37Cl line states, the readings tried, a partner line, `why` and first / last spectrum
+  (`batch/unidentified.py`; `batch_summary.json["unidentified_bright"]`, a PDF page "Unidentified bright lines",
+  and the sheet of that name in the single-sample workbook). The merge records every per-file M0 row left with no
+  merged row at its m/z and the gate that removed it (`tables/vote_drops.csv`). The new stage `isotope_guard` (and
+  the same rule on the merged ledger, on the pooled facts) notes `isotope contradiction: <fact>` on an Assigned
+  reading where the evidence levels' own isotope facts contradict it, and lists it in its record -- by default
+  (`--isotope-guard note`) moving no tier; `--isotope-guard demote` makes it Candidate: its 13C carbon
+  count outside the levels' band, an absent own 34S / 37Cl line predicted at S/N >= 10, or a 34S / 37Cl line it
+  cannot explain while carrying no S / Cl (`assignment/isoguard.py`; docs/ASSIGNMENT_DETAIL.md §5.9); a file
+  re-levelled on the batch's pooled calibration or on a calibration file's window (`--tier-calibration`) is
+  guarded on that level's facts (`calpool.apply_pool`; the record's `source` is the file's `tier_calibration`:
+  `pooled` / `campaign` / `lent`). `peaky relevel` runs no tier stage and so no guard. A line a merged row
+  of another ion absorbed is a row of its own (`why = absorbed_by_merge`) where some file holds it as a separate pick
+  at least 1 HWHM (the batch's width model) from the merged row's own pick. The guard binds only in a file (a
+  batch) whose own 13C counts agree with their formulas on >= 90 % of >= 10 reference rows (High / Good Assigned
+  rows with a tested count); elsewhere it records `facts_unreliable` and nothing binds (`isoguard.reliability`). A
+  13C count does not bind where a pick 3-10 ppm off the 13C position carries >= 0.5x the predicted line (a blend),
+  nor where no line is within 3 ppm at a predicted 13C S/N under 30 (untested). The record has one shape at every
+  call site (docs/OUTPUTS.md: `mode`, `would_demote`, `held`, ...).
+
 - **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
   `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**
   Every exit between enumeration and commit used to drop its candidate without a trace -- the
@@ -44,6 +68,72 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-read: the re-read pair is not levelled`. Diagnostics only: no assignment, tier, level,
   claim or other column moves (an offline run with the recorder off is byte-identical minus the
   two columns); only `would_lift` on those no-level rows changes.
+
+- **Every short bright episode line is assigned where it peaks: the episode stage of the sample selection**
+  (`batch/sampling.py`, docs/SAMPLING.md §3c). The presence cover counts an episode's bins once, so a plume over a
+  few spectra was assigned from whichever single spectrum the cover took (often its flank) and a plume whose bins
+  another file covered got none. Right after the cover, a bin present in 3 to max(19, 1 % of the samples) samples
+  whose maximum is >= 5x its baseline (the median over every sample of its height, the sample's noise edge where
+  it is absent: on a batch of more than 38 samples, the batch's edge level) and >= 3x that sample's noise edge is
+  episodic; bins whose runs in time overlap (one gap allowed) form an episode. THE COVERAGE RULE: every episodic
+  bin whose peak reaches 5x that sample's noise edge (`--episode-min-x-edge X`) has its own peak spectrum
+  assigned, and its episode its peak sample and up to 2 neighbours holding >= 50 % of its bins at >= 3x edge.
+  There is no budget: the stage guarantees that coverage, not a cost bound (fainter bins may be lost);
+  `--k-episode-max N` is an optional safety cap, flagged when it binds. The files are outside the cover's
+  `k_max` / `min_gain` and are assigned with the cover's (`selected_samples.csv` role `episode`); the record is
+  `tables/episodes.csv` and `batch_summary.json["selection"]["episodes"]` (the threshold, the qualifying bins,
+  the files added and, for information, the estimated extra wall time), the stage's files are counted apart in
+  `batch_summary.json["n_files_by_stage"]["episode"]`, and every per-file ledger of a batch with an episode file
+  carries `episode` (True on an episode file's rows on an episodic bin; the merge carries it to the merged row, where the episode evidence below reads it). On
+  by default; `--no-episodes` (`episodes=False`) and a batch without an episode reproduce the previous selection
+  and merged ledger byte for byte.
+
+- **A short episode's readings are judged on the episode's own spectra** (`batch/episode_evidence.py`, docs/MERGE.md
+  step 6g). The episode stage's row flag now reaches the merged ledger (`episode`, any file's row of the bin
+  flagged). A merged reading of an episodic bin in <= 3 files is Assigned from its episode only when, in the
+  episode files' own spectra, (a) its error sits in each file's calibrated window, (b) its own 13C line reads its
+  carbon count within the levels' band wherever testable (predicted S/N >= 10; at least one file) and each S / Cl /
+  Br shows its own line, (c) no exact-alias rival is left that those isotope facts cannot exclude (the four
+  15N-label classes, and the exotic rivals within 0.5 mDa the files and the levels left open), (d) no low-file
+  hold or isotope-contradiction fact holds it, and (e) an adduct partner of the same neutral sits in the same
+  spectra or a second episode file reads the ion. Co-occurrence with other episode lines is never evidence.
+  A Candidate that passes is promoted; otherwise a Candidate stays one, and a reading the vote made Assigned keeps
+  its tier with the note (`--episode-evidence promote-only`, the default, recorded in the run manifest: the step
+  promotes, it never demotes). `--episode-evidence measured` makes it Candidate only on a contradicting MEASUREMENT read through the isotope guard's gated verdict (a file whose 13C counts fail the guard's reliability gate, or a 13C line the guard holds as a blend / untested, is no measurement)
+  -- (b) an isotope line read and contradicting, (c) a rival that a measured isotope fact favours, (d) a hold; (a)
+  the mass window, (e), an untestable line or rival and a closed promotion never demote --, `strict` on any failed
+  clause; a curated neutral -- the pass-0 registry plus the active reference lists'
+  priors, one set shared by the batch and a replay -- keeps its tier; the `measurement` column names what
+  contradicted it); with no testable isotope
+  line the new
+  `episode_claim` column reads `single episode, isotopes untestable`. Promotion is closed to ions carrying F, Si,
+  P or I and to radical / ion-only readings. `tables/episode_evidence.csv`, `merge_gates["episode_evidence"]`. A batch without an episode file is
+  unchanged byte for byte but for the recorded mode (`batch_summary.json["episode_evidence_mode"]`, the manifest's
+  `episode_evidence` switch).
+
+- **A persistent ion's cluster with a plume solvent is read as that ion's cluster** (docs/MERGE.md step 4 bis).
+  NMP (C5H9NO) and DMSO (C2H6OS) join the solvent catalog as plume solvents (`solvent_clusters.episode_solvents`;
+  no context lists them as source solvents, so no per-file ladder changes). In a batch with episode files, a
+  merged row at a persistent Assigned ion + the solvent's neutral mass, confined to the spectra where the
+  solvent's own ion stands out (an episode, read against the solvent's own background), takes the parent's neutral
+  and a solvent-naming adduct (`[M+(C5H9NO)H]+`; `solvent_cluster_of`), the covalent reading moving to
+  `alternatives`, when the three lines share >= 4 of the episode's spectra. That reading rests on the composition
+  and on co-occurrence, so its tier is capped at Candidate ("solvent cluster of <X>: co-occurs with the solvent")
+  unless the track is specific -- r(line, parent x solvent) >= 0.7 and >= r(line, solvent alone) + 0.2, the parent
+  varying over the episode (CV >= 0.3), on >= 6 spectra -- then the parent's tier; the reagent-cluster strip spares
+  it.
+  `chemistry.ion_mz` resolves such cluster labels (and the solvent-ladder labels) in a process that never
+  registered them (`chemistry.cluster_shift`). `tables/solvent_clusters.csv`.
+
+- **A line beside a brighter one that the brighter line explains is held as its artefact** (the per-spectrum
+  satellite test, `assignment/satellites.satellite_verdict`; docs/MERGE.md step 4d). The low-file hold's
+  satellite clause stays a note, except where the test calls the reading an artefact: over the batch's spectra
+  holding both lines its height is the partner's times one number (slope through the origin; R^2 of that fit over
+  the centred variance >= 0.9 on >= 5 spectra) and it has no 13C line of its own there; then it is Candidate
+  (`satellite artefact`, `sideband_holds.csv` action `satellite_held` with the fit and the log-log exponent). The
+  test shows proportional parent-following only: a sub-linear or ion-load-driven artefact fails it the same way. The test reads any partner within +-4 mDa at >= 2x
+  the row, not only the 10x satellites of the note. The function reads arrays only, so tools outside the package
+  can apply the same test.
 
 - **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's
   axis correction where it reaches, else the file's own self-centre; and the lock model corrects
@@ -157,6 +247,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   holding both). On uronium field batches such partners sit at a constant +3.9 mDa, a formula spacing
   (C5 vs N2O2), so whether they are side bands is left open. A row with its own 13C line at its own
   carbon count's share in every such file is neither held nor noted.
+
+- **The tier calibration as a file input: `peaky calibration pool | show | compare`, `--tier-calibration
+  CAL.JSON` on `peaky batch` / `peaky pool`, and `peaky relevel`** (`assignment/calfile.py`, MERGE.md §3
+  step 1b, EVIDENCE_LEVELS §5.1). A small scan window whose files neither calibrate alone nor on the batch's
+  pooled core (a 15N-nitrate 40-600 window, an NO+ 40-160 window) levelled nothing; pooling across batches
+  inside a run would make a batch depend on other batches. Now `peaky calibration pool <run dirs> --out
+  cal.json` pools the per-file ledgers of finished runs of one reagent and polarity (refused across reagents
+  unless `--allow-mixed`) with the batch pool's rules -- distinct ions isotope-backed in >= 2 files, >= 15 of
+  them over >= 0.25 of the committed range -- plus inorganic ions with their own 34S / 37Cl / 81Br line, and
+  never a reagent identity, a reagent-library line, an alias-series-held row or a 13C-shadow line; the json
+  (schema 1) records the reagent, polarity, scan range and days read off the runs' series, the source runs
+  (dir, commit, files), the core and the width (the run sigma of the files that calibrated alone, else the
+  pooled sigma; the lending files' unfloored core scatter); runs of different scan ranges are refused unless
+  `--allow-mixed` (the json then records their union and `scan_mixed`, and a batch reads it as `lent` at
+  most, never as its own `campaign`). `--tier-calibration` lends it ONLY to a file neither calibration
+  reached, as `campaign` (reagent, polarity and scan range match) or `lent` (another scan range; another
+  reagent of the same polarity and class over the same days only with `--tier-calibration-lent`). A lent
+  window passes a mass-accuracy transfer check -- the batch's own unfloored core scatter (>= 40 rows of >= 8
+  distinct ions in >= 2 files, about each file's centre) at most 1.5x the lending files' median -- or the
+  file stays `none`, the reason logged (and in `levels_not_assessed_reason` when nothing was levelled). The
+  check asks whether the lender's accuracy transfers; it does not control over-grading, which does not move
+  with the window's width. A campaign or lent window's mass-error test takes the 0.03 mDa absolute floor,
+  and its z-tail reason quotes the floored sigma. Files that calibrate per file or on the batch pool are
+  byte-identical with the flag. New: per-file `tier_calibration` values `campaign` / `lent` (stats, M0 rows,
+  merged rows; the reasons name the "campaign-pooled" / "lent" window), `batch_summary['levels_calibration']`,
+  the json's sha256 in `run_manifest.json` (`input.tier_calibration`; its descriptor in the fingerprinted config;
+  PassConfig `tier_calibration`, `tier_calibration_lent`). `peaky relevel <run dir> --tier-calibration
+  cal.json --out DIR` re-levels a finished run offline with the same choice (levels only: no re-tier, no
+  isotope-contradiction guard; a re-levelled dir's tiers are the source run's).
 
 ### Changed
 
@@ -428,6 +547,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`tables/selected_samples.csv` is byte-stable across pandas versions.** The sample table's `tic` (the sum of a
+  file's peak heights) kept the summation's last bits, which differ between pandas 3.0 and 3.1, so the golden
+  comparisons of the selection failed on one of the two; the sum is now rounded to 1e-3 (`sampling` 0.4.1).
 - **The repo-root `.env` is found from any directory.** `io_mascope._REPO_ENV` sat one level too deep (inside the
   package), so the clone-root `.env` was never searched and a run started outside the clone reported "No Mascope
   credentials found"; the test asserted the same wrong path. The search now follows the documented order

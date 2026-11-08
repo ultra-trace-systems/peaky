@@ -1435,3 +1435,130 @@ def own_line(mz: np.ndarray, h: np.ndarray, mz0: float, h0: float, ion_counts: d
     out["confirmed"] = True
     out["why"] = f"{label} line at {r / pred:.2f}x its prediction ({r:.3f}x the parent), {ppm:+.2f} ppm"
     return out
+
+
+# ---------------------------------------------------------------------------
+# the per-spectrum satellite test (a line beside a much brighter one: shoulder or ion?)
+# ---------------------------------------------------------------------------
+# A line a few mDa beside a much brighter line (the +-3.85 mDa side bands of the
+# uronium Orbitrap modes; the low-file hold's satellite clause, batch/sideband.py)
+# is either an instrument artefact of that line or an ion of its own. A fixed
+# fraction of the parent does not separate them: the side band's amplitude is not
+# one ratio of its parent across lines (it differs pair by pair). What an artefact
+# cannot do is vary on its own: across the spectra holding both lines its height is
+# its parent's times one number. So the test is a fit through the origin over those
+# spectra -- satellite = k x parent -- and the line is an ARTEFACT when the parent
+# explains it (R^2 >= SAT_FIT_R2 on >= SAT_FIT_MIN_N spectra) AND it has no 13C line
+# of its own. R^2 is the centred one (1 - SS_res / SS about the satellite's mean): the
+# parent must explain how the line VARIES, not only that both are positive (the
+# uncentred R^2 of a through-origin fit is close to 1 for any two positive series of
+# similar shape; it is reported beside it). A line whose parent hardly varies cannot
+# be shown to follow it (its centred R^2 is low): it is not called an artefact.
+# What the test proves and what it does not. Explained = the line follows its parent
+# PROPORTIONALLY across the spectra; a line that fails does not follow its parent
+# proportionally -- that is all. A sub-linear artefact (height ~ parent^0.4, the
+# measured exponent of the +-3.85 mDa partners of a uronium Orbitrap campaign) or one
+# driven by the trap's ion load / injection time fails the same way, and the bar has
+# little power even on truly proportional companions (27 % of the 13C children of the
+# same campaign pass it, median R^2 0.73). The log-log exponent and its R^2 are
+# reported beside the fit for that reason.
+# Known limit: an artefact of a parent whose own 13C line carries a side band too
+# has a "13C line" at +1.00336 at the PARENT's carbon share; when the reading's
+# carbon count is near the parent's, that line passes as its own and the test does
+# not call the line an artefact (the conservative direction for a hold).
+#: the fit must explain at least this share of the satellite's variance (centred R^2)
+SAT_FIT_R2 = 0.9
+#: the fewest spectra holding both lines the fit is read on
+SAT_FIT_MIN_N = 5
+#: the own 13C line: its height over the satellite's at this multiple of the share
+#: the reading's carbon count predicts (the low-file hold's own band)
+SAT_OWN_13C_BAND = (0.5, 2.0)
+
+
+def satellite_fit(parent_h, sat_h) -> dict:
+    """The fit through the origin of a candidate satellite's height on its
+    parent's, over the spectra where both appear (both heights finite and > 0):
+    {n, slope k = sum(ps) / sum(p^2), r2 = 1 - sum((s - k p)^2) / sum((s - mean s)^2)
+    (the origin fit's residual over the centred variance: it demands proportionality
+    AND explained variation, and can be strongly negative), r2_uncentred (over
+    sum(s^2)), loglog_slope / loglog_r2 (s ~ p^gamma, reported, never decided on)};
+    NaN with fewer than 2 such spectra or no variance."""
+    p = np.asarray(parent_h, dtype=float)
+    s = np.asarray(sat_h, dtype=float)
+    ok = np.isfinite(p) & np.isfinite(s) & (p > 0) & (s > 0)
+    p, s = p[ok], s[ok]
+    n = int(len(p))
+    out = {"n": n, "slope": float("nan"), "r2": float("nan"), "r2_uncentred": float("nan"),
+           "loglog_slope": float("nan"), "loglog_r2": float("nan")}
+    if n < 2:
+        return out
+    # beside it, the power law s ~ p^gamma (least squares on the logs): a proportional companion reads
+    # gamma ~ 1; the decision stays the through-origin fit's
+    lp, ls = np.log(p), np.log(s)
+    if lp.std() > 0:
+        g, c0 = np.polyfit(lp, ls, 1)
+        tot_l = float(((ls - ls.mean()) ** 2).sum())
+        out["loglog_slope"] = float(g)
+        out["loglog_r2"] = (1.0 - float(((ls - (g * lp + c0)) ** 2).sum()) / tot_l) if tot_l > 0 else float("nan")
+    k = float((p * s).sum() / (p * p).sum())
+    res = float(((s - k * p) ** 2).sum())
+    tot_c = float(((s - s.mean()) ** 2).sum())
+    tot_u = float((s * s).sum())
+    out["slope"] = k
+    out["r2"] = (1.0 - res / tot_c) if tot_c > 0 else float("nan")
+    out["r2_uncentred"] = (1.0 - res / tot_u) if tot_u > 0 else float("nan")
+    return out
+
+
+def own_13c_series(sat_h, sat13_h, n_c, *, testable=None) -> bool | None:
+    """Has the candidate satellite a 13C line of its own across the spectra?
+    `sat13_h`: the height at its +1.00336 position per spectrum (0 / NaN where
+    no line); `n_c`: the carbon count of its reading; `testable`: per spectrum,
+    whether its 13C line could have been seen there (None: every spectrum with
+    the satellite). True when the median, over the testable spectra holding the
+    satellite, of the 13C line's height over the share n_c predicts lies in
+    SAT_OWN_13C_BAND; False when it does not; None when nothing is testable
+    (no carbon count, no such spectrum)."""
+    try:
+        nc = int(n_c)
+    except (TypeError, ValueError):
+        return None
+    if nc < 1:
+        return None
+    s = np.asarray(sat_h, dtype=float)
+    c = np.nan_to_num(np.asarray(sat13_h, dtype=float), nan=0.0)
+    ok = np.isfinite(s) & (s > 0)
+    if testable is not None:
+        ok &= np.asarray(testable, dtype=bool)
+    if not ok.any():
+        return None
+    r = c[ok] / (s[ok] * ISO.R_13C_PER_C * nc)
+    lo, hi = SAT_OWN_13C_BAND
+    return bool(lo <= float(np.median(r)) <= hi)
+
+
+def satellite_verdict(parent_h, sat_h, *, own_13c: bool | None = None, r2_min: float = SAT_FIT_R2,
+                      min_n: int = SAT_FIT_MIN_N) -> dict:
+    """The per-spectrum satellite test (see the section note): the fit
+    (`satellite_fit`) plus {explained, own_13c, artefact, why}. `explained` =
+    >= `min_n` spectra holding both lines and centred R^2 >= `r2_min`;
+    `artefact` = explained and no own 13C line (`own_13c` not True: False or
+    untestable). Importable by tools outside the package (it reads arrays only)."""
+    f = satellite_fit(parent_h, sat_h)
+    explained = bool(f["n"] >= min_n and np.isfinite(f["r2"]) and f["r2"] >= r2_min)
+    art = bool(explained and own_13c is not True)
+    if f["n"] < min_n:
+        why = f"{f['n']} spectra hold both lines (< {min_n}): not testable"
+    elif not explained:
+        why = (f"it does not follow its parent proportionally: R2 {f['r2']:.2f} < {r2_min:g} on {f['n']} spectra "
+               f"(slope {f['slope']:.3g})")
+    elif own_13c is True:
+        why = (f"explained by the parent (R2 {f['r2']:.2f}, slope {f['slope']:.3g}, {f['n']} spectra) "
+               "but it has a 13C line of its own: no artefact")
+    else:
+        why = (f"explained by the parent (R2 {f['r2']:.2f}, slope {f['slope']:.3g}, {f['n']} spectra) and "
+               + ("no 13C line of its own" if own_13c is False else "its 13C line untestable")
+               + ": an artefact")
+    if np.isfinite(f["loglog_slope"]):
+        why += f" [log-log exponent {f['loglog_slope']:.2f}, R2 {f['loglog_r2']:.2f}]"
+    return {**f, "explained": explained, "own_13c": own_13c, "artefact": art, "why": why}

@@ -91,6 +91,7 @@ peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|B
 peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
 peaky batch ... --tof-flag-mz 350                     # TOF: the m/z where the mass-only flag says "saturated"
 peaky batch ... --trace-first --resolving-power 6500  # EXPERIMENTAL: one synthetic sample of centred traces
+peaky batch ... --tier-calibration cal.json           # small window no file / batch pool calibrates: lend a json (`peaky calibration pool <run dirs> --out cal.json`; `peaky relevel <run> --tier-calibration cal.json --out <dir>` offline, levels only: no tier stage)
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -149,7 +150,16 @@ batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
 sample covering the most not-yet-covered bins, stop when the next pick would add
 < `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
 run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
-coverage is in `batch_summary.json['selection']`. A **residual stage** (on by
+coverage is in `batch_summary.json['selection']`. An **episode stage** (on by
+default; `--no-episodes` reproduces the run without it) follows the cover: every
+short bright episode (bins in 3 to max(19, 1 %) samples, ≥ 5× their baseline,
+≥ 3× the sample's edge, grouped by time overlap) is covered by rule: every such bin
+peaking at ≥ 5× its sample's edge (`--episode-min-x-edge`) has its peak spectrum
+assigned, with its episode's peak sample and up to 2 neighbours -- no budget (a
+coverage guarantee, not a cost bound; `--k-episode-max N` is an optional safety
+cap, flagged when it binds), assigned with
+them (role `episode`; `tables/episodes.csv`, `selection.episodes`; per-file rows
+on an episodic bin carry `episode = True`; `docs/SAMPLING.md` §3c). The merge then judges an episodic reading in <= 3 files on its episode's own spectra (Assigned from it only when mass window, own isotope lines, alias rivals, holds and a second fact agree; `--episode-evidence measured|promote-only|strict` for a vote-Assigned row that fails), reads a persistent ion's line + NMP / DMSO confined to the solvent's episode as that ion's cluster (Candidate unless it tracks parent x solvent specifically), and holds a low-file reading its brighter neighbour explains proportionally across the spectra (`tables/episode_evidence.csv`, `solvent_clusters.csv`, `sideband_holds.csv`; docs/MERGE.md steps 4 bis, 4d, 6g). A **residual stage** (on by
 default; `--no-residual` reproduces the cover-only run) then targets the bins the
 cover left in no assigned file: those the whole-batch stamp does not explain and
 that reach `--residual-min-x-edge` (5×) their sample's noise edge somewhere (or

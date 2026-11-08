@@ -45,6 +45,17 @@ ion), `tables/selected_samples.csv` the extra picks (role 'residual'),
 `batch_summary.json['selection']['residual']` the record. `residual=False`
 reproduces the cover-only run exactly.
 
+THE EPISODE STAGE (sampling.py, THE EPISODE STAGE). Between the cover and the
+first assignment, every short bright episode of the batch gets its peak file and
+up to two neighbours, and every episodic bin peaking at >= 5x its sample's noise
+edge its own peak spectrum -- no budget (`k_episode_max` is an optional safety
+cap); those files are
+assigned with the cover's (`stage` cover; `tables/selected_samples.csv` role
+'episode'), `tables/episodes.csv` and `batch_summary.json['selection']['episodes']`
+record the episodes, and the per-file ledgers of a batch with an episode file
+carry an `episode` column (True on an episode file's rows on an episodic bin)
+for the merge-side readers. `episodes=False` reproduces the run without it.
+
 `align()` / `merge_union()` are PURE (offline-tested). `run()` does the network
 assignment loop.
 """
@@ -65,9 +76,27 @@ from peaky.batch import iso_checks as _IC
 from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sideband as _SB
+from peaky.batch import episode_evidence as _EE
+from peaky.batch import unidentified as _UN
+from peaky.assignment import isoguard as _IG
 from peaky.batch import sampling as SS
 
-__version__ = "0.12.1"  # + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
+__version__ = "0.14.4"  # the episode evidence is handed the isotope guard's gate verdicts (_guard_gate)
+                        # 0.14.3: the merged isotope guard in the run's mode (note by default); batch_summary records
+                        #   isotope_guard_mode beside episode_evidence_mode
+                        # 0.14.2: the episode evidence's default is promote-only; measured drops (a)
+                        # 0.14.1: the episode evidence demotes only on a contradicting measurement; one curated set
+                        #   (episode_evidence.curated_exempt); batch_summary records episode_evidence_mode
+                        # 0.14.0: + the episode evidence in the merge (batch/episode_evidence.py: the `episode` flag on
+                        #   the merged row, the single-episode judgment, the plume-solvent clusters; tables/
+                        #   episode_evidence.csv, solvent_clusters.csv) and the satellite-artefact hold (sideband.py)
+                        # 0.13.0: + the episode stage between the cover and the first assignment (sampling.py,
+                        #   tables/episodes.csv, selection["episodes"], the per-file `episode` column; its
+                        #   the coverage rule: every episodic bin >= 5x edge gets its peak spectrum, no budget)
+                        # 0.12.2: + the vote-drop recorder (tables/vote_drops.csv), the merged isotope-contradiction
+                        #   guard (isoguard.guard_merged, merge_gates["isotope_guard"]) and the bright unidentified
+                        #   lines (tables/unidentified.csv, batch_summary["unidentified"]; batch/unidentified.py)
+                        # 0.12.1: + the isotopologue hold / satellite note of a reading Assigned in <= 2 files (sideband.py,
                         #   tables/sideband_holds.csv, merge_gates["sideband"])
                         # 0.12.0: the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
                         # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier;
@@ -119,8 +148,11 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
                                              # label, never a tier, so the merged row must carry it, when present
             "vote_class",   # the reading's vote class (0 / 1 / 2, evidence.vote_classes; computed in the parent,
                             # never written to a ledger): `_vote` ranks ions by it before the count, when present
-            "tier_calibration"]   # where the winner file's tier calibration came from (per_file / pooled /
+            "tier_calibration",   # where the winner file's tier calibration came from (per_file / pooled /
                                   # none: tiers.TIER_CALIBRATION, assignment/calpool.py), when present
+            "episode"]   # the episode stage's row flag (sampling.episode_row_flags): the merged row of a bin
+                         # any of whose files' rows is flagged is flagged (batch/episode_evidence.py reads it),
+                         # when present -- a batch with no episode file has no such column
 
 # THE VOTE'S EVIDENCE CLASS of one per-file reading (the key after the ion-only
 # rule and before the file count in `_vote`): 2 = neutral backed (the formula
@@ -501,6 +533,9 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             # the tier's footing: where the calibration of the file whose row
             # donated it came from (its own core, the batch's pooled core, none)
             rec["tier_calibration"] = tier_row.get("tier_calibration", pd.NA)
+        if "episode" in g.columns:
+            # the episode stage's flag, per bin: any file's row of it flagged
+            rec["episode"] = bool(g["episode"].map(_EE.truthy).any())
         rec.update(ion_agree=(len(ions) <= 1),
                    formula_agree=(len(forms) <= 1),
                    mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
@@ -1235,17 +1270,59 @@ def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
             "pool_inputs": res.get("pool_inputs")}
 
 
+def _merged_isotope_guard(merged, levels, ledgers: dict, cfg, *, log=print) -> dict:
+    """The merge-side isotope guard (isoguard.py), in the run's mode (PassConfig.isotope_guard; 'note' by
+    default): the per-file guard's notes said on the merged rows (merged_notes), then guard_merged on the
+    POOLED facts -- the batch's own gate on its pooled counts, independent of the per-file gates, and the per-row
+    conditions read in the source files' ledgers. Returns merge_gates["isotope_guard"]."""
+    noted = _IG.merged_notes(merged, ledgers, log=log)
+    g = _IG.guard_merged(merged, levels, ledgers=ledgers, mode=_IG.mode_of(cfg), log=log)
+    g["rows"] = g["rows"][:_IG.ROWS_KEPT]
+    g["held_rows"] = g["held_rows"][:_IG.ROWS_KEPT]
+    g["per_file_noted"] = int(noted)
+    return g
+
+
+def _guard_gate(per_stats: list, merged_record: dict | None) -> dict:
+    """The isotope guard's reliability verdicts for the episode evidence's `measured` mode
+    (episode_evidence.judge `guard_gate`): {"files": {sample id: True when the file's own gate is open},
+    "merged": True when the batch's pooled gate is open}. A file with no guard record is not trusted."""
+    files = {}
+    for st_ in per_stats or []:
+        g = st_.get("isotope_guard")
+        files[str(st_.get("sample_id"))] = isinstance(g, dict) and g.get("facts_unreliable") is False
+    m = merged_record or {}
+    return {"files": files, "merged": m.get("facts_unreliable") is False}
+
+
 def _tier_cal_source(per_stats: list) -> str | None:
     """The batch's tier calibration in one word (batch_summary
     `tier_calibration.source`): the weakest of its files' `tier_calibration` --
-    'none' when any file stayed uncalibrated, else 'pooled' when any file was lent
-    the batch's pooled core (assignment/calpool.py), else 'per_file'; None when no
-    file records one (a run made before the key existed)."""
+    'none' when any file stayed uncalibrated, else 'lent' / 'campaign' when any
+    file was lent a calibration file's window (assignment/calfile.py), else
+    'pooled' when any file was lent the batch's pooled core
+    (assignment/calpool.py), else 'per_file'; None when no file records one (a
+    run made before the key existed)."""
     seen = {x.get("tier_calibration") for x in per_stats} - {None}
-    for word in ("none", "pooled", "per_file"):
+    for word in ("none", "lent", "campaign", "pooled", "per_file"):
         if word in seen:
             return word
     return None
+
+
+def _levels_calibration(per_stats: list, record, file_state: dict, cfg) -> dict:
+    """batch_summary `levels_calibration` (calfile.levels_record) plus the files
+    the calibration file was lent to and the batch facts it was matched on."""
+    from peaky.assignment import calfile as _CF
+    out = _CF.levels_record(per_stats, record or None, used_as=file_state.get("as"),
+                            reason=file_state.get("reason"),
+                            lent_flag=bool(getattr(cfg, "tier_calibration_lent", False)))
+    if out["file"] is not None:
+        out["file"]["decided"] = bool(file_state.get("decided"))
+        out["file"]["batch_facts"] = file_state.get("facts")
+        out["file"]["lent_files"] = dict(file_state.get("files") or {})
+        out["file"]["transfer"] = file_state.get("transfer")
+    return out
 
 
 def _physical_cores() -> int:
@@ -2358,6 +2435,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_min_cps: float | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
+        episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
+        k_episode_max: int | None = SS.K_EPISODE_MAX, episode_evidence: str = _EE.MODE,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
@@ -2397,6 +2476,22 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     merge + stamp are redone once over everything. Needs `ts_peaks`; the
     pooled path (`sample_ids=`) gets the extra picks back as
     `residual_samples` to append to its own selection table.
+
+    `episodes` (default `sampling.EPISODE_DEFAULT`) runs the episode stage
+    right after the cover (sampling.py, THE EPISODE STAGE, THE COVERAGE RULE):
+    every episodic bin peaking at >= `episode_min_x_edge` (5) x its sample's
+    noise edge gets its peak spectrum, and its episode its peak file and up to
+    two neighbours -- no budget (a coverage guarantee, not a cost bound);
+    `episode_evidence` (episode_evidence.MODES; default 'promote-only') is what an episodic
+    reading in <= 3 files the vote made Assigned becomes when its episode's own evidence
+    fails (docs/MERGE.md step 6g): under 'measured' it is Candidate only when a measurement
+    contradicts it; batch_summary['episode_evidence_mode'] records the mode.
+    `k_episode_max` is an optional safety cap, flagged when it binds -- assigned with the cover's files
+    (tables/selected_samples.csv role 'episode'); the record is
+    batch_summary['selection']['episodes'] and tables/episodes.csv, and the rows
+    of an episode's files on an episodic bin carry `episode = True` in the
+    per-file ledgers (the column is written only when the batch has such a file).
+    Cover path only: the `sample_ids=` (pooled) and trace-first paths skip it.
 
     `corroborate`: run dirs / ledger CSVs (or a ready set of neutral formulas)
     whose neutrals corroborate this run -- the other reagent channel, or the
@@ -2531,6 +2626,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
+    episode_univ = None        # the episode stage's universe (sampling.episode_universe), when it ran
+    episode_flag_files: list = []   # the files whose episodic rows carry `episode = True`
+    n_episode_files = None     # files the episode stage added (None: the stage did not run)
     trace_sample = None
     # The peak-width model, resolved ONCE for the batch (chem.resolution) and
     # handed to every per-file run: it sizes trace-first's dedup cell and, on
@@ -2635,11 +2733,41 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                       tol_ppm=tol_ppm)      # = the merge's tolerance
         selection = dict(sel.attrs.get("selection", {}))
         sample_ids = sel["sample_item_id"].tolist()
-        sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)
         log(f"[assign_batch] {SS.describe(selection)}")
         _warn = SS.k_max_warning(selection)
         if _warn:
             log(f"[assign_batch] WARNING: {_warn}")
+        if episodes:
+            # THE EPISODE STAGE (sampling.py): THE COVERAGE RULE -- every episodic
+            # bin peaking at >= episode_min_x_edge x its sample's edge gets its peak
+            # spectrum (and its episode's, + neighbours); no budget, outside the
+            # cover's stop rule; k_episode_max is an optional safety cap
+            episode_univ = SS.episode_universe(src, tol_ppm=tol_ppm, min_x_edge=episode_min_x_edge)
+            esel = SS.select_episode_samples(src, episode_univ, assigned=sample_ids,
+                                             k_max=k_episode_max)
+            emeta = dict(esel.attrs.get("selection", {}))
+            episode_flag_files = list(esel.attrs.get("flag_files") or [])
+            SS.episodes_table(emeta).to_csv(os.path.join(TAB, "episodes.csv"), index=False)
+            emeta["episodes"] = [{k: v for k, v in e.items() if k not in ("bins", "n_bright")}
+                                 for e in emeta.get("episodes") or []]
+            selection["episodes"] = emeta
+            n_episode_files = int(len(esel))
+            if len(esel):
+                esel = esel.copy()
+                esel.attrs = {}
+                esel["pick"] = np.arange(len(sel) + 1, len(sel) + 1 + len(esel))
+                esel["episode"] = esel["episode"].astype("Int64")
+                _sel_attrs = dict(sel.attrs)
+                sel = sel.copy()
+                sel.attrs = {}
+                sel = pd.concat([sel, esel], ignore_index=True)
+                sel.attrs = _sel_attrs
+                sample_ids = sample_ids + esel["sample_item_id"].tolist()
+            log(f"[assign_batch] {SS.describe_episodes(emeta)}")
+            _warn = SS.episode_budget_warning(emeta)
+            if _warn:
+                log(f"[assign_batch] WARNING: {_warn}")
+        sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)
         log("[phase] assign")     # cover picked; everything past here is the run
     log(f"[assign_batch] {prof.label} context={context!r}: "
         f"{len(sample_ids)} selected files -> {pfdir}")
@@ -2816,13 +2944,55 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     pool_ledgers: dict = {}        # sid -> the per-file stages' ledgers, as their runs returned them
     pool_cals: dict = {}           # sid -> (mu, sigma) of each file that calibrated alone
     pool_state: dict = {"pool": None, "files": {}}   # the Pool; sid -> what apply_pool did
+    # the calibration file (--tier-calibration, assignment/calfile.py): read only for
+    # a file neither its own core nor the batch's pool calibrates; decided once
+    # (`_file_pool`): the Pool it lends as campaign / lent, or why it lends nothing
+    file_state: dict = {"decided": False, "pool": None, "as": None, "reason": None, "files": {}}
+    _cal_record = getattr(cfg, "tier_calibration", None)
+
+    def _file_pool(need_ledgers: dict):
+        """The calibration file's Pool (source campaign / lent) or None, decided
+        once against the batch's reagent, polarity, instrument class, scan range
+        and days (calfile.choose; lending across reagents only with
+        `tier_calibration_lent`; a lent window only when the mass-accuracy transfer
+        check passes on `need_ledgers`, the uncalibrated files' own core scatter,
+        calfile.receiving_scatter); the reason it lends nothing is logged once."""
+        if file_state["decided"]:
+            return file_state["pool"]
+        file_state["decided"] = True
+        if not _cal_record:
+            return None
+        from peaky.assignment import calfile as _CF
+        from peaky.assignment import tiers as _TP
+        facts = _CF.series_facts(ts_peaks if ts_peaks is not None else peaks)
+        recv = _CF.receiving_scatter(need_ledgers, reagent=prof.name,
+                                     polarity="positive" if prof.polarity == "+" else "negative",
+                                     carry=axis_info.get("edge_carry"))
+        det: dict = {}
+        src_, why_ = _CF.choose(_cal_record, reagent=prof.name, polarity=prof.polarity,
+                                instrument_class=cfg.instrument_class, scan_range=facts["scan_range"],
+                                days=facts["days"], lent_ok=bool(getattr(cfg, "tier_calibration_lent", False)),
+                                recv=recv, detail=det)
+        file_state.update(**{"as": src_, "reason": why_, "facts": facts, "transfer": det or None})
+        if src_ is None:
+            log(f"[calpool] WARNING: the calibration file is not lent: {why_}")
+            return None
+        file_state["pool"] = _CF.as_pool(_cal_record, src_, abs_floor_mda=_TP._abs_floor(cfg))
+        w_ = _cal_record["width"]
+        log(f"[calpool] the calibration file {str(_cal_record.get('_sha256'))[:12]} is read as {src_}: "
+            f"{float(w_['mu']):+.3f} ± {float(w_['sigma']):.3f} ppm (basis {w_.get('basis')}; reagent "
+            f"{_cal_record.get('reagent')}, scan range {_cal_record.get('scan_range')}; the batch "
+            f"{prof.name}, {facts['scan_range']})")
+        return file_state["pool"]
 
     def _keep_pool_inputs() -> bool:
         """Whether a per-file run keeps what the pooled calibration re-applies
         (assign.run keep_pool_inputs: an uncalibrated file's tier-time ledger
-        copy): until the batch's pool is decided, and after only when it has a
-        calibration to lend."""
-        return pool_state["pool"] is None or pool_state["pool"].cal is not None
+        copy): until the batch's pool is decided, and after only when it, or the
+        calibration file, has a calibration to lend."""
+        if pool_state["pool"] is None or pool_state["pool"].cal is not None:
+            return True
+        return bool(_cal_record) and (not file_state["decided"] or file_state["pool"] is not None)
 
     def _vote_class(led, stats):
         """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
@@ -2845,6 +3015,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # columns were merged on (see the call): carried as a private column,
         # never written
         own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
+        if episode_flag_files:
+            # the episode stage's row flag (sampling.episode_row_flags): on every
+            # per-file ledger of a batch with an episode file, True on the rows of
+            # an episode's files whose peak is on an episodic bin
+            led["episode"] = SS.episode_row_flags(led, sid, episode_univ, episode_flag_files,
+                                                  tol_ppm=tol_ppm)
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         full_ledgers[sid] = led
         level_frames[sid] = EV.trim(led)
@@ -2953,7 +3129,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 f"pool is not used: {pool_state['pool'].reason}")
         pool = pool_state["pool"]
         if pool.cal is None:
-            return
+            # neither the files' own cores nor the batch's pool: the calibration
+            # file, when one was given and the batch reads it (calfile.choose)
+            pool = _file_pool({r["sid"]: r["ledger"] for r in need})
+            if pool is None:
+                return
         for r in need:
             res_p = (_CP.apply_pool(r["ledger"], pool, r["pool_inputs"], audit=r["plaus"],
                                     log=lambda m, _s=r["sid"]: log(m.replace("[calpool]  ", f"[calpool]   {_s}:", 1)))
@@ -2964,7 +3144,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             st_ = r["stats"]
             # the window the file was lent: the lent width about its own centre
             st_["degeneracy_cal"] = {"mu": res_p["cal"]["mu"], "sigma": res_p["cal"]["sigma"]}
-            st_["tier_calibration"] = _TP.CAL_SOURCE_POOLED
+            st_["tier_calibration"] = pool.source
             st_["tier_pool"] = {"centre": res_p["cal"]["centre"], "width": res_p["cal"]["width"],
                                 "retiered": res_p["tiers"]["retiered"], "demoted": res_p["tiers"]["demoted"],
                                 "kept": res_p["tiers"]["kept"], "below": res_p["below"],
@@ -2975,7 +3155,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # the skeleton cap as the pooled tier stage left it (taken where the
                 # run takes it: before later stages rewrote rows)
                 st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
-            pool_state["files"][r["sid"]] = st_["tier_pool"]
+            (pool_state if pool is pool_state["pool"] else file_state)["files"][r["sid"]] = st_["tier_pool"]
+            if res_p.get("isotope_guard") is not None:
+                # the per-file isotope guard ran on the pooled / lent re-level (calpool.apply_pool step 5)
+                st_["isotope_guard"] = res_p["isotope_guard"]
 
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
         """Assign `ids` -- the TAIL of `sample_ids`, which already holds them, so
@@ -3084,7 +3267,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                dict(res.get("stats", {})), STAGE_COVER, res.get("pattern_scoring"))
         log(f"[assign_batch] (1/1) done {trace_sample.sample_id}")
     else:
+        _t_cover = time.time()
         _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
+        if n_episode_files and isinstance(selection.get("episodes"), dict):
+            # information only (no gate): the share of the cover pool's wall the
+            # episode files took, the files being alike on average
+            _w = time.time() - _t_cover
+            selection["episodes"]["est_extra_wall_s"] = round(_w * n_episode_files / max(len(sample_ids), 1), 1)
+            selection["episodes"]["assign_wall_s"] = round(_w, 1)
 
     from peaky.chem import reagents as _RG
     from peaky.assignment import plausibility as PL
@@ -3099,13 +3289,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # batch's polarity / context and the active reference lists): one exempt set
     # for both merged-ledger removal gates, the isotopologue gate and the
     # element-signature removal (passes.curated_formulas)
-    from peaky.assignment import passes as _PS
-    from peaky.chem import contexts as _CX
-    try:
-        _pol = _CX.get_context(context).polarity if context else "negative"
-    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
-        _pol = "negative"
-    curated = _PS.curated_formulas(_pol, context, RL.prior_formulas(reflists_active) if reflists_active else ())
+    curated = _EE.curated_exempt(context, reflists_active)
 
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
@@ -3125,6 +3309,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         (0.2-0.3 ppm scatter) both sit on the tolerance floor and nothing moves
         either; a TOF (3-4 ppm) merges at up to 2x the tolerance."""
         nonlocal scale, rwater
+        # the vote-drop recorder (unidentified.DropLog): the merged rows the gates below
+        # remove after the vote -- this call's own record, returned with it (the last call is the run's)
+        drop_log = _UN.DropLog()
         if scale is None:
             seeds = [pd.to_numeric(df["mz"], errors="coerce").to_numpy(dtype=float)
                      * (1.0 - float(offsets.get(sid, 0.0) or 0.0) / 1e6)
@@ -3135,12 +3322,29 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             log(f"[scale] {scale.describe()}")
         merged, jitter = align(per_file, tol_ppm=scale.merge_ppm, offsets=offsets,
                                stages=stages if residual else None)
+        # A persistent ion's cluster with a plume solvent (episode_evidence.read_solvent_clusters;
+        # only in a batch with episode files): a merged row at a persistent Assigned ion + the
+        # solvent's neutral mass, confined to the spectra where the solvent's own ion is bright, is
+        # read as that ion's cluster -- before the reagent-cluster strip, which spares it
+        sc_table, sc_summary = _EE.empty_clusters(), None
+        if "episode" in merged.columns:
+            sc_table, sc_summary = _EE.read_solvent_clusters(merged, ts_peaks, adducts=list(prof.adducts or []),
+                                                             log=log)
         # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
         # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
         # they otherwise dominate the 'assigned' signal. Belt-and-braces with the
         # per-file reagent lock/reclaim (older per-file ledgers predate that fix).
         if _rgk:
-            merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
+            _m_before = merged
+            _sc = _EE.cluster_rows(merged)
+            if _sc.any():
+                _kept, _rgstrip = _RG.strip_reagent_cluster_rows(merged[~_sc].reset_index(drop=True), _rgk,
+                                                                 log=log)
+                merged = (pd.concat([_kept, merged[_sc]], ignore_index=True)
+                          .sort_values("mz", kind="mergesort").reset_index(drop=True))
+            else:
+                merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
+            drop_log.note(_m_before, merged, "reagent-cluster strip")
         # The reagent-water ladder (C15, batch/reagent_water.py): the rungs
         # core.(H2O)n of the profile's water cores that this batch's own time series
         # shows -- core and lower rungs present in half an acquisition segment's
@@ -3153,8 +3357,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log, resolution=rp)
         # after the TOF test a row leaves only when a file carrying its winning reading
         # (jitter) lies in a segment where its rung passed (segment_of; None otherwise)
+        _m_before = merged
         merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log,
                                                   jitter=jitter, segment_of=rwater.get("segment_of"))
+        drop_log.note(_m_before, merged, "reagent-water rung")
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
         # it): a re-read can leave the merged formula different from EVERY per-file
@@ -3162,6 +3368,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if "tier_reason" not in merged.columns:
             merged["tier_reason"] = pd.NA
         merge_gates: dict = {}
+        if sc_summary is not None:
+            merge_gates["solvent_clusters"] = sc_summary
         merge_gates["reagent_water"] = _RW.summary(rwater["rungs"], rw_stripped, n_cores=rwater["n_cores"],
                                                    tol_ppm=rwater["tol_ppm"],
                                                    segment_sizes=rwater["segment_sizes"],
@@ -3250,9 +3458,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             if identified_aux:
                 _ia = pd.concat(identified_aux, ignore_index=True)
                 _rg = _ia[_ia["role"].astype(str) == "reagent"] if "role" in _ia.columns else None
+            _m_before = merged
             merged, iso_rows, merge_gates["isotopologue"] = _IC.satellite_rows(
                 merged, ts_peaks, resolution=rp, mass_scale=scale, klass=cfg.instrument_class, prof=prof,
                 reagents=_rg, per_file=level_frames, exempt=curated, log=log)
+            drop_log.note(_m_before, merged, "isotopologue strip")
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
@@ -3269,7 +3479,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
                "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
-               "isotopologue": iso_rows, "sideband": sb_rows}
+               "isotopologue": iso_rows, "sideband": sb_rows, "drop_log": drop_log,
+               "solvent_clusters": sc_table}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -3457,8 +3668,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # Orbitrap-class) is the batch's own refutation of the element: the reading
     # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
     # a curated formula and a known-species decision stay
+    drop_log = res_m["drop_log"]
+    _m_before = merged
     merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(
         merged, iso_table, exempt=curated, klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
+    drop_log.note(_m_before, merged, "element-signature removal")
+    # the vote-drop list: every per-file M0 row with no merged row left at its m/z, and the
+    # gate that removed it (unidentified.vote_drops) -- read before the per-file rewrite
+    # below turns the stripped readings' rows into iso_child / unexplained rows
+    try:
+        vote_drop_table = _UN.vote_drops(full_ledgers, per_file, merged, drop_log,
+                                         tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
+                                         jitter=jitter)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING the vote-drop list was not built: {type(e).__name__}: {e}")
+        vote_drop_table = _UN.empty_drops()
     # ... a row the isotopologue gate stripped as the satellite of a reading that
     # has just left is no longer that reading's satellite (iso_checks.parent_removed:
     # verdict 'parent removed', no SAT veto) ...
@@ -3618,6 +3842,28 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     levels = EV.level_batch(level_ledgers, run_inputs=run_inputs, partners=partners or None)
     merged = EV.stamp_merged(merged, levels)
     EV.for_output(levels).to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    # the isotope-contradiction guard on the merged ledger (isoguard.guard_merged): an
+    # Assigned row whose POOLED pair the levels' own isotope facts contradict (13C count,
+    # an absent own 34S / 37Cl line, a 34S / 37Cl line it cannot explain) gets the note, and in
+    # the 'demote' mode is Candidate ('note', the default, keeps the tier). The per-file guard
+    # (stage isotope_guard) already noted / held the files' rows before the vote; this reads the
+    # facts of every file together
+    merge_gates["isotope_guard"] = _merged_isotope_guard(merged, levels, full_ledgers, cfg, log=log)
+    # the episode evidence (episode_evidence.judge; only in a batch with episode files): an episodic
+    # reading in <= 3 files is judged on its episode's own spectra -- Assigned from that episode only
+    # when its mass, its isotope lines, its alias rivals, no hold and a second fact all say so
+    ee_table = None
+    if "episode" in merged.columns:
+        _win = {str(st_.get("sample_id")): ((st_.get("degeneracy_cal") or {}).get("mu"),
+                                            (st_.get("degeneracy_cal") or {}).get("sigma"))
+                for st_ in per_stats if isinstance(st_.get("degeneracy_cal"), dict)}
+        _edg = {str(st_.get("sample_id")): st_.get("noise_edge_cps") for st_ in per_stats}
+        ee_table, merge_gates["episode_evidence"] = _EE.judge(
+            merged, full_ledgers, ts_annot if ts_annot is not None else ts_peaks, windows=_win, edges=_edg,
+            adducts=list(prof.adducts or []), labelled=any("^N" in str(a) for a in (prof.adducts or [])),
+            levels=levels, tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), exempt=frozenset(curated or ()),
+            orbitrap=(cfg.instrument_class == "orbitrap"), mode=episode_evidence,
+            guard_gate=_guard_gate(per_stats, merge_gates.get("isotope_guard")), log=log)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",
@@ -3654,6 +3900,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # ... and the batch-pooled core (calpool) could not stand in: say why
         levels_na_reason += (" A core pooled over the batch's files was tried and not used: "
                              f"{pool_state['pool'].reason}.")
+    if levels_na_reason and file_state["reason"]:
+        # ... nor the calibration file (--tier-calibration): say why
+        levels_na_reason += f" A calibration file was given and not used: {file_state['reason']}."
     if levels_na_reason:
         log(f"[assign_batch] WARNING: {levels_na_reason}")
     # the claim each level supports, tallied beside the tier (never read off it)
@@ -3691,6 +3940,23 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         klass=_MO.instrument_class(resolution=rp, instrument_types=[(s_ or {}).get("instrument_type")
                                                                     for s_ in scorings.values()]),
         threshold=_MO.flag_mz(_cfg), halogen=level_summary["reagent_halogen"], resolution=rp, log=log)
+    # the bright lines no batch output explains (unidentified.build): every per-file row
+    # bright in its file that ends unexplained, an isotope child / artifact whose parent
+    # the merged ledger does not hold Assigned, or an M0 row the vote dropped -- binned by
+    # m/z, with why; written for every run (header only when none)
+    try:
+        unident = _UN.build(full_ledgers, per_stats, merged, drops=vote_drop_table, ts=ts_annot,
+                            tol_ppm=float(getattr(scale, "merge_ppm", tol_ppm)), offsets=offsets,
+                            axis_info=axis_info, resolution=rp)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING tables/unidentified.csv not built: {type(e).__name__}: {e}")
+        unident = _UN.empty_table()
+    unident_path = _UN.write(unident, TAB)
+    vote_drop_table.to_csv(os.path.join(TAB, "vote_drops.csv"), index=False)
+    unident_summary = _UN.summary(unident, vote_drop_table)
+    log(f"[assign_batch] unidentified bright lines: {unident_summary['rows']} "
+        f"({unident_summary['by_why']}); vote drops {unident_summary['vote_drops']} -> "
+        f"tables/{os.path.basename(unident_path)}, tables/vote_drops.csv")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the reagent-water rungs and the merged readings they displaced (always written:
@@ -3700,6 +3966,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # exempt lines it only noted (always written: header only when none)
     res_m["isotopologue"].to_csv(os.path.join(TAB, "isotopologue_rows.csv"), index=False)
     res_m.get("sideband", _SB.empty_table()).to_csv(os.path.join(TAB, "sideband_holds.csv"), index=False)
+    if ee_table is not None:
+        # the episode evidence and the plume-solvent clusters (a batch with episode files only)
+        ee_table.to_csv(os.path.join(TAB, "episode_evidence.csv"), index=False)
+        res_m.get("solvent_clusters", _EE.empty_clusters()).to_csv(os.path.join(TAB, "solvent_clusters.csv"),
+                                                                    index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:
@@ -3873,6 +4144,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # what the reagent-N pass and the ammonium/amine gate each did, so the
         # counts are on record and not only in the log
         "merge_gates": merge_gates,
+        # the episode evidence's mode (episode_evidence.MODES; --episode-evidence), recorded whether or
+        # not the batch had an episode file (the run manifest reads it: pipeline._switch_record)
+        "episode_evidence_mode": episode_evidence,
+        # the isotope-contradiction guard's mode (isoguard.MODES; --isotope-guard, PassConfig.isotope_guard: the
+        # run manifest's fingerprinted `config` holds it too), beside the other merge-side mode
+        "isotope_guard_mode": _IG.mode_of(cfg),
+        # the bright unidentified lines (tables/unidentified.csv): `unidentified_bright` the row
+        # count (a later drop to 0 shows), `unidentified` by why + the vote-drop counts
+        "unidentified_bright": int(unident_summary["rows"]),
+        "unidentified": unident_summary,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
         # the evidence levels (docs/EVIDENCE_LEVELS.md): pooled = one count per
@@ -3892,9 +4173,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "tier_calibration": {
             "source": _tier_cal_source(per_stats),
             "files": {k: sum(1 for x in per_stats if x.get("tier_calibration") == k)
-                      for k in ("per_file", "pooled", "none")},
+                      for k in ("per_file", "pooled", "none")
+                      + (("campaign", "lent") if _cal_record else ())},
             "pool": (dict(pool_state["pool"].record(), retiered_files=dict(pool_state["files"]))
                      if pool_state["pool"] is not None else None)},
+        # where the evidence levels' windows came from (assignment/calfile.py): the
+        # batch's weakest file source in one word (per_file / pooled / campaign /
+        # lent / none), the files per source, and the calibration file given with
+        # --tier-calibration (sha256, source runs, width; how the batch read it and
+        # why not; the files it was lent to), null when none was given
+        "levels_calibration": _levels_calibration(per_stats, _cal_record, file_state, cfg),
         # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels
@@ -3920,10 +4208,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "elapsed_s": round(time.time() - t_start, 1),
         "n_jobs": n_jobs,
     }
+    n_ep = int(n_episode_files or 0)
+    if residual or n_ep:
+        # files per stage, and the ions each stage brought in (`stage` column). The
+        # episode stage's files are assigned with the cover's (their ions read `stage`
+        # = cover) but counted apart here, so its yield is readable; the key is there
+        # only when the stage added a file (a batch without one keeps its summary)
+        summary["n_files_by_stage"] = {STAGE_COVER: int(n_cover - n_ep),
+                                       **({SS.ROLE_EPISODE: n_ep} if n_ep else {}),
+                                       **({STAGE_RESIDUAL: int(len(sample_ids) - n_cover)} if residual else {})}
     if residual:
-        # files per stage, and the ions each stage brought in (`stage` column)
-        summary["n_files_by_stage"] = {STAGE_COVER: int(n_cover),
-                                       STAGE_RESIDUAL: int(len(sample_ids) - n_cover)}
         summary["merged_by_stage"] = (merged["stage"].value_counts().to_dict()
                                       if len(merged) and "stage" in merged.columns else {})
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:

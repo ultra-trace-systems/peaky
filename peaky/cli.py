@@ -249,6 +249,8 @@ def cmd_assign(args) -> None:
         cfg.sidelobe_guard = False
     if getattr(args, "iso_response", None):
         cfg.iso_response = args.iso_response
+    if getattr(args, "isotope_guard", None):
+        cfg.isotope_guard = args.isotope_guard
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -363,8 +365,16 @@ def _write_assign_outputs(args, out, base) -> None:
     if flag["applied"]:
         print(MO.describe(flag))
     led.to_csv(f"{base}_ledger.csv", index=False)
+    # the bright lines the sample's ledger leaves unexplained (batch/unidentified.py, the
+    # sample as a one-file batch): the workbook's "Unidentified bright lines" sheet
+    from peaky.batch import unidentified as UN
+    try:
+        unident = UN.build_single(led, st0.get("noise_edge_cps"), sample_id=args.sample_id)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic sheet never fails a finished run
+        print(f"[report] WARNING the unidentified-lines sheet was not built: {type(e).__name__}: {e}")
+        unident = None
     report.write_excel(led, f"{base}_assignments.xlsx", out["context"],
-                       sample_id=args.sample_id, tof_flag_mz=thr)
+                       sample_id=args.sample_id, tof_flag_mz=thr, unidentified=unident)
     report.write_markdown(out, f"{base}_summary.md")
     manifest = {k: v for k, v in out.items() if k != "ledger"}
     Path(f"{base}_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
@@ -396,13 +406,16 @@ def _write_assign_outputs(args, out, base) -> None:
 
 
 def _sidelobe_cfg(args) -> dict:
-    """{'cfg': a PassConfig with the side-lobe guard off (--no-sidelobe-guard) and / or the isotope-line
-    scoring chosen (--iso-response)} when either was given, else {} (the run builds its default PassConfig)."""
+    """{'cfg': a PassConfig with the side-lobe guard off (--no-sidelobe-guard), the isotope-line scoring chosen
+    (--iso-response) and / or the isotope guard's mode (--isotope-guard)} when any was given, else {} (the run
+    builds its default PassConfig)."""
     kw = {}
     if getattr(args, "no_sidelobe_guard", False):
         kw["sidelobe_guard"] = False
     if getattr(args, "iso_response", None):
         kw["iso_response"] = args.iso_response
+    if getattr(args, "isotope_guard", None):
+        kw["isotope_guard"] = args.isotope_guard
     if not kw:
         return {}
     from peaky.assignment import passes
@@ -425,6 +438,9 @@ def cmd_batch(args) -> None:
                            residual_min_x_edge=args.residual_min_x_edge,
                            residual_min_cps=args.residual_min_cps,
                            residual_k_max=args.residual_k_max,
+                           episodes=args.episodes, episode_min_x_edge=args.episode_min_x_edge,
+                           k_episode_max=args.k_episode_max,
+                           episode_evidence=args.episode_evidence,
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
@@ -439,6 +455,8 @@ def cmd_batch(args) -> None:
                            axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
                            axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
                            lists=getattr(args, "lists", None),
+                           tier_calibration=getattr(args, "tier_calibration", None),
+                           tier_calibration_lent=getattr(args, "tier_calibration_lent", False),
                            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
                            **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
@@ -483,6 +501,8 @@ def cmd_pool(args) -> None:
             mass_axis=getattr(args, "mass_axis", "auto"),
             axis_fingerprints=getattr(args, "axis_fingerprints", "auto"),
             axis_fingerprint_dir=getattr(args, "axis_fingerprint_dir", None),
+            tier_calibration=getattr(args, "tier_calibration", None),
+            tier_calibration_lent=getattr(args, "tier_calibration_lent", False),
             isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
             **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -499,6 +519,53 @@ def cmd_pool(args) -> None:
             for gr in res["group_runs"]:
                 print(f"    {gr}")
         _progress_hold_note(prog)
+
+
+def cmd_calibration(args) -> None:
+    """`peaky calibration pool|show|compare`: the tier calibration as a file
+    (assignment/calfile.py). Offline: reads finished run dirs and json files only."""
+    from peaky.assignment import calfile as CF
+    verb = args.cal_verb
+    try:
+        if verb == "pool":
+            sr = None
+            if args.scan_range:
+                lo, hi = (float(x) for x in args.scan_range.replace(",", "-").split("-", 1))
+                sr = [lo, hi]
+            rec = CF.pool_runs(args.runs, allow_mixed=args.allow_mixed, scan_range=sr, log=print)
+            sha = CF.write(rec, args.out)
+            rec["_sha256"] = sha
+            print(CF.show_text(rec) if args.verbose else "\n".join(CF.show_text(rec).splitlines()[:8]))
+            print(f"[calibration] -> {args.out} (sha256 {sha})")
+            if not rec["usable"]:
+                print(f"[calibration] WARNING: the core is not usable: {rec['reason']}")
+            return
+        if verb == "show":
+            print(CF.show_text(CF.load(args.json)))
+            return
+        if verb == "compare":
+            a, b = CF.load(args.a), CF.load(args.b)
+            print(json.dumps(CF.compare(a, b), indent=1) if args.json_out else CF.compare_text(a, b))
+            return
+    except CF.CalibrationError as e:
+        sys.exit(f"[calibration] {e}")
+    sys.exit(f"unknown calibration verb {verb!r}")
+
+
+def cmd_relevel(args) -> None:
+    """`peaky relevel <run dir> --out DIR [--tier-calibration cal.json]`: the
+    evidence levels of a finished batch run again, offline, with a calibration
+    json lent to the files no calibration reached (assignment/calfile.py)."""
+    from peaky.assignment import calfile as CF
+    try:
+        rec = CF.load(args.tier_calibration) if args.tier_calibration else None
+        if args.tier_calibration_lent and rec is None:
+            sys.exit("[relevel] --tier-calibration-lent needs --tier-calibration PATH")
+        out = CF.relevel_run(args.run_dir, rec, out_dir=args.out, lent_ok=args.tier_calibration_lent, log=print)
+    except CF.CalibrationError as e:
+        sys.exit(f"[relevel] {e}")
+    print(f"[relevel] -> {args.out} ({out['n_pairs']} pairs; read as {out['read_as']}"
+          + (f"; {out['reason']}" if out["reason"] else "") + ")")
 
 
 def report_inputs_of(run_dir: str) -> dict:
@@ -2006,6 +2073,41 @@ def _add_selection_args(sp) -> None:
                          "gaining is recorded in batch_summary.json['selection']['residual']")
 
 
+def _add_episode_args(sp) -> None:
+    """The episode stage's switch, coverage threshold and optional cap (sampling.py, THE EPISODE STAGE): `batch`
+    only (the pooled path assigns the pool's own selection)."""
+    from peaky.batch import sampling as SS
+
+    sp.add_argument("--episodes", action=argparse.BooleanOptionalAction,
+                    default=SS.EPISODE_DEFAULT,
+                    help="right after the cover, give every short bright EPISODE of the batch "
+                         "(bins present in 3 to max(19, 1%% of the samples) samples, "
+                         f"lift >= {SS.EPISODE_MIN_LIFT:g}, peak >= {SS.EPISODE_BRIGHT_X_EDGE:g}x the "
+                         "sample's noise edge, grouped by time overlap) that holds a bin peaking at >= "
+                         "--episode-min-x-edge its peak sample, that bin's own peak sample and up to "
+                         f"{SS.EPISODE_NEIGHBOURS} neighbours, assigned with the cover's files "
+                         "(tables/episodes.csv; per-file rows flagged `episode`). "
+                         f"{'ON' if SS.EPISODE_DEFAULT else 'OFF'} by default; --no-episodes "
+                         "reproduces the run without the stage exactly.")
+    sp.add_argument("--episode-min-x-edge", type=float, default=SS.EPISODE_MIN_X_EDGE, metavar="X",
+                    help="the episode stage's coverage rule: every episodic bin whose peak reaches "
+                         f"X times that sample's noise edge (default {SS.EPISODE_MIN_X_EDGE:g}) has its "
+                         "peak spectrum assigned, with its episode's peak file and up to "
+                         f"{SS.EPISODE_NEIGHBOURS} neighbours; no budget (fainter bins may be lost)")
+    sp.add_argument("--k-episode-max", type=int, default=SS.K_EPISODE_MAX, metavar="N",
+                    help="optional safety cap on the files the episode stage adds (default: none). "
+                         "A cap that leaves a wanted file out breaks the coverage rule and is flagged "
+                         "in batch_summary.json['selection']['episodes']")
+    from peaky.batch import episode_evidence as _EE
+    sp.add_argument("--episode-evidence", choices=_EE.MODES, default=_EE.MODE,
+                    help="what an episodic reading in <= 3 files the files' vote made Assigned becomes when its "
+                         "episode's own evidence fails (docs/MERGE.md step 6g): 'promote-only' (default) -- kept "
+                         "Assigned with the note; 'measured' -- Candidate only when a measurement contradicts it "
+                         "(an isotope line read against it, a rival an isotope fact favours, a hold; never the "
+                         "mass window); 'strict' -- Candidate on any failed clause. A Candidate that passes is "
+                         "promoted in every mode")
+
+
 def _auto_or_float(v: str):
     """argparse type for --occurrence-min: 'auto' or a number."""
     if str(v).strip().lower() == "auto":
@@ -2114,6 +2216,28 @@ def _add_iso_response_flag(p) -> None:
                         "reads low in the summed peak list); 'area' by area against the natural abundance; "
                         "'off' by height against the natural abundance (as 0.10.0b1 reads them). The per-file stats "
                         "record 'iso_response'. No effect off an Orbitrap")
+
+
+def _add_tier_calibration_flags(p) -> None:
+    p.add_argument("--tier-calibration", dest="tier_calibration", default=None, metavar="CAL.JSON",
+                   help="a calibration json (`peaky calibration pool`): lent ONLY to a file whose own core "
+                        "and the batch's pooled core both fall short of a tier calibration, as 'campaign' "
+                        "(the json's reagent, polarity and scan range match the batch) or 'lent' (another "
+                        "scan range, when the batch's own core scatter is at most 1.5x the lender's). A file "
+                        "that calibrates either way is unchanged. batch_summary 'levels_calibration' says how "
+                        "it was read; the json's sha256 goes into run_manifest.json")
+    p.add_argument("--tier-calibration-lent", dest="tier_calibration_lent", action="store_true", default=False,
+                   help="allow the --tier-calibration json of ANOTHER reagent of the same polarity and "
+                        "instrument class over the same days to be lent ('lent'); never implicit")
+
+
+def _add_isotope_guard_flag(p) -> None:
+    p.add_argument("--isotope-guard", dest="isotope_guard", choices=("note", "demote"), default=None,
+                   help="the isotope-contradiction guard's mode (PassConfig.isotope_guard): 'note' (default) "
+                        "records the Assigned readings whose own 13C / 34S / 37Cl lines contradict them -- the "
+                        "per-file and merged 'isotope_guard' records and the tier_reason note -- and moves no "
+                        "tier; 'demote' also makes them Candidate. Both modes skip a file whose own 13C counts "
+                        "fail its reference rows and a 13C line that is a blend or too faint to test")
 
 
 def _add_isotopologue_flag(p) -> None:
@@ -2279,6 +2403,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pa)
     _add_sidelobe_flag(pa)
     _add_iso_response_flag(pa)
+    _add_isotope_guard_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -2305,6 +2430,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
+    _add_episode_args(pb)
     _add_admission_args(pb)
     _add_side_channels_flag(pb)
     _add_rolling_flag(pb)
@@ -2314,7 +2440,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mass_axis_flag(pb)
     _add_sidelobe_flag(pb)
     _add_iso_response_flag(pb)
+    _add_isotope_guard_flag(pb)
     _add_isotopologue_flag(pb)
+    _add_tier_calibration_flags(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -2361,7 +2489,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mass_axis_flag(pp)
     _add_sidelobe_flag(pp)
     _add_iso_response_flag(pp)
+    _add_isotope_guard_flag(pp)
     _add_isotopologue_flag(pp)
+    _add_tier_calibration_flags(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
@@ -2563,6 +2693,35 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dry(pcx)
 
     pc.set_defaults(func=cmd_curate)
+
+    pK = sub.add_parser("calibration", help="the tier calibration as a file (offline): pool a core over "
+                                            "finished run dirs into a json, show one, compare two")
+    pKs = pK.add_subparsers(dest="cal_verb", required=True)
+    pKp = pKs.add_parser("pool", help="pool the per-file ledgers of finished run dirs (one reagent and "
+                                      "polarity) into a calibration json")
+    pKp.add_argument("runs", nargs="+", help="finished batch run dirs")
+    pKp.add_argument("--out", required=True, help="the json to write")
+    pKp.add_argument("--allow-mixed", action="store_true",
+                     help="pool runs of different reagents / polarities / scan ranges anyway (refused by "
+                          "default; mixed scan ranges are recorded as their union)")
+    pKp.add_argument("--scan-range", default=None, metavar="LO-HI",
+                     help="the scan range to record (default: read off the runs' series)")
+    pKp.add_argument("--verbose", "-v", action="store_true", help="print the core ions too")
+    pKw = pKs.add_parser("show", help="print a calibration json's core and width")
+    pKw.add_argument("json")
+    pKc = pKs.add_parser("compare", help="two calibration jsons: width ratio (b / a), centre, core overlap")
+    pKc.add_argument("a")
+    pKc.add_argument("b")
+    pKc.add_argument("--json", dest="json_out", action="store_true", help="print the comparison as json")
+    pK.set_defaults(func=cmd_calibration)
+
+    pRl = sub.add_parser("relevel", help="the evidence levels of a finished batch run again, offline, "
+                                         "optionally with a calibration json (levels only: no re-assignment, "
+                                         "no tier stage, no isotope guard)")
+    pRl.add_argument("run_dir")
+    pRl.add_argument("--out", required=True, help="the new run dir to write (never the run dir itself)")
+    _add_tier_calibration_flags(pRl)
+    pRl.set_defaults(func=cmd_relevel)
 
     pL = sub.add_parser("lists", help="reference-list snapshots: pin (lock), verify, show, import a "
                                       "source offline (the only verb that touches the network)")

@@ -932,7 +932,10 @@ def cover(ctx, pdf):
     _res_k = int((bsel.get("residual") or {}).get("k") or 0)
     _by_stage = (ctx.get("batch") or {}).get("n_files_by_stage") or {}
     _n_res = int(_by_stage.get("residual", _res_k)) if _res_k else 0
-    files_txt = f"{nf} files ({nf - _n_res} cover + {_n_res} residual)" if _n_res else f"{nf} files"
+    _n_ep = int(_by_stage.get("episode") or 0)
+    _parts = [f"{nf - _n_res - _n_ep} cover"] + ([f"{_n_ep} episode"] if _n_ep else []) \
+        + ([f"{_n_res} residual"] if _n_res else [])
+    files_txt = f"{nf} files ({' + '.join(_parts)})" if len(_parts) > 1 else f"{nf} files"
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
     elif bsel.get("method") == "presence-cover":
@@ -1727,6 +1730,79 @@ def reference_lists(ctx, pdf):
         _close(pdf, fig)
 
 
+#: the unidentified-lines section lists at most this many rows (the table holds them all)
+UNIDENTIFIED_TOP = 50
+
+
+def _tried_summary(cell, width: int = 46) -> str:
+    """The shortest readable summary of a row's `readings_tried` (unidentified.py):
+    the first tried reading and its gate, '+n more' for the rest; '-' for none."""
+    try:
+        tried = json.loads(cell) if isinstance(cell, str) and cell else []
+    except ValueError:
+        tried = []
+    if not tried:
+        return "-"
+    d = tried[0]
+    what = f"{d.get('neutral')} {d.get('adduct')}" if d.get("neutral") else "no reading"
+    gate = str(d.get("blocked_by") or "")
+    txt = f"{what}: {gate}" if gate else what
+    more = f" (+{len(tried) - 1})" if len(tried) > 1 else ""
+    room = width - len(more)
+    return (txt if len(txt) <= room else txt[:room - 1] + "…") + more
+
+
+def load_unidentified(out_dir: str):
+    """tables/unidentified.csv (or .csv.gz) of a run, None when the run has none."""
+    tab = PT.run_paths(out_dir).tables
+    for name in ("unidentified.csv", "unidentified.csv.gz"):
+        p = os.path.join(tab, name)
+        if os.path.exists(p):
+            return pd.read_csv(p, low_memory=False)
+    return None
+
+
+def unidentified(ctx, pdf):
+    """Unidentified bright lines (batch/unidentified.py, tables/unidentified.csv):
+    the bright per-file lines no batch output explains -- unexplained, an isotope
+    child or artifact of a parent the merged ledger does not hold Assigned, or a
+    reading the merge dropped -- with the count by why and the brightest
+    UNIDENTIFIED_TOP rows (x the noise edge, why, the shortest summary of the
+    readings tried). Renders when the run wrote the table."""
+    t = load_unidentified(ctx["out_dir"])
+    if t is None:
+        return
+    import matplotlib.pyplot as plt
+    by = t["why"].value_counts().to_dict() if len(t) else {}
+    lines = [("dim", "Every bright line (>= 5x its file's noise edge in a selected file) that no batch output explains:"),
+             ("dim", "unexplained in its file, an isotope child or artifact of a parent the merged ledger does not hold"),
+             ("dim", "Assigned, or a reading the merge dropped with no row left at its m/z. Diagnostics, never a tier."),
+             ("gap", 0.5),
+             ("h", f"Unidentified bright lines: {len(t)}"),
+             ("dim", "  " + " · ".join(f"{k} {by.get(k, 0)}" for k in
+                                     ("no_formula", "all_blocked", "orphan_iso_child", "orphan_artifact",
+                                      "vote_dropped"))),
+             ("gap", 0.4)]
+    if len(t):
+        lines.append(("m", f"   {'m/z':>10} {'x edge':>7} {'files':>5}  {'why':<16} {'13C':>4}  readings tried"))
+        top = t.sort_values(["x_edge_max", "mz"], ascending=[False, True], na_position="last").head(UNIDENTIFIED_TOP)
+        for r in top.itertuples(index=False):
+            c13 = "" if pd.isna(r.c13_count) else f"{float(r.c13_count):.0f}"
+            x = "" if pd.isna(r.x_edge_max) else f"{float(r.x_edge_max):.0f}"
+            lines.append(("m", f"   {float(r.mz):10.4f} {x:>7} {int(r.n_files_present):>5}  {str(r.why):<16} "
+                               f"{c13:>4}  {_tried_summary(r.readings_tried)}"))
+        if len(t) > UNIDENTIFIED_TOP:
+            lines.append(("dim", f"   … +{len(t) - UNIDENTIFIED_TOP} more (tables/unidentified.csv)"))
+    PER = 44
+    pages = [lines[i:i + PER] for i in range(0, len(lines), PER)] or [[]]
+    for pi, chunk in enumerate(pages):
+        fig = plt.figure(figsize=A4)
+        ttl = "Unidentified bright lines" + ("" if len(pages) == 1 else f"  (page {pi + 1}/{len(pages)})")
+        fig.text(0.06, 0.95, ttl, fontsize=15, weight="bold", color=INK)
+        _text_lines(fig, chunk, x=0.055, y0=0.91, dy=0.0188, size=8.0)
+        _close(pdf, fig)
+
+
 def gka(ctx, pdf):
     """GKA homologous-series findings — a small-multiple grid of Kendrick
     mass-defect plots, one per repeat-unit family (alkyl / oxidation / alkoxylate
@@ -1979,6 +2055,25 @@ def _selection_lines(ctx) -> list:
         out.append(("b", f"• WARNING: the k_max={b.get('k_max')} budget bound while the batch was "
                          f"still gaining ({b.get('next_gain', 0):.2%} of the bins per extra "
                          "sample) — coverage is incomplete; raise --k-max."))
+    e = b.get("episodes") or {}
+    if e:
+        u = e.get("universe") or {}
+        cap = e.get("k_max")
+        out.append(("b", f"• Episode stage: {e.get('n_episodes', 0)} short bright episode(s) "
+                         f"({u.get('n_episodic', 0)} bins present in {u.get('min_n', 3)}–"
+                         f"{u.get('n_max', 19)} samples at ≥{u.get('min_lift', 5):g}× their baseline "
+                         f"and ≥{u.get('bright_x_edge', 3):g}× the sample's noise edge, grouped by time "
+                         f"overlap). Coverage rule: every such bin peaking at ≥{e.get('min_x_edge', 5):g}× "
+                         f"the edge ({e.get('n_qualifying_bins', 0)}) has its peak spectrum assigned, with "
+                         f"its episode's peak sample and up to {u.get('n_neighbours', 2)} neighbours: "
+                         f"{e.get('n_wanted', 0)} wanted file(s), {e.get('n_free', 0)} already selected, "
+                         f"{e.get('k', 0)} added ("
+                         + ("no cap" if cap is None else f"cap {cap}")
+                         + f"), stopped on '{e.get('stop_reason', '?')}'. "
+                         "Episode files are assigned with the cover's (tables/episodes.csv)."))
+        if e.get("stop_reason") == "k_max":
+            out.append(("b", f"• WARNING: the cap k_episode_max={cap} left {e.get('n_over_budget', 0)} "
+                             "wanted file(s) out: the coverage rule does not hold for this run."))
     r = b.get("residual") or {}
     if r:
         out.append(("b", f"• Residual stage: of the {r.get('n_uncovered', 0)} universe bins in no "
@@ -2164,7 +2259,7 @@ def assignments_table(ctx, pdf):
 
 
 SECTIONS = [cover, claims, findings, coverage, evidence_levels, composition, scrutiny, reference_lists,
-            gka, qc_massdefect, families, changers, clusters, methods, assignments_table]
+            unidentified, gka, qc_massdefect, families, changers, clusters, methods, assignments_table]
 
 
 def build(out_dir: str, *, tag: str, label: str, ts_path: str | None = None,

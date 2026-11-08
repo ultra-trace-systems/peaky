@@ -29,7 +29,8 @@ import bisect
 import re
 from typing import Iterable, Iterator
 
-__version__ = "0.2.0"   # + register_adduct: run-time cluster ion forms
+__version__ = "0.3.0"   # + cluster_shift: an unregistered cluster label resolves through its base form
+#                        0.2.0 register_adduct: run-time cluster ion forms
 
 # ---------------------------------------------------------------------------
 # Exact monoisotopic masses (most-abundant isotope) and the electron mass.
@@ -348,12 +349,43 @@ def register_adduct(label: str, shift: float, *, tol: float = 1e-9) -> str:
     return label
 
 
+_CLUSTER_LABEL = re.compile(r"^\[M\+\(([A-Z][A-Za-z0-9]*)\)(.+)$")
+
+
+def cluster_shift(adduct: str) -> float | None:
+    """The shift of a CLUSTER label never registered in this process: a neutral
+    group in parentheses ahead of a known form -- `[M+(C5H9NO)H]+` = the
+    `[M+H]+` shift + the mass of C5H9NO, `[M+(C2H6O)(C2H6O)H]+` the same twice,
+    `[M+(C2H6OS)-H]-` = `[M-H]-` + DMSO. The labels the solvent-cluster readings
+    write (assignment/solvent_clusters.py registers its rungs at run time;
+    batch/episode_evidence.py names a persistent ion's plume-solvent cluster so),
+    readable again in a process that did not register them. None when the label
+    is no such form."""
+    m = _CLUSTER_LABEL.match(str(adduct))
+    if not m:
+        return None
+    rest = m.group(2)
+    base = ("[M" + rest) if rest.startswith("-") else ("[M+" + rest)
+    try:
+        group = neutral_mass(m.group(1))
+    except Exception:  # noqa: BLE001 -- not a formula in the parentheses
+        return None
+    if base in ADDUCT_SHIFTS:
+        return ADDUCT_SHIFTS[base] + group
+    inner = cluster_shift(base)
+    return None if inner is None else inner + group
+
+
 def ion_mz(neutral: str | dict[str, int] | float, adduct: str) -> float:
-    """Theoretical m/z of a singly-charged ion of `neutral` under `adduct`."""
-    if adduct not in ADDUCT_SHIFTS:
+    """Theoretical m/z of a singly-charged ion of `neutral` under `adduct`
+    (a cluster label never registered here resolves through `cluster_shift`)."""
+    shift = ADDUCT_SHIFTS.get(adduct)
+    if shift is None:
+        shift = cluster_shift(adduct)
+    if shift is None:
         raise KeyError(f"unknown adduct {adduct!r}; known: {sorted(ADDUCT_SHIFTS)}")
     mass = neutral if isinstance(neutral, (int, float)) else neutral_mass(neutral)
-    return mass + ADDUCT_SHIFTS[adduct]
+    return mass + shift
 
 
 def ion_mass(formula: str | dict[str, int], charge: int) -> float:

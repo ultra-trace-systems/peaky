@@ -923,12 +923,13 @@ try:
               "ringing-line release always -- nothing pooled, no rung or signature veto here, the "
               "isotopologue gate skipped on a height-only series, the shadow gate skipped off a "
               "labelled-nitrate channel, the TOF gates skipped on an Orbitrap-class batch; no polarity "
-              "gate in negative mode)",
+              "gate in negative mode; the merged isotope-contradiction guard always, nothing contradicted here)",
               set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue", "sideband",
                                                     "label_shadow", "element_signature", "label_veto", "tof_m2",
-                                                    "ringing_lines"}
-              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_noted": 0,
-                                                      "own_13c_kept": 0}
+                                                    "ringing_lines", "isotope_guard"}
+              and summ["merge_gates"]["sideband"] == {"tested": 0, "held": 0, "satellite_held": 0,
+                                                      "satellite_noted": 0, "own_13c_kept": 0}
+              and summ["merge_gates"]["isotope_guard"]["demoted"] == 0
               and summ["merge_gates"]["label_veto"] == {"capped": 0, "noted": 0}
               and summ["merge_gates"]["ringing_lines"]["released"] == 0
               and summ["merge_gates"]["label_shadow"] == {

@@ -1387,7 +1387,7 @@ def _stamp_pairs(frame: pd.DataFrame, rows: pd.Series, pairs: pd.DataFrame | Non
 
 
 def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=None,
-                 sample_id: str | None = None) -> dict:
+                 sample_id: str | None = None, pairs_out: list | None = None) -> dict:
     """The per-file `evidence` stage (D2 b): the file levelled ALONE in
     "adapted" mode (every file-count minimum 1, no time series, no merged
     ledger, no partners; the amine gate on its no-time-series path with the
@@ -1397,7 +1397,11 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
     n_levelled, n_pairs, instrument}. The instrument class comes from
     ``resolution`` (else the run inputs' width model): a TOF-class or
     class-less file reads NA before any fact work. ``cfg`` is accepted for
-    stage-call symmetry and not read."""
+    stage-call symmetry and not read. ``pairs_out``: a list the file's pair
+    frame (`level_source`: the levels and the facts behind every pair, e.g.
+    ``committed_reasons``) is appended to -- the per-file isotope guard
+    (isoguard.guard_ledger) reads its facts from it instead of computing them
+    again; nothing is appended when the file is not levelled."""
     sid = str(sample_id or "file")
     if run_inputs is None:
         run_inputs = file_run_inputs(sample_id=sid, reagent=None, context=None, resolution=resolution)
@@ -1435,6 +1439,8 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
         if pairs is None:
             pairs = level_source(src)
         _stamp_pairs(ledger, m0, pairs)
+        if pairs_out is not None:
+            pairs_out.append(pairs)
     ledger.loc[m0, "claim"] = [claim_class(v) for v in ledger.loc[m0, "evidence_level"]]
     lv = ledger.loc[m0, "evidence_level"]
     return {"levels": summarize(lv), "claims": summarize_claims(ledger.loc[m0, "claim"]),

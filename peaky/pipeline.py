@@ -25,9 +25,11 @@ from peaky.io import io_mascope as IO
 from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
+from peaky.batch import episode_evidence as EE
 from peaky.batch import timeseries as TS
 
-__version__ = "0.3.1"  # the manifest counts record context_flags and the isotopologue gate;
+__version__ = "0.3.2"  # the manifest switches record the episode evidence's mode (--episode-evidence);
+                       # 0.3.1: the manifest counts record context_flags and the isotopologue gate;
                        # 0.3.0: presence set-cover sample selection (one selector, batch + pool)
 
 # Content-stable epoch for SOURCE_DATE_EPOCH. NOT the run time: figures, workbooks
@@ -408,11 +410,14 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
 
 def _switch_record(summ: dict) -> dict:
     """The provenance counts of the run's switches that live outside PassConfig:
-    the context profile's run-level switches (`context_flags`) and whether the
-    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`)."""
+    the context profile's run-level switches (`context_flags`), whether the
+    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`), and the
+    episode evidence's mode (`episode_evidence`: --episode-evidence; it changes the
+    merged ledger, so two runs differing only in it must say so)."""
     gate = ((summ or {}).get("merge_gates") or {}).get("isotopologue") or {}
     return {"context_flags": (summ or {}).get("context_flags"),
-            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")}}
+            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")},
+            "episode_evidence": (summ or {}).get("episode_evidence_mode")}
 
 
 def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
@@ -423,6 +428,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               residual_min_x_edge: float = SS.RESIDUAL_MIN_X_EDGE,
               residual_min_cps: float | None = None,
               residual_k_max: int = SS.RESIDUAL_K_MAX,
+              episodes: bool = SS.EPISODE_DEFAULT, episode_min_x_edge: float = SS.EPISODE_MIN_X_EDGE,
+              k_episode_max: int | None = SS.K_EPISODE_MAX, episode_evidence: str = EE.MODE,
               occurrence_min: float | None = None,
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,
@@ -430,6 +437,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               tof_flag_mz: float | None = None,
               mass_axis: str = "auto", lists=None,
               axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
+              tier_calibration: str | None = None, tier_calibration_lent: bool = False,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -449,6 +457,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     `residual_min_cps`) are assigned where they peak, at most `residual_k_max`
     extra files (sampling.residual_universe / select_residual_cover); the block
     lands in batch_summary.json['selection']['residual'].
+    With `episodes` (the default) the episode stage runs right after the cover
+    (sampling.episode_universe / select_episode_samples): every short bright
+    episode gets its peak file and up to two neighbours, and every episodic bin
+    peaking at >= `episode_min_x_edge` (5) x its sample's noise edge its own peak
+    spectrum (no budget; `k_episode_max` = an optional safety cap); the
+    record lands in
+    batch_summary.json['selection']['episodes'] and tables/episodes.csv.
     `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
     gate on the run's PassConfig. None leaves each knob UNSET, which is not the same
     as a value: `occurrence_min` then keeps the PassConfig default ('auto' = the
@@ -474,6 +489,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     hands the PDF's coverage / batch-max tables the corrected series
     (data/<tag>_ts_corrected.parquet, `_report_ts_path`), and the manifest records
     the documents read (`input.axis_fingerprints`: sha1, status, mode per item).
+    `tier_calibration` (a calibration json, `peaky calibration pool`) is loaded
+    onto the run's PassConfig (`tier_calibration_config`): lent only to a file
+    neither its own core nor the batch's pooled core calibrates, as 'campaign' or
+    'lent' (`tier_calibration_lent`: across reagents too), its sha256 in the
+    manifest (`input.tier_calibration`; assignment/calfile.py).
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
@@ -481,6 +501,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                       height_cutoff_x_edge=height_cutoff_x_edge,
                       height_cutoff_cps=height_cutoff_cps)
     tof_flag_config(cfg, tof_flag_mz)
+    tier_calibration_config(cfg, tier_calibration, tier_calibration_lent, log=log)
     assign_kw["cfg"] = cfg
 
     t_start = time.time()          # whole-pipeline wall clock -> returned elapsed_s
@@ -531,6 +552,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                      k_min=k_min, k_max=k_max, min_gain=min_gain,
                      residual=residual, residual_min_x_edge=residual_min_x_edge,
                      residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
+                     episodes=episodes, episode_min_x_edge=episode_min_x_edge,
+                     k_episode_max=k_episode_max, episode_evidence=episode_evidence,
                      mass_axis=mass_axis, lists=lists, axis_fingerprints=axis_fingerprints,
                      axis_fingerprint_dir=axis_fingerprint_dir, n_jobs=n_jobs, log=log, **assign_kw)
     finally:
@@ -623,6 +646,25 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
     return cfg
 
 
+def tier_calibration_config(cfg, path=None, lent: bool = False, *, log=print):
+    """Put the calibration json at `path` (`--tier-calibration`, assignment/calfile.py;
+    loaded and checked, its sha256 recorded) on the run's PassConfig, and the
+    explicit cross-reagent lending switch (`--tier-calibration-lent`). None leaves
+    the config as it is; `lent` without a path is refused. Returns cfg."""
+    if path is None:
+        if lent:
+            raise ValueError("--tier-calibration-lent needs --tier-calibration PATH")
+        return cfg
+    from peaky.assignment import calfile as CF
+    rec = CF.load(path)
+    cfg.tier_calibration = rec
+    cfg.tier_calibration_lent = bool(lent)
+    log(f"[batch] tier calibration file {rec['_path']} (sha256 {rec['_sha256'][:12]}; {rec.get('source')}, "
+        f"reagent {rec.get('reagent')}, scan range {rec.get('scan_range')}, usable {rec.get('usable')})"
+        + ("; cross-reagent lending allowed" if lent else ""))
+    return cfg
+
+
 def tof_flag_config(cfg, tof_flag_mz=None):
     """Put `tof_flag_mz` (an m/z above 0) on the run's PassConfig as the TOF
     mass-only flag's threshold; None keeps the config's own. Returns cfg."""
@@ -706,6 +748,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        tof_flag_mz: float | None = None,
                        mass_axis: str = "auto",
                        axis_fingerprints: str = "auto", axis_fingerprint_dir: str | None = None,
+                       tier_calibration: str | None = None, tier_calibration_lent: bool = False,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -740,6 +783,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                       height_cutoff_x_edge=height_cutoff_x_edge,
                       height_cutoff_cps=height_cutoff_cps)
     tof_flag_config(cfg, tof_flag_mz)
+    tier_calibration_config(cfg, tier_calibration, tier_calibration_lent, log=log)
     assign_kw["cfg"] = cfg
     when = when or datetime.now(timezone.utc)     # ONE stamp: pool + every group ctx agree
     if isinstance(ts, str):

@@ -1,0 +1,754 @@
+{
+ "n_spectra": 40,
+ "plume_spectra": [
+  "ep20",
+  "ep21",
+  "ep22",
+  "ep23"
+ ],
+ "plume_peak": "ep21",
+ "lines": [
+  {
+   "key": "P1",
+   "mz": 279.159086,
+   "role": "persistent",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "neutral_formula": "C16H22O4",
+   "adduct": "[M+H]+",
+   "n_c": 16
+  },
+  {
+   "key": "P1_13C",
+   "mz": 280.162441,
+   "role": "13C",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "parent": "P1"
+  },
+  {
+   "key": "P2",
+   "mz": 229.154669,
+   "role": "persistent",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "neutral_formula": "C10H16O2",
+   "adduct": "[M+(CH4N2O)H]+",
+   "n_c": 11
+  },
+  {
+   "key": "P2_13C",
+   "mz": 230.158024,
+   "role": "13C",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "parent": "P2"
+  },
+  {
+   "key": "P3",
+   "mz": 207.174342,
+   "role": "persistent",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "neutral_formula": "C14H22O",
+   "adduct": "[M+H]+",
+   "n_c": 14
+  },
+  {
+   "key": "P3_13C",
+   "mz": 208.177697,
+   "role": "13C",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "parent": "P3"
+  },
+  {
+   "key": "SAT",
+   "mz": 207.178192,
+   "role": "satellite",
+   "spectra": [
+    "ep00",
+    "ep01",
+    "ep02",
+    "ep03",
+    "ep04",
+    "ep05",
+    "ep06",
+    "ep07",
+    "ep08",
+    "ep09",
+    "ep10",
+    "ep11",
+    "ep12",
+    "ep13",
+    "ep14",
+    "ep15",
+    "ep16",
+    "ep17",
+    "ep18",
+    "ep19",
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23",
+    "ep24",
+    "ep25",
+    "ep26",
+    "ep27",
+    "ep28",
+    "ep29",
+    "ep30",
+    "ep31",
+    "ep32",
+    "ep33",
+    "ep34",
+    "ep35",
+    "ep36",
+    "ep37",
+    "ep38",
+    "ep39"
+   ],
+   "parent": "P3",
+   "dmz": 0.00385,
+   "slope": 0.4
+  },
+  {
+   "key": "E1",
+   "mz": 195.087652,
+   "role": "plume",
+   "spectra": [
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23"
+   ],
+   "neutral_formula": "C8H10N4O2",
+   "adduct": "[M+H]+",
+   "n_c": 8,
+   "rival": {
+    "neutral_formula": "C10H13FNSi",
+    "adduct": "[M+H]+",
+    "mz": 195.087406,
+    "dmz_mDa": -0.2465
+   }
+  },
+  {
+   "key": "E1_13C",
+   "mz": 196.091007,
+   "role": "13C",
+   "spectra": [
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23"
+   ],
+   "parent": "E1"
+  },
+  {
+   "key": "S1",
+   "mz": 160.108053,
+   "role": "solvent",
+   "spectra": [
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23"
+   ],
+   "neutral_formula": "C5H9NO",
+   "adduct": "[M+(CH4N2O)H]+",
+   "n_c": 6
+  },
+  {
+   "key": "S1_13C",
+   "mz": 161.111408,
+   "role": "13C",
+   "spectra": [
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23"
+   ],
+   "parent": "S1"
+  },
+  {
+   "key": "K1",
+   "mz": 378.2275,
+   "role": "solvent_cluster",
+   "spectra": [
+    "ep20",
+    "ep21",
+    "ep22",
+    "ep23"
+   ],
+   "neutral_formula": "C21H31NO5",
+   "adduct": "[M+H]+",
+   "parent": "P1",
+   "solvent": "S1",
+   "solvent_neutral": "C5H9NO"
+  },
+  {
+   "key": "Q00",
+   "mz": 131.0417,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q01",
+   "mz": 148.3728,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q02",
+   "mz": 165.7039,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q03",
+   "mz": 183.035,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q04",
+   "mz": 200.3661,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q05",
+   "mz": 217.6972,
+   "role": "pair",
+   "spectra": [
+    "ep00",
+    "ep01"
+   ]
+  },
+  {
+   "key": "Q10",
+   "mz": 134.0488,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q11",
+   "mz": 151.3799,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q12",
+   "mz": 168.711,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q13",
+   "mz": 186.0421,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q14",
+   "mz": 203.3732,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q15",
+   "mz": 220.7043,
+   "role": "pair",
+   "spectra": [
+    "ep06",
+    "ep07"
+   ]
+  },
+  {
+   "key": "Q20",
+   "mz": 137.0559,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q21",
+   "mz": 154.387,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q22",
+   "mz": 171.7181,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q23",
+   "mz": 189.0492,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q24",
+   "mz": 206.3803,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q25",
+   "mz": 223.7114,
+   "role": "pair",
+   "spectra": [
+    "ep12",
+    "ep13"
+   ]
+  },
+  {
+   "key": "Q30",
+   "mz": 140.063,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q31",
+   "mz": 157.3941,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q32",
+   "mz": 174.7252,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q33",
+   "mz": 192.0563,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q34",
+   "mz": 209.3874,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q35",
+   "mz": 226.7185,
+   "role": "pair",
+   "spectra": [
+    "ep28",
+    "ep29"
+   ]
+  },
+  {
+   "key": "Q40",
+   "mz": 143.0701,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q41",
+   "mz": 160.4012,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q42",
+   "mz": 177.7323,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q43",
+   "mz": 195.0634,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q44",
+   "mz": 212.3945,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q45",
+   "mz": 229.7256,
+   "role": "pair",
+   "spectra": [
+    "ep32",
+    "ep33"
+   ]
+  },
+  {
+   "key": "Q50",
+   "mz": 146.0772,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  },
+  {
+   "key": "Q51",
+   "mz": 163.4083,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  },
+  {
+   "key": "Q52",
+   "mz": 180.7394,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  },
+  {
+   "key": "Q53",
+   "mz": 198.0705,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  },
+  {
+   "key": "Q54",
+   "mz": 215.4016,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  },
+  {
+   "key": "Q55",
+   "mz": 232.7327,
+   "role": "pair",
+   "spectra": [
+    "ep36",
+    "ep37"
+   ]
+  }
+ ]
+}

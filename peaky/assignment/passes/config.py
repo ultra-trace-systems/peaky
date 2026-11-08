@@ -303,6 +303,12 @@ class PassConfig:
     # the file from pass 0 against it when it is material; "area" reads by area without a response; "off"
     # reads by height against the natural abundance (the behaviour before). Other classes: always "off".
     iso_response: str = "auto"
+    # The isotope-contradiction guard's mode (assignment/isoguard.py, CLI --isotope-guard): "note" (default)
+    # records the facts its own isotope lines contradict -- the per-file / merged `isotope_guard` records and
+    # the tier_reason note -- and never moves a tier; "demote" also makes those rows Candidate. Both modes run
+    # the reliability gate and the per-row blend / untested conditions. Carried to every per-file run (workers
+    # included) and the merge; the run manifest records it.
+    isotope_guard: str = "note"
     # the response the run fitted (iso_response.fit's dict) -- runtime, read by the 13C carbon clamps
     iso_response_fit: dict | None = None
     # the run reads its isotope lines by area (iso_response "auto" / "area" in force, or inherited) --
@@ -390,6 +396,18 @@ class PassConfig:
     # two TOFs); below it the reading rests on mass alone. A configuration knob
     # (`--tof-flag-mz`), recorded in batch_summary['tof_flag'] and fingerprinted.
     tof_flag_mz: float = 350.0
+    # The tier calibration as a FILE (`--tier-calibration PATH`, assignment/calfile.py):
+    # the loaded calibration json (calfile.load: its record plus `_sha256`, `_path`),
+    # read by the batch only for a file neither its own core nor the batch's pooled
+    # core calibrates (assign_batch.run: lent as 'campaign' or 'lent', calfile.choose).
+    # None = no file. A configuration knob: it rides the cfg into every spawned worker,
+    # and the manifest fingerprints its descriptor (sha256, source, reagent, scan range,
+    # width; provenance.build_manifest), not the core ion list.
+    tier_calibration: dict | None = None
+    # lending across reagents (`--tier-calibration-lent`): a calibration json of
+    # another reagent of the same polarity and instrument class over the same days
+    # may be lent; never implicit
+    tier_calibration_lent: bool = False
 
     # Fields a RUN stamps onto the cfg PER SAMPLE -- assign.run directly, and
     # `calibrate` for the fitted cal_mu/cal_sigma. They are run-derived (they

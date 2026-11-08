@@ -227,11 +227,114 @@ cover merge + stamp
 
 ---
 
+## 3c. The episode stage (short bright episodes get their own files)
+
+The cover counts a bin once: a plume that holds a dozen bins over four spectra is
+covered by whichever plume spectrum the greedy happens to take, and the gain rule
+never asks for a second. Everything the batch can later say about the plume's
+ions -- the 13C line, an adduct partner, a second file agreeing -- then rests on
+that one spectrum, often on its flank. The episode stage runs right after the
+cover (`episodes=True`, the default; `--no-episodes` reproduces the run without
+it exactly), on the cover's own bins (`timeseries.bin_ids` at `BATCH_TOL_PPM`)
+and the residual stage's noise edge (`EDGE_Q` of each sample's heights):
+
+1. **Episodic bin** (`episode_universe`): present (height > 0) in
+   `EPISODE_MIN_N` (3) ≤ n ≤ max(`EPISODE_MAX_N` (19), ⌊`EPISODE_MAX_FRAC` (1 %)
+   × samples⌋) samples; its maximum height ≥ `EPISODE_MIN_LIFT` (5) × its
+   **baseline** -- the median over *every* sample of the bin's height there or,
+   where it is absent, that sample's noise edge. An episodic bin is in at most
+   max(19, 1 %) samples, so in any batch of more than 38 samples this median is
+   the edge level: the lift is the maximum over the batch's typical edge, and
+   the bin's own heights where present set the baseline only in a small batch.
+   This one rule replaces the episode spec's two branches ("the median of the
+   bin where present, or the batch's bin baseline when absent elsewhere"),
+   which read literally give fewer episodes: on 36 field batches 235 episodic
+   bins in 66 episodes against this rule's 736 in 140 (a plume that recurs at a
+   similar height counts as an episode here, not there); and that maximum ≥ `EPISODE_BRIGHT_X_EDGE` (3) × the edge of
+   the sample holding it (ties: the earliest sample).
+2. **Episode**: by time overlap. A bin's **run** is the stretch of time-ordered
+   samples (`sample_table` order) around its maximum in which it is present, one
+   missing sample allowed (`EPISODE_GAP`); runs that overlap or touch (one gap
+   allowed) are one episode. Its **peak sample** holds the most of the
+   episode's bins at ≥ 3× edge (then the largest summed multiple, then the
+   earliest); `max_x_edge` is the largest of its bins' maxima over their edges.
+3. **The coverage rule** (`select_episode_samples`): every episodic bin whose
+   peak reaches `EPISODE_MIN_X_EDGE` (5) × that sample's noise edge
+   (`--episode-min-x-edge X`) **qualifies** and has its own peak spectrum in the
+   selection; an episode holding a qualifying bin also wants its peak sample and
+   up to `EPISODE_NEIGHBOURS` (2) neighbours -- samples inside the episode in
+   which ≥ `EPISODE_NEIGHBOUR_FRAC` (50 %) of its bins still stand at ≥
+   `EPISODE_BRIGHT_X_EDGE` (3) × edge, nearest the peak first (then more such
+   bins, then brighter). An episode with no qualifying bin wants nothing. A
+   wanted file the cover already took is free; every other is taken: **there is
+   no budget** -- the stage guarantees that every episodic bin at ≥ 5× edge is
+   assigned where it peaks, not a cost bound, and spends the wall time that
+   takes (bins below 5× may be lost). The stage records, for information only,
+   `est_extra_wall_s` (the share of the cover pool's wall the episode files took,
+   the files being alike on average). `--k-episode-max N` (`k_episode_max=`,
+   `K_EPISODE_MAX` = None) is an optional safety cap: the order is then every
+   episode's peak sample, every qualifying bin's own peak sample, then the
+   neighbours, episodes by descending `max_x_edge`; a cap that leaves a wanted
+   file out stops the stage on `'k_max'` and is flagged (`episode_budget_warning`,
+   a WARNING log line, the PDF's methods page) -- the coverage rule then does not
+   hold for the run. The picks sit outside the cover's `k_max` / `min_gain` (they
+   never stop or extend the cover) and are assigned with the cover's files
+   (`stage` = cover; role `episode` in `selected_samples.csv`, numbered on after
+   the cover's picks); the residual stage reads them as assigned files.
+4. **Row flag** (`episode_row_flags`): in every file an episode wanted that is
+   selected (its own pick or a cover file), the per-file ledger rows on an
+   episodic bin -- by peak id against the batch series, by m/z within the batch
+   tolerance for a row without one -- carry `episode = True`; all other rows of
+   the batch's per-file ledgers `False`. The column is written only when the
+   batch has such a file, so a batch without an episode writes the ledgers it
+   always wrote. On this release the flag is **per-file only**: nothing reads it
+   yet, the merged ledger does not carry it (`_M0_COLS` is a fixed list), and
+   carrying it to the merged reading is left to the merge's episode evidence,
+   which is not built yet.
+
+The stage's yield is counted apart in `batch_summary.json['n_files_by_stage']`
+(`{cover, episode, residual}`; the `episode` key only when the stage added a
+file). Its files go through the cover's per-file path, so the merged rows they
+bring read `stage` = cover in `merged_by_stage`.
+
+Outputs: `tables/episodes.csv` (one row per episode: `episode`, `start`, `end`,
+`start_time`, `end_time`, `n_spectra`, `peak_sample`, `n_qualifying` (its bins at
+≥ 5× edge), `bin_peaks` (their own peak samples beside the episode's), `n_bins`,
+`max_x_edge`, `bins_mz`, `wanted`, `files` (wanted files in the selection),
+`picked` (taken by this stage), `over_budget` (left out by a cap); written
+whenever the stage runs, header only when no episode) and
+`batch_summary.json['selection']['episodes']` (the same records plus the
+funnel: `min_x_edge` (the coverage threshold), `n_qualifying_bins`, `k` (files
+added), `k_max` (the cap, `null` = none), `n_episodes`,
+`n_episodes_qualifying`, `n_episodic_bins`, `n_wanted`, `n_free`,
+`n_over_budget`, `stop_reason` ∈ `empty` / `exhausted` / `k_max`, `sample_ids`,
+`est_extra_wall_s` / `assign_wall_s` (information only), `universe` = the
+thresholds and counts). Cover path only: the pooled (`sample_ids=`) and
+trace-first paths do not run it.
+
+```
+cover picks
+        │  episode_universe: 3 ≤ n ≤ max(19, 1 %) ∧ lift ≥ 5 ∧ peak ≥ 3× edge
+        │                    runs (1 gap) → episodes by overlap
+        │                    qualifying bin: peak ≥ 5× edge (--episode-min-x-edge)
+        ▼
+ ┌──────────── the coverage rule (no budget) ───────────────────────────┐
+ │ every qualifying bin: its own peak spectrum                          │
+ │ its episode: the peak sample + up to 2 neighbours (≥ 50 % at ≥ 3×)   │
+ │ a file already selected is free; an optional cap → 'k_max', flagged  │
+ └──────────────────────────────────────────────────────────────────────┘
+        ▼
+ assigned with the cover's files; episodes.csv; per-file `episode` column
+```
+
+---
+
 ## 4. Constants reference
 
 All in `peaky/batch/sampling.py`; the CLI (`--k-min`, `--k-max`, `--min-gain`,
 `--residual`, `--residual-min-x-edge`, `--residual-min-cps`, `--residual-k-max`)
-mirrors them for `batch` and `pool`.
+mirrors them for `batch` and `pool`; `--episodes` / `--episode-min-x-edge` /
+`--k-episode-max` are `batch` only.
 
 | constant | value | role |
 | --- | --- | --- |
@@ -245,6 +348,14 @@ mirrors them for `batch` and `pool`.
 | `RESIDUAL_FRAC_OF_MAX` | 0.5 | a sample counts for a residual bin only at ≥ this share of the bin's maximum |
 | `RESIDUAL_K_MAX` | 10 | budget of the residual stage; hitting it while still gaining → `stop_reason='k_max'` |
 | `EDGE_Q` | 0.01 | the noise edge: the 1st percentile of a sample's heights (= `passes.noise_edge`) |
+| `EPISODE_DEFAULT` | True | the episode stage runs unless `--no-episodes`; off reproduces the run without it exactly |
+| `K_EPISODE_MAX` | None | an optional safety cap on the episode stage's files (`--k-episode-max N`); none by default (the coverage rule); a cap that leaves a wanted file out → `stop_reason='k_max'` + warning |
+| `EPISODE_MIN_N` / `EPISODE_MAX_N` / `EPISODE_MAX_FRAC` | 3 / 19 / 0.01 | an episodic bin is present in 3 ≤ n ≤ max(19, ⌊1 % of the samples⌋) samples |
+| `EPISODE_MIN_LIFT` | 5.0 | its maximum ≥ this × its baseline (median over every sample of its height, or the sample's edge where absent) |
+| `EPISODE_MIN_X_EDGE` | 5.0 | THE COVERAGE RULE: an episodic bin peaking at ≥ this × its sample's noise edge has its peak spectrum (and its episode's) selected (`--episode-min-x-edge`) |
+| `EPISODE_BRIGHT_X_EDGE` | 3.0 | an episodic bin's maximum, and a neighbour's bins, at ≥ this × the sample's noise edge |
+| `EPISODE_NEIGHBOURS` / `EPISODE_NEIGHBOUR_FRAC` | 2 / 0.5 | neighbours per episode; a neighbour holds ≥ this share of the episode's bins at ≥ 3× edge |
+| `EPISODE_GAP` | 1 | missing samples a run, and two touching runs, may have between them |
 
 ---
 
@@ -281,6 +392,9 @@ mirrors them for `batch` and `pool`.
 | `residual_universe` | the residual bins (`bin`, `bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `tier` ∈ clean / suspect, `sidelobe_of`, `n_pairs`, `ratio_cv`); `.attrs['residual']` = the funnel (incl. `n_sidelobe`, `n_suspect`) + floor, `.attrs['sidelobes']` = the dropped rows (records), `.attrs['edge_cps']` = the per-sample edge ({id → cps}) |
 | `select_residual_cover` | the extra picks, same shape as `select_cover_samples` with `role = 'residual'`; `.attrs['selection']` = {method 'residual-cover', k, n_bins, frac_of_max, k_max, achieved_coverage, stop_reason, next_gain}, `.attrs['covered_by']` = {bin → pick} |
 | `tables/residual_bins.csv` | the targeted bins + `covered_by` (written by `assign_batch.run` when the stage is on) |
+| `episode_universe` | the episodic bins (`bin`, `bin_mz`, `n_present`, `max_cps`, `max_x_edge`, `lift`, `baseline_cps`, `peak_sample`, `run_start`, `run_end`, `episode`); `.attrs['episodes']` = the episodes (records, incl. `wanted` and `n_bright`), `.attrs['episode_meta']` = the funnel + thresholds, `.attrs['episodic_peaks']` / `.attrs['episodic_mz']` = per sample, the peak ids / bin m/z on an episodic bin |
+| `select_episode_samples` | the new files, same shape as `select_cover_samples` with `role = 'episode'` and `episode` (the episode it was taken for); `.attrs['selection']` = the stage's record (§3c), `.attrs['flag_files']` = every selected file an episode wanted |
+| `tables/episodes.csv` / `batch_summary.json['selection']['episodes']` | §3c |
 | `batch_summary.json['selection']['residual']` | `n_bins_residual, n_universe, n_uncovered, n_explained, n_below_floor, n_sidelobe, n_suspect, floor{min_x_edge, min_cps, edge_median_cps, source}, frac_of_max, k, k_max, coverage_of_residual, stop_reason, next_gain, sample_ids` (`skipped` when there was no time series) |
 
 ---
@@ -372,6 +486,10 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
 | `residual_universe` | THE RESIDUAL STAGE, part 1: the universe bins in no assigned file, unexplained by the stamp, bright somewhere |
 | `select_residual_cover` | THE RESIDUAL STAGE, part 2: greedy cover of those bins by the samples in which each stands at ≥ 50 % of its maximum |
 | `describe_residual` | the one-line log summary of the funnel + the residual cover |
+| `episode_universe` | THE EPISODE STAGE, part 1: the episodic bins and the episodes they form |
+| `select_episode_samples` | THE EPISODE STAGE, part 2: the coverage rule -- every qualifying bin's peak spectrum, its episode's peak sample + neighbours; no budget, an optional cap |
+| `episode_row_flags` | THE EPISODE STAGE, part 3: the per-file ledger's `episode` column |
+| `episodes_table` / `episode_budget_warning` / `describe_episodes` | tables/episodes.csv, the cap warning, the log line |
 | `timeseries.bin_ids` (reused, at `BATCH_TOL_PPM`) | the row-aligned bin rule `build_matrix` pivots on, read off the long table |
 | `k_max_warning` / `describe` | the warning text / log line for a selection meta dict |
 | `timeseries.build_matrix` (reused, at `BATCH_TOL_PPM`) | the samples × m/z-bin matrix the cover bins on |

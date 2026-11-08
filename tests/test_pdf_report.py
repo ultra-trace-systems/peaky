@@ -302,6 +302,11 @@ with tempfile.TemporaryDirectory() as d:
           + [(False, False, True)]
           and "and 5 more cover files" in _rows[5] and "and 2 more residual files" in _rows[-1],
           _rows)
+    # the episode stage's files are counted apart (batch_summary n_files_by_stage["episode"])
+    ctx_r["batch"]["n_files_by_stage"] = {"cover": 8, "episode": 2, "residual": 5}
+    _sel_ep = next((t for t in _cover_lines(ctx_r) if "presence set-cover selection" in t), "")
+    check("cover: the selection line names the episode stage's files",
+          _sel_ep.startswith("15 files (8 cover + 2 episode + 5 residual): presence set-cover"), _sel_ep)
     ctx_r["samples"] = [(f"2026-06-16 {i:02d}:00:00", "cover") for i in range(10)]
     ctx_r["batch"]["selection"].pop("residual"); ctx_r["batch"].pop("n_files_by_stage")
     ctx_r["n_files"] = 10
