@@ -124,7 +124,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-__version__ = "0.4.0"  # + the episode stage (episode_universe / select_episode_samples / episode_row_flags)
+__version__ = "0.4.1"  # tic rounded to 1e-3 (byte-stable across pandas versions); + the episode stage (episode_universe / select_episode_samples / episode_row_flags)
                        # 0.3.0: + the targeted residual stage (residual_universe / select_residual_cover)
 
 K_MIN = 6              # take at least this many samples before the gain stop applies
@@ -210,6 +210,10 @@ def sample_table(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
         if name_col in cols:
             parts["sample_item_name"] = (name_col, "first")
         tab = peaks.groupby(sample_col).agg(**parts).reset_index()
+        if "tic" in tab.columns:
+            # a float sum's last bits depend on the library's summation order (pandas 3.0 vs
+            # 3.1 differ); the table is compared byte for byte, so the sum is fixed at 1e-3.
+            tab["tic"] = tab["tic"].astype(float).round(3)
     sort_key = "datetime_utc" if "datetime_utc" in tab.columns else sample_col
     return tab.sort_values(sort_key).reset_index(drop=True)
 

@@ -547,6 +547,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`tables/selected_samples.csv` is byte-stable across pandas versions.** The sample table's `tic` (the sum of a
+  file's peak heights) kept the summation's last bits, which differ between pandas 3.0 and 3.1, so the golden
+  comparisons of the selection failed on one of the two; the sum is now rounded to 1e-3 (`sampling` 0.4.1).
 - **The repo-root `.env` is found from any directory.** `io_mascope._REPO_ENV` sat one level too deep (inside the
   package), so the clone-root `.env` was never searched and a run started outside the clone reported "No Mascope
   credentials found"; the test asserted the same wrong path. The search now follows the documented order
